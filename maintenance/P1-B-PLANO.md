@@ -3557,3 +3557,94 @@ A thread metadata01a16de9-322e-7021-9fc5-087068d99abf mantém arquivamento histo
 **Volume final e limite concreto:** tmp/u3-planejamento passou nesta passagem de13.206.332 para5.833.332KiB (12,59→5,56GiB), redução adicional de7.373.000KiB≈7,03GiB. Desde a cobrança inicial,15.587.048→5.833.332KiB, aproximadamente9,30GiB retirados recuperavelmente; a Lixeira não foi esvaziada. Não declarar tmp limpo. Dos5,56GiB restantes,5.328.512KiB≈5,08GiB são SDKs dos16snapshots congelados. A incerteza de owner por si só não exige esses SDKs: quem exige é assertSnapshotIntegrity, que inclui suas bytes/contagem no snapshotSha256, e o exporter que chama essa guarda antes de ler uma medição. Removê-los avulsamente quebraria a prova corrente, inclusive runs sem owner. Não fiz deduplicação por links/alteração de inode, relaxamento da guarda ou retirada parcial do snapshot. Nenhuma observação de chat foi usada para inventar terminalidade.
 
 **Pendência/decisão adicional delimitada:** as incertezas da tabela não foram resolvidas por esta limpeza; faltam as conclusões/disposições oficiais indicadas, não uma repetição do workflow. Para retirar também os5,08GiB seria necessária uma decisão de arquivamento frio integral dos16diretórios de run listados, preservando todos os bytes e exigindo restauração aos mesmos paths antes de inspeção/export, com segurança de ausência de atividade antes de mover qualquer workspace pendente. Essa ação não foi executada nem substituída por estado PASS; não é proposta de novo framework ou recovery. Sem autorização adicional necessária para os25alvos já removidos. Nenhum novo modelo/teste de recipe/servidor, acesso a sessão privada, manipulação de owner, push ou fase nova;96/250.
+
+**Destinação integral concluída após nova direção de Aj (24/10, após16:30):** autorização para encerrar a retenção operacional dos16runs antigos, sem nova prova. A regra de guardar snapshot por hash não é obrigação de manter todos os bytes na área ativa: o conjunto integral pode ser movido recuperavelmente, sem editar BLOCKED/INTERRUPTED ou liquidar consumo/owner. A conclusão anterior de que era preciso aguardar normalização histórica do ledger para retirar qualquer run foi excessiva; o critério correto separa atividade atual de incerteza histórica.
+
+**Atividade conferida individualmente:** consultas oficiais wait_threads(timeout0) dos pais/filhos identificáveis retornaram inactiveStatus/notLoaded e turnos completed/interrupted; os filhos adicionais identificados nas atividades oficiais dos pais também estavam inativos. Para os três INIT sem identidade retornada, os próprios resultados conservam managerExitCode1/término normal, cadeias referenciadas sem unref e encerramento do launcher que aguarda a saída do binário; não se inferiu ausência de consumo remoto ou início comprovado da skill. Para9514bc2b valem ainda consulta autorizada ao PID74647 ausente e arquivamento confirmado da thread. Todos os managers com resumo estão terminais; não havia marker ativo. No episódio da desconexão, ACTIVE/dispatched era estado persistido antigo, mantido literal, sem execução atual. Esses sinais combinados sustentam destinação administrativa dos testes isolados; a projeção notLoaded isolada não foi usada como prova global de processo, nem houve novo ps, signal, API de execução/replay ou acesso a sessão privada.
+
+**Ação/resultado confirmado:**14conjuntos próprios qualification/checkout contendo os16runs foram movidos integralmente pela Lixeira oficial, exit0; mesmo dispositivo/inode das14raízes, origens ausentes. Não desmontar snapshot nem remover owner isoladamente. Verificação de leitura nas cópias arquivadas recalculou os hashes/contagens dos16snapshots (8.160arquivos congelados) e hashes agregados de todos os demais arquivos/links/modos de cada run: exatamente os mesmos anteriores. Não se apresentou o arquivo arquivado como run ativo ou como PASS. Qualquer inspeção operacional futura desses históricos exige restaurar os mesmos caminhos; não retomar/modelar essa disposição como recovery. Os dois chats95 de PLAN/reviewer foram arquivados com confirmação após observação oficial de inatividade; isso não reclassifica suas admissões incertas.
+
+Localizações recuperáveis dos conjuntos integrais (correspondem aos16IDs da tabela acima):
+- U3.17-capture-proof-2026-10-24/qualification → ~/.Trash/qualification
+- U3.17-case-a-782a485-2026-10-24/checkout → ~/.Trash/checkout
+- U3.17-case-a-retomada-2026-10-24/qualification → ~/.Trash/qualification 13-40-52-359
+- U3.17-generic-proof-2026-10-24/qualification → ~/.Trash/qualification 13-40-52-360
+- U3.17-history-codec-2026-10-24/qualification → ~/.Trash/qualification 13-40-52-361
+- U3.17-history-diagnostic-2026-10-24/qualification → ~/.Trash/qualification 13-40-52-362
+- U3.17-index-proof-2026-10-24/qualification → ~/.Trash/qualification 13-40-52-363
+- U3.17-init-diagnostic-2026-10-23.TeFpGN/checkout → ~/.Trash/checkout 13-40-52-364
+- U3.17-init-only-2026-10-23.7hzyl3/checkout → ~/.Trash/checkout 13-40-52-365
+- U3.17-initial-history-2026-10-24/qualification → ~/.Trash/qualification 13-40-52-365
+- U3.17-metadata-observation-2026-10-24/qualification → ~/.Trash/qualification 13-40-52-366
+- U3.17-origin-proof-2026-10-24/qualification → ~/.Trash/qualification 13-40-52-367
+- U3.17-real-2026-10-23.7mdb40f7/checkout → ~/.Trash/checkout 13-40-52-367
+- U3.17-s2-startup-2026-10-24/checkout → ~/.Trash/checkout 13-40-52-368
+
+**Invólucros redundantes:** após preservar integralmente os runs,13pacotes externos antigos e os arquivos redundantes do14º foram movidos recuperavelmente,26objetos/exit0; o14º ficou apenas com workspace/xcrun_db, nunca selecionado. Logs/rascunhos não necessários à correção atual deixaram a área ativa, sem criar nova coleção de recibos. A informação de resultado, consumo, causas resolvidas versus não demonstradas e destinos está consolidada neste plano. Nenhuma incerteza de resposta/owner foi chamada de resolvida só porque houve limpeza; capturas/fontes originais continuam recuperáveis no conjunto frio.
+
+**Medição deste encerramento:**5.833.332KiB antes;135.956KiB após os conjuntos integrais;112.824KiB após os invólucros (aprox.5,56GiB→110,2MiB). Zero dos16runs permaneceu em tmp. Desde a cobrança inicial,15.587.048→112.824KiB, aproximadamente14,76GiB retirados recuperavelmente; isso não é esvaziamento da Lixeira. O tmp não foi declarado vazio: a lista exata remanescente abaixo inclui outras fases/históricos e a QA atual, não16runs vivos por associação. Sem bloqueio técnico desta movimentação e sem nova prova/modelo;96/250. Fonte/skills/global/main/Claude, xcrun_db e arquivos pessoais não foram alterados. U3.17/S2 continuam abertos; os resultados históricos BLOCKED/INTERRUPTED e FAIL permanecem tais.
+
+**Lista exata remanescente no instante do encerramento (KiB, sem classificar outras fases como descartaveis):**
+
+```text
+480	U3.14-A-2026-10-21/
+5264	U3.14-integral-2026-10-21/
+720	U3.14.2-context-2026-10-21/
+132	U3.14.2-corte-2026-10-20/
+192	U3.14.2-git-exclusion-2026-10-21/
+9768	U3.15-2026-10-22/
+4300	U3.15-A-2026-10-22/
+56020	U3.15-B-2026-10-22/
+5792	U3.16-S2-2026-10-23.noPvk5/
+584	U3.16-execucao-2026-10-23/
+128	U3.16-planejamento-2026-10-23/
+584	U3.16-retencao-correcao-2026-10-23/
+248	U3.16-retencao-investigacao-2026-10-23/
+148	U3.17-caller-boundary-2026-10-24/
+44	U3.17-candidate-native-2026-10-23.fvcu6bu8/
+80	U3.17-capture-input-2026-10-24/
+44	U3.17-direct-native-2026-10-23.UPFaI0/
+260	U3.17-five-local-gates-2026-10-23.l8i0vthb/
+104	U3.17-generic-profile-2026-10-24/
+216	U3.17-index-observation-2026-10-24/
+1140	U3.17-initial-abort-2026-10-24/
+4	U3.17-initial-history-2026-10-24/
+1792	U3.17-native-functional-2026-10-23.igzktp51/
+3036	U3.17-native-functional-v2-2026-10-23.e_h43f5g/
+108	U3.17-native-functional-v3-2026-10-24.7bm9eowj/
+148	U3.17-origin-successor-2026-10-24/
+8	U3.17-plan-path-diagnostic-2026-10-24/
+100	U3.17-read-order-final-2026-10-24/
+92	U3.17-review-authority-diagnostic-2026-10-24/
+24	U3.17-review-semantic-eval-2026-10-24/
+1136	U3.17-root-cause-eval-2026-10-23.dtk3lqf7/
+9112	U3.17-selection-fix-2026-10-23/
+10096	U3.17-stderr-sample-2026-10-23/
+108	U3.17-trust-scope-2026-10-24/
+4	checkpoint-final.json
+72	checkpoint-inicial.json
+4	checkpoint-integracao.json
+4	checkpoint-revisao-focal.json
+196	diagnosticos/
+4	entrega-integracao.json
+8	entrega-manifesto.json
+4	entrega-revisao-focal.json
+244	fontes/
+12	helpers/
+12	helpers-integracao/
+4	library-integracao.json
+4	library-revisao-focal.json
+4	library-save.json
+12	parecer-integracao-u3-20261012.md
+12	parecer-substituicao-familias-qa.md
+8	resumo-revisao-focal.diff
+4	resumo-revisao-integracao.diff
+24	revisao-focal.diff
+4	revisao-focal.json
+16	revisao-focal.py
+40	revisao-integracao.diff
+4	revisao-integracao.json
+28	revisao-integracao.py
+76	u3-detalhamento-tecnico.md
+8	u3-resumo-revisao.md
+```
