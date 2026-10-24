@@ -9,8 +9,34 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { allocateOfflineFixture, finishOfflineFixture } from './fixtures/offline-checkout.mjs';
 import { describeOfflineSdk } from '../agents/codex/runtime/offline-provider-context.mjs';
 import { offlineNativeWorkflow } from './fixtures/native-workflow-provider.mjs';
+import { invocationContext } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
 const repo = path.resolve(import.meta.dirname, '..');
+
+test('invocation provenance distinguishes review contexts from author continuity without reclassifying controllers', () => {
+  const author = { threadId: 'author-thread', role: 'author' };
+  for (const regime of ['fresh', 'author-continuity']) {
+    const policy = { regime, authorContinuityOperations: regime === 'fresh' ? [] : ['PLAN'] };
+    for (const [operation, skill] of [['SPEC_READINESS', 'stnl-spec-lifecycle-manager'],
+      ['REVIEW_PLAN', 'stnl-plan-reviewer'], ['VALIDATE_SLICE', 'stnl-slice-quality-manager'],
+      ['PLAN', 'stnl-execution-planner']]) {
+      const context = invocationContext(operation, skill, policy, author);
+      const resumed = regime === 'author-continuity' && operation === 'PLAN';
+      assert.equal(context.prior, resumed ? author : null);
+      assert.equal(context.role, operation === 'PLAN' ? 'author' : 'review');
+      assert.ok(context.text.includes(`You are executing ${operation} as ${skill}.`));
+      const provenance = /^Context provenance: (thread\/(?:start|resume)); (.+)\.$/mu.exec(context.text);
+      assert.equal(provenance[1], resumed ? 'thread/resume' : 'thread/start');
+      assert.equal(provenance[2], resumed ? `author thread ${author.threadId}` : 'no author thread resumed');
+    }
+  }
+  for (const missing of [null, undefined]) {
+    const context = invocationContext('PLAN', 'stnl-execution-planner',
+      { regime: 'author-continuity', authorContinuityOperations: ['PLAN'] }, missing);
+    assert.equal(context.prior, null);
+    assert.match(context.text, /Context provenance: thread\/start; no author thread resumed\./u);
+  }
+});
 
 for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal entry retains bounded stderr after ${phase} failure without another admission`, async t => {
   const fixture = await allocateOfflineFixture(repo);
@@ -153,11 +179,18 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     assert.equal(skill.length, 1); assert.equal(text.length, 1);
     assert.equal(skill[0].path, path.join(runRoot, 'snapshot/skills/workflows', skill[0].name, 'SKILL.md'));
     assert.ok(text[0].text.startsWith(`$${skill[0].name}\n`), 'normal explicit mention agrees with native skill item');
-    assert.match(text[0].text, /The manager is the caller for this invocation\./u,
-      'every operation must receive the same caller boundary through the normal dispatch path');
+    const rawOperation = /^(?:OPERATION|MODE)=(.*)$/mu.exec(text[0].text)[1];
+    const operation = { INIT: 'SPEC_INIT', CLOSE: 'SPEC_CLOSE', READINESS: 'SPEC_READINESS' }[rawOperation] ?? rawOperation;
+    assert.ok(text[0].text.includes(`You are executing ${operation} as ${skill[0].name}.`));
+    const turnIndex = backend.calls.findIndex(call => call.method === 'turn/start' && call.params === params);
+    const contextRequest = backend.calls.slice(0, turnIndex).findLast(call => ['thread/start', 'thread/resume'].includes(call.method));
+    const provenance = /^Context provenance: (thread\/(?:start|resume)); (.+)\.$/mu.exec(text[0].text);
+    assert.equal(provenance[1], contextRequest.method, 'context description must match the actual public thread request');
+    assert.equal(provenance[2], contextRequest.method === 'thread/start' ? 'no author thread resumed'
+      : `author thread ${contextRequest.params.threadId}`);
     assert.match(text[0].text, /including the internal delegation required by its skill/u,
       'returning the handoff must preserve required checks inside the selected operation');
-    assert.match(text[0].text, /return control with its result and public handoff\. The manager invokes the next operation from that handoff\./u);
+    assert.match(text[0].text, /external manager is the caller and invokes the next operation from your returned handoff/u);
     if (['stnl-execution-planner', 'stnl-plan-reviewer'].includes(skill[0].name)) {
       const originalInput = text[0].text.match(/^Original requirements input: (.+)$/mu)?.[1];
       assert.equal(originalInput, path.join(runRoot, 'case-a/workspace/requirements.md'),

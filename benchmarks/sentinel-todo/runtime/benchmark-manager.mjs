@@ -238,6 +238,16 @@ export function renderLauncher(template, values) {
 
 // Normal operator context, not a product command or hidden binding. A file
 // contract does not configure a generic child's model/effort by itself.
+export function invocationContext(operation, workflowSkill, policy, authorThread) {
+  const role = ['REVIEW_PLAN', 'VALIDATE_SLICE', 'SPEC_READINESS'].includes(operation) ? 'review' : 'author';
+  const prior = role === 'author' && policy.regime === 'author-continuity'
+    && policy.authorContinuityOperations.includes(operation) ? authorThread ?? null : null;
+  const provenance = prior === null ? 'thread/start; no author thread resumed'
+    : `thread/resume; author thread ${prior.threadId}`;
+  return { role, prior, text: `\nYou are executing ${operation} as ${workflowSkill}.\nContext provenance: ${provenance}.\n`
+    + 'The external manager is the caller and invokes the next operation from your returned handoff. Complete this selected operation, including the internal delegation required by its skill, then return its result and public handoff.\n' };
+}
+
 export function nativeRunnerContext(operation, bundle, eventsFile) {
   if (!RUNNER_OPERATIONS.has(operation)) return '';
   const runner = bundle?.runner;
@@ -542,6 +552,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       const template = await fs.readFile(templatePath, 'utf8');
       const workflowSkill = operation.startsWith('SPEC_')
         ? 'stnl-spec-lifecycle-manager' : product.workflowSkillForOperation(operation);
+      const { role, prior, text: invocation } = invocationContext(operation, workflowSkill, policy, state.authorThread);
       const operationId = `${caseId}-${String(sequence).padStart(2, '0')}-${operation}`;
       const prompt = `$${workflowSkill}\n` + renderLauncher(template, { SPEC_PATH: specPath, REQUIREMENTS_SOURCE: requirementsPath,
         SLICE: slice === null ? '' : specInput(slice), READINESS_SCOPE: 'GLOBAL', READINESS_FOCUS: 'not-applicable',
@@ -550,7 +561,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         REPLAN_REASON: 'Follow the exact current public requirements and handoff.' })
         + (operation === 'REVIEW_PLAN' ? `\nCANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}\n` : '')
         + (operation === 'VALIDATE_SLICE' ? '\nSolicito validação integral terminal do estado atual quando admissível pelo contrato normal; se não for admissível, reporte o bloqueio. Não certifique COMPLETE com julgamento apenas local.\n' : '')
-        + '\nThe manager is the caller for this invocation. Complete the selected operation, including the internal delegation required by its skill, then return control with its result and public handoff. The manager invokes the next operation from that handoff.\n'
+        + invocation
         + `\nProject working directory: ${workspace}\nOriginal requirements input: ${requirementsPath}\n`
         + nativeRunnerContext(operation, provider.bundle, path.join(caseRoot, `${operationId}.events.jsonl`));
       const promptFile = path.join(prompts, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.md`);
@@ -565,9 +576,6 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         operation, runnerRequired: runnerSlots > 0, runnerSlots, limit: turnLimit });
       const reserved = [...(pending?.reserved ?? admission.runners)], startedChildren = new Map(pending?.startedChildren ?? []);
       let mainNumber = pending?.mainNumber ?? null, turn = null;
-      const role = ['REVIEW_PLAN', 'VALIDATE_SLICE', 'SPEC_READINESS'].includes(operation) ? 'review' : 'author';
-      const prior = role === 'author' && policy.regime === 'author-continuity'
-        && policy.authorContinuityOperations.includes(operation) ? state.authorThread : null;
       const startedAt = new Date().toISOString(), startedMs = Date.now();
       try {
         if (pending === null) mainNumber = await startReservedTurn(runRoot, admission.main, turnLimit);
