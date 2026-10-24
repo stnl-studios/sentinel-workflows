@@ -144,7 +144,7 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
     && Number.isSafeInteger(maxLineBytes) && maxLineBytes > 0, 'invalid RPC bounds');
   const pending = new Map();
   const methods = new Set(['initialize', 'skills/extraRoots/set', 'skills/list', 'thread/start',
-    'thread/resume', 'turn/start', 'thread/read', 'thread/turns/list', 'thread/items/list']);
+    'thread/resume', 'turn/start', 'thread/read', 'thread/turns/list', 'thread/items/list', 'experimentalFeature/list']);
   let nextId = 1, buffer = '', closed = null;
   const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
   function stop(error) {
@@ -286,6 +286,20 @@ export async function initializeAppServer(rpc) {
   return result;
 }
 
+// Typed feature metadata only. Never request the full config/layers, auth or
+// experimentalFeature/enablement/set; missing flags remain unknown, not false.
+export async function readAppServerAgentFeatures(rpc, threadId) {
+  requireThat(id(threadId), 'feature read requires the exact loaded thread');
+  const features = await pages(rpc, 'experimentalFeature/list', { threadId });
+  const selected = {};
+  for (const name of ['multi_agent', 'multi_agent_v2']) {
+    const found = features.filter(feature => feature?.name === name);
+    requireThat(found.length <= 1 && found.every(feature => typeof feature.enabled === 'boolean'), 'ambiguous agent feature metadata');
+    selected[name] = found[0]?.enabled ?? null;
+  }
+  return selected;
+}
+
 export async function selectAppServerBundle(rpc, { bundle, cwd, skillName }) {
   await assertAppServerBundle(bundle); await physical(cwd, true);
   requireThat(/^stnl-[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(skillName), 'invalid skill name');
@@ -350,16 +364,18 @@ export async function startAppServerTurn(rpc, { bundle, cwd, skillName, prompt, 
     && started.thread.cwd === cwd && started.thread.historyMode === 'paginated'
     && (threadId === null || started.thread.id === threadId), 'thread creation identity/version/history mode differs');
   await assertAppServerBundle(bundle);
+  const agentFeatures = await readAppServerAgentFeatures(rpc, started.thread.id);
   const response = await rpc.request('turn/start', { threadId: started.thread.id, effort,
     input: [selection.input, { type: 'text', text: prompt }], ...(outputSchema === undefined ? {} : { outputSchema }) });
   requireThat(id(response?.turn?.id), 'turn dispatch response incomplete; effect uncertain');
-  return { threadId: started.thread.id, turnId: response.turn.id };
+  return { threadId: started.thread.id, turnId: response.turn.id, agentFeatures };
 }
 
 async function pages(rpc, method, params) {
   const items = [], seen = new Set(), itemIds = new Set(); let cursor = null;
   for (let page = 0; page < 32; page++) {
-    const result = await rpc.request(method, { ...params, cursor, limit: 100, sortDirection: 'asc' });
+    const result = await rpc.request(method, { ...params, cursor, limit: 100,
+      ...(method === 'experimentalFeature/list' ? {} : { sortDirection: 'asc' }) });
     requireThat(Array.isArray(result?.data), 'public history page absent');
     for (const entry of result.data) {
       if (method !== 'thread/items/list') { items.push(entry); continue; }

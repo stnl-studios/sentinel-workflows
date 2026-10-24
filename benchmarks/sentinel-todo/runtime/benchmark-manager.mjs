@@ -238,15 +238,17 @@ export function renderLauncher(template, values) {
 
 // Normal operator context, not a product command or hidden binding. A file
 // contract does not configure a generic child's model/effort by itself.
-export function nativeRunnerContext(operation, bundle) {
+export function nativeRunnerContext(operation, bundle, eventsFile) {
   if (!RUNNER_OPERATIONS.has(operation)) return '';
   const runner = bundle?.runner;
   if (!runner || !path.isAbsolute(runner.path) || !/^sha256:[0-9a-f]{64}$/u.test(runner.sha256)
     || runner.model !== 'gpt-6-luna' || runner.effort !== 'medium') fail('missing explicit generic runner profile');
+  if (!path.isAbsolute(eventsFile ?? '') || path.resolve(eventsFile) !== eventsFile) fail('missing official capture event path');
   return `\nIndependent checks use a fresh generic native agent (fork_turns=none), not a registered runner type. Select model=${runner.model} and reasoning_effort=${runner.effort} explicitly when spawning; if unavailable, block before spawn.\n`
     + `Load the complete contract at ${runner.path} (SHA-256 ${runner.sha256}) before scope actions. Use an ordinary full-file cat read with sufficient output to avoid truncation; preserve the complete official command output. Reading the file supplies task instructions, not a registered agent role.\n`
+    + `Transport captures the complete public child response without interpreting it. After the child completes, wait within the existing operation deadline for its complete native.child.completed record in ${eventsFile}; match binding.agentPath to that child and pass toolResultFile unchanged to the official capture-native command. Do not author an envelope or copy/strip mailbox text. A missing record is not permission to synthesize evidence or start another turn. Bind before verification and perform capture/publication yourself through the existing controller.\n`
     + (['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation)
-      ? 'The selected operation includes the approved implementation/corrections and preparation of reusable tests. The controller nextAction names its next command; it does not replace that work. Complete the approved work and test preparation before delegating read-only verification. The child must not implement.\n' : 'The independent child judges the complete canonical criteria; tests alone are not the authority.\n');
+      ? 'The selected operation includes the approved implementation/corrections and preparation of reusable tests. The controller nextAction names its next command; it does not replace that work. Complete the approved work and test preparation before delegating read-only verification. The child must not implement.\n' : 'The independent child judges the complete canonical criteria; tests alone are not the authority. For the explicitly requested integral judgment reserve-dispatch --terminal before spawn. A concluded formal refusal may use only the single successor admitted by the public normalization after publication/readback/cleanup; preserve the first refusal. NEEDS_FIX follows its separate findings handoff; BLOCKED or uncertainty grants no successor.\n');
 }
 
 export function assertNativeLauncher(prompt, context, numericSlice) {
@@ -540,6 +542,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       const template = await fs.readFile(templatePath, 'utf8');
       const workflowSkill = operation.startsWith('SPEC_')
         ? 'stnl-spec-lifecycle-manager' : product.workflowSkillForOperation(operation);
+      const operationId = `${caseId}-${String(sequence).padStart(2, '0')}-${operation}`;
       const prompt = `$${workflowSkill}\n` + renderLauncher(template, { SPEC_PATH: specPath, REQUIREMENTS_SOURCE: requirementsPath,
         SLICE: slice === null ? '' : specInput(slice), READINESS_SCOPE: 'GLOBAL', READINESS_FOCUS: 'not-applicable',
         NEW_INFORMATION: operation === 'SPEC_PROMOTE' ? `GLOBAL READY ${readiness.snapshotSha256}; promote status only.`
@@ -548,7 +551,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         + (operation === 'REVIEW_PLAN' ? `\nCANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}\n` : '')
         + (operation === 'VALIDATE_SLICE' ? '\nSolicito validação integral terminal do estado atual quando admissível pelo contrato normal; se não for admissível, reporte o bloqueio. Não certifique COMPLETE com julgamento apenas local.\n' : '')
         + `\nProject working directory: ${workspace}\nRequirements source: ${requirementsPath}\n`
-        + nativeRunnerContext(operation, provider.bundle);
+        + nativeRunnerContext(operation, provider.bundle, path.join(caseRoot, `${operationId}.events.jsonl`));
       const promptFile = path.join(prompts, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.md`);
       if (RUNNER_OPERATIONS.has(operation)) assertNativeLauncher(prompt, { operation, specPath }, specInput(slice));
       if (pending === null) await fs.writeFile(promptFile, prompt, { flag: 'wx' });
@@ -556,7 +559,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       // Reserve the legal maximum before the principal starts. Native events
       // cannot retroactively prevent a spawn; unexpected children block rather
       // than being called free. No promise of a financial/HTTP limit is made.
-      const runnerSlots = ['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation) ? 3 : operation === 'VALIDATE_SLICE' ? 1 : 0;
+      const runnerSlots = ['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation) ? 3 : operation === 'VALIDATE_SLICE' ? 2 : 0;
       const admission = pending?.admission ?? await admitOperation({ runRoot, runId: path.basename(runRoot), caseId,
         operation, runnerRequired: runnerSlots > 0, runnerSlots, limit: turnLimit });
       const reserved = [...(pending?.reserved ?? admission.runners)], startedChildren = new Map(pending?.startedChildren ?? []);
@@ -564,7 +567,6 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       const role = ['REVIEW_PLAN', 'VALIDATE_SLICE', 'SPEC_READINESS'].includes(operation) ? 'review' : 'author';
       const prior = role === 'author' && policy.regime === 'author-continuity'
         && policy.authorContinuityOperations.includes(operation) ? state.authorThread : null;
-      const operationId = `${caseId}-${String(sequence).padStart(2, '0')}-${operation}`;
       const startedAt = new Date().toISOString(), startedMs = Date.now();
       try {
         if (pending === null) mainNumber = await startReservedTurn(runRoot, admission.main, turnLimit);
@@ -626,7 +628,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           if (product.readinessSnapshot(specPath).snapshotSha256 !== beforeReadiness.snapshotSha256) fail('READINESS mutated its snapshot');
           readiness = product.validateReadinessResult(specPath, JSON.parse(turn.response), { scope: 'GLOBAL' });
         }
-        if (RUNNER_OPERATIONS.has(operation)) captureProof = assertNativeCaptures(await product.captureCurrentExecution(specPath), turn.captures);
+        if (RUNNER_OPERATIONS.has(operation)) captureProof = assertNativeCaptures(await product.captureCurrentExecution(specPath), turn.captures, product);
         else if (turn.captures.length !== 0) fail('unexpected child outside an admitted runner operation');
         if (operation === 'SPEC_CLOSE') {
           closeEvidence = await finishCloseEvidence({ product, pre: preClose, commandResults: turn.commandResults });

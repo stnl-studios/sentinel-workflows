@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { appServerEnvironment, appServerRpc, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   selectAppServerBundle, startAppServerTurn, bindAppServerChild, readAppServerChild,
-  writeNativeToolResult, captureAppServerChild, persistAppServerStderrSample } from '../agents/codex/runtime/app-server-transport.mjs';
+  writeNativeToolResult, captureAppServerChild, persistAppServerStderrSample, readAppServerAgentFeatures } from '../agents/codex/runtime/app-server-transport.mjs';
 import { createNativeProvider } from '../agents/codex/runtime/native-provider.mjs';
 import { reservedOperation } from './fixtures/current-native-operation.mjs';
 import { bindNative, verifyNative, captureNative, resume } from
@@ -74,6 +74,7 @@ function server({ bundle, cwd, response = '  resultado íntegro\r\n𝛑\n', muta
       calls.push({ method, params: structuredClone(params) });
       if (method === 'initialize') return { userAgent: 'codex-cli/0.163.0' };
       if (method === 'skills/extraRoots/set') return {};
+      if (method === 'experimentalFeature/list') return {data:[{name:'multi_agent',enabled:true},{name:'multi_agent_v2',enabled:true}],nextCursor:null};
       if (method === 'skills/list') return structuredClone(state.listing);
       if (method === 'thread/start') return { thread: { id: parent, cwd, cliVersion: '0.163.0', historyMode: 'paginated' } };
       if (method === 'turn/start') return { turn: { id: 'parent-turn' } };
@@ -172,12 +173,25 @@ test('S2 explicit fresh turn settings do not copy auth or disable collaboration'
   const result = await startAppServerTurn(s.rpc, { bundle: f.bundle, cwd: f.root,
     skillName: 'stnl-slice-executor', prompt: 'normal payload', model: 'gpt-6.1-sol', effort: 'high',
     approvalPolicy: 'never', sandbox: 'workspace-write' });
-  assert.deepEqual(result, { threadId: parent, turnId: 'parent-turn' });
+  assert.deepEqual(result, { threadId: parent, turnId: 'parent-turn', agentFeatures: {multi_agent:true,multi_agent_v2:true} });
   const start = s.calls.find(call => call.method === 'thread/start');
   assert.equal(start.params.config['features.multi_agent'], undefined);
   assert.equal(start.params.config['agents.stnl_validation_runner.config_file'], undefined);
   assert.deepEqual(s.calls.at(-1).params.input, [{ type: 'skill', name: 'stnl-slice-executor',
     path: path.join(f.bundle.skillsRoot, 'stnl-slice-executor/SKILL.md') }, { type: 'text', text: 'normal payload' }]);
+});
+
+for(const [name,data,expected] of [
+  ['enabled',[{name:'multi_agent',enabled:true},{name:'multi_agent_v2',enabled:true}],{multi_agent:true,multi_agent_v2:true}],
+  ['disabled',[{name:'multi_agent',enabled:false},{name:'multi_agent_v2',enabled:false}],{multi_agent:false,multi_agent_v2:false}],
+  ['absent',[],{multi_agent:null,multi_agent_v2:null}],
+  ['duplicate',[{name:'multi_agent',enabled:true},{name:'multi_agent',enabled:true}],null],
+  ['untyped',[{name:'multi_agent',enabled:'true'}],null],
+])test(`agent feature metadata stays readonly and explicit for ${name}`,async()=>{
+  const calls=[],rpc={request:async(method,params)=>{calls.push({method,params});return {data,nextCursor:null};}};
+  if(expected)assert.deepEqual(await readAppServerAgentFeatures(rpc,parent),expected);
+  else await assert.rejects(readAppServerAgentFeatures(rpc,parent),blocked);
+  assert.deepEqual(calls,[{method:'experimentalFeature/list',params:{threadId:parent,cursor:null,limit:100}}]);
 });
 
 test('S2 unsupported context/policy is rejected before configuration or turn effects', async t => {
@@ -946,6 +960,101 @@ test('S2 offline public child envelope crosses normal capture-native; persistenc
   assert.ok(observation.equals(await fs.readFile(measured.observationFile)));
   assert.ok(newObserver.calls.every(call => /^thread\/(?:read|items\/list|turns\/list)$/u.test(call.method)));
   assert.ok(restoredBeforeCapture.calls.every(call => /^thread\/(?:read|items\/list|turns\/list)$/u.test(call.method)));
+});
+
+for(const terminalStatus of ['completed','interrupted'])test(`provider retains literal ready envelope before principal ${terminalStatus}; suffix remains untouched`, async t => {
+  const f=await fixture(t),response='{"format":"invalid-formal","result":{}}\nCanonical task identity: `/root/check-one`';
+  const s=server({bundle:f.bundle,cwd:f.root,provider:true,response});
+  s.state.parentItems.push({...s.state.parentItems[0],id:'child-done',kind:'completed'});
+  const request=s.rpc.request.bind(s.rpc);let parentDone=false,ready=0;
+  s.rpc.request=async(method,params)=>{const value=await request(method,params);
+    if(method==='thread/turns/list'&&params.threadId===parent)value.data[0].status=parentDone?terminalStatus:'inProgress';return value;};
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc,pollMs:1});
+  const result=await p.runTurn({prompt:'Ordinary operation',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'early-child',role:'review',onChildCompleted:async({capture})=>{
+      assert.equal(parentDone,false);ready++;
+      const lines=(await fs.readFile(path.join(f.root,'early-child.events.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+      const event=lines.find(item=>item.type==='native.child.completed');assert.equal(event.toolResultFile,capture.file);
+      const envelope=JSON.parse(await fs.readFile(event.toolResultFile,'utf8'));
+      assert.equal(envelope.finalResponse,response);assert.equal(event.finalResponseSha256,sha(Buffer.from(response)));
+      parentDone=true;
+    }});
+  assert.equal(result.completed,terminalStatus==='completed');assert.equal(ready,1);assert.equal(result.captures.length,1);
+  if(terminalStatus==='interrupted')assert.equal(result.errorCode,'NATIVE_TRANSPORT_UNPROVEN');
+  assert.equal(result.captures[0].toolResult.finalResponse,response);
+  assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+  assert.equal(s.calls.some(c=>['turn/steer','thread/resume'].includes(c.method)),false);
+});
+
+test('provider does not invent readiness without completed activity or publish outside its operation',async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  const request=s.rpc.request.bind(s.rpc);
+  s.rpc.request=async(method,params)=>{const value=await request(method,params);
+    if(method==='thread/turns/list'&&params.threadId===parent)value.data[0].status='inProgress';return value;};
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc,pollMs:1});
+  const input={prompt:'Ordinary operation',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',role:'review'};
+  const before=await fs.readdir(f.root);
+  await assert.rejects(p.runTurn({...input,operationId:'../foreign-operation'}),blocked);
+  assert.deepEqual(await fs.readdir(f.root),before);
+  const result=await p.runTurn({...input,operationId:'no-ready',timeoutMs:25});
+  assert.equal(result.completed,false);assert.equal(result.captures.length,0);
+  const events=(await fs.readFile(result.eventsPath,'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.some(e=>e.type==='native.child.completed'),false);
+  assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+});
+
+for(const invalid of ['duplicate-completion','foreign-completion','truncated-public-copy','aliased-file','divergent-file',
+  'changed-after-ready','file-and-source-changed','removed-and-source-changed','removed-after-ready','aliased-after-ready'])
+test(`provider does not substitute or announce invalid early capture: ${invalid}`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  const completed={...s.state.parentItems[0],id:'child-done',kind:'completed'};
+  s.state.parentItems.push(completed);
+  if(invalid==='duplicate-completion')s.state.parentItems.push({...completed,id:'duplicate'});
+  if(invalid==='foreign-completion')completed.agentThreadId='foreign';
+  if(invalid==='truncated-public-copy')s.state.items.at(-1).text=s.state.items.at(-1).text.slice(0,-1);
+  const file=path.join(f.root,`early-negative.child-${sha(identity.agentPath).slice(7)}.json`);
+  const original=Buffer.from('preserved foreign bytes');
+  if(invalid==='aliased-file'){await fs.writeFile(path.join(f.root,'original'),original);await fs.symlink(path.join(f.root,'original'),file);}
+  if(invalid==='divergent-file')await fs.writeFile(file,original);
+  const afterReady=invalid.endsWith('after-ready')||invalid.endsWith('source-changed');
+  const request=s.rpc.request.bind(s.rpc);let parentDone=!afterReady;let ready=0;
+  s.rpc.request=async(method,params)=>{const value=await request(method,params);
+    if(method==='thread/turns/list'&&params.threadId===parent)value.data[0].status=parentDone?'completed':'inProgress';return value;};
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc,pollMs:1});
+  const result=await p.runTurn({prompt:'Ordinary operation',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'early-negative',role:'review',onChildCompleted:async()=>{ready++;parentDone=true;
+      if(['changed-after-ready','file-and-source-changed','removed-and-source-changed'].includes(invalid)){
+        s.state.items.at(-1).text+='changed';s.state.turns[0].items.at(-1).text+='changed';}
+      if(invalid==='file-and-source-changed')await fs.writeFile(file,JSON.stringify({agentId:identity.agentPath,status:'completed',finalResponse:s.state.items.at(-1).text})+'\n');
+      if(['removed-after-ready','removed-and-source-changed'].includes(invalid))await fs.unlink(file);
+      if(invalid==='aliased-after-ready'){await fs.rename(file,path.join(f.root,'alias-target'));await fs.symlink(path.join(f.root,'alias-target'),file);}
+    }});
+  assert.equal(result.completed,false);assert.ok(['NATIVE_TRANSPORT_UNPROVEN','ENOENT'].includes(result.errorCode));
+  assert.equal(ready,afterReady?1:0);
+  if(afterReady)assert.equal(result.captures[0].toolResult.finalResponse,'  resultado íntegro\r\n𝛑\n');
+  if(invalid==='changed-after-ready')assert.equal(JSON.parse(await fs.readFile(file)).finalResponse,'  resultado íntegro\r\n𝛑\n');
+  if(['removed-after-ready','removed-and-source-changed'].includes(invalid))await assert.rejects(fs.lstat(file),{code:'ENOENT'});
+  if(invalid==='aliased-file')assert.deepEqual(await fs.readFile(path.join(f.root,'original')),original);
+  if(invalid==='divergent-file')assert.deepEqual(await fs.readFile(file),original);
+  assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+});
+
+for(const fault of ['absent','both-drift','duplicate-ready','orphan-ready'])test(`restored observation cannot replace its first envelope: ${fault}`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc,pollMs:1});
+  const input={prompt:'Ordinary input',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',operationId:'persisted-first',role:'review'};
+  const first=await p.runTurn(input);assert.equal(first.completed,true);
+  const file=first.captures[0].file,bytes=await fs.readFile(file),events=await fs.readFile(first.eventsPath,'utf8');
+  if(fault==='orphan-ready')s.state.parentItems=s.state.parentItems.filter(item=>item.type!=='subAgentActivity');
+  else if(fault==='duplicate-ready')await fs.appendFile(first.eventsPath,events.split('\n').find(line=>line.includes('native.child.completed'))+'\n');
+  else{s.state.items.at(-1).text+='changed';s.state.turns[0].items.at(-1).text+='changed';
+    if(fault==='absent')await fs.unlink(file);
+    else await fs.writeFile(file,JSON.stringify({agentId:identity.agentPath,status:'completed',finalResponse:s.state.items.at(-1).text})+'\n');}
+  const next=await p.runTurn({...input,observation:{threadId:parent,turnId:'parent-turn'}});
+  assert.equal(next.completed,false);
+  if(fault==='absent')await assert.rejects(fs.lstat(file),{code:'ENOENT'});
+  if(['duplicate-ready','orphan-ready'].includes(fault))assert.deepEqual(await fs.readFile(file),bytes);
+  assert.equal(s.calls.filter(call=>call.method==='turn/start').length,1);
 });
 
 test('normal provider inherits client permissions and scoped observation resumes without another turn', async t => {

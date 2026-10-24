@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { connectAppServer, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
-  startAppServerTurn, readAppServerTurn, bindAppServerChild, captureAppServerChild,
+  startAppServerTurn, readAppServerTurn, bindAppServerChild, readAppServerChild, writeNativeToolResult,
   deniedShellTemporaryFile, persistAppServerStderrSample } from './app-server-transport.mjs';
 
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -43,12 +43,57 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
       priorAuthorThread = null, signal, timeoutMs = 900_000, onChildStarted, onChildCompleted,
       onDispatched, onUnadmittedChildren, observation = null }) {
       await assertAppServerBundle(bundle);
-      const events = [], children = new Map();
+      if (typeof operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(operationId)) throw blocked('invalid operation evidence identity');
+      const events = [], children = new Map(), captures = new Map();
       const eventsFile = path.join(evidenceRoot, `${operationId}.events.jsonl`);
       if (observation === null) await fs.writeFile(eventsFile, '', { flag: 'wx' });
       else await fs.access(eventsFile);
+      const previousReady = observation === null ? [] : (await fs.readFile(eventsFile, 'utf8'))
+        .split('\n').filter(Boolean).map(JSON.parse).filter(event => event.type === 'native.child.completed');
+      const notified = new Set();
       const record = async event => {
         events.push(event); await fs.appendFile(eventsFile, `${JSON.stringify(event)}\n`);
+      };
+      const collect = async binding => {
+        const toolResultFile = path.join(evidenceRoot, `${operationId}.child-${sha(binding.agentPath).slice(7)}.json`);
+        const observed = await readAppServerChild(rpc, { binding, bundle, cwd: workspace });
+        let first = captures.get(binding.agentPath);
+        if (!first) {
+          const prior = previousReady.filter(event => event.binding?.agentPath === binding.agentPath);
+          if (prior.length > 1) throw blocked('duplicate persisted child readiness');
+          if (prior.length) {
+            if (prior[0].toolResultFile !== toolResultFile
+              || Object.keys(binding).some(key => prior[0].binding[key] !== binding[key])) throw blocked('persisted child readiness binding differs');
+            const saved = JSON.parse(await fs.readFile(toolResultFile, 'utf8'));
+            if (saved.agentId !== binding.agentPath || saved.status !== 'completed' || typeof saved.finalResponse !== 'string'
+              || sha(saved.finalResponse) !== prior[0].finalResponseSha256) throw blocked('persisted first child envelope differs');
+            first = { binding, file: toolResultFile, finalResponseSha256: prior[0].finalResponseSha256,
+              toolResult: { agentId: binding.agentPath, status: 'completed', finalResponse: saved.finalResponse } };
+            captures.set(binding.agentPath, first);
+          }
+        }
+        const toolResult = first?.toolResult ?? observed;
+        const bytes = Buffer.from(`${JSON.stringify(toolResult)}\n`);
+        if (JSON.stringify(observed) !== JSON.stringify(toolResult)) throw blocked('public child differs from first capture');
+        // Reobservation never recreates a missing first file. File and public
+        // source agreeing with each other is insufficient if both drifted.
+        const capture = first ?? await writeNativeToolResult(toolResultFile, toolResult);
+        const metadata = await fs.lstat(toolResultFile);
+        if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1
+          || await fs.realpath(toolResultFile) !== toolResultFile
+          || !bytes.equals(await fs.readFile(toolResultFile))) throw blocked('saved first child envelope absent/aliased/divergent');
+        if (first) {
+          if (!notified.has(binding.agentPath)) { await onChildCompleted?.({ binding, toolResult, capture: first }); notified.add(binding.agentPath); }
+          return;
+        }
+        captures.set(binding.agentPath, { binding, ...capture, toolResult });
+        // A complete event is the ready barrier, after the exclusive file write.
+        // This supplies transport bytes only; the principal still owns bind,
+        // capture-native, publication and any legal normalization.
+        await record({ type: 'native.child.completed', binding, toolResultFile,
+          finalResponseSha256: capture.finalResponseSha256 });
+        await onChildCompleted?.({ binding, toolResult, capture });
+        notified.add(binding.agentPath);
       };
       let dispatch = null, dispatchAttempted = false, historyTimer = null;
       try {
@@ -109,19 +154,23 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               await record({ type: 'native.child.started', binding });
             }
           }
+          for (const item of observed.items) if (item.type === 'subAgentActivity' && item.kind === 'completed') {
+            const binding = children.get(item.agentPath);
+            if (!binding || binding.agentThreadId !== item.agentThreadId) throw blocked('unmatched completed child identity');
+            if (observed.items.filter(value => value.type === 'subAgentActivity' && value.kind === 'completed'
+              && value.agentPath === item.agentPath).length !== 1) throw blocked('duplicate completed child identity');
+            if (!captures.has(item.agentPath)) await collect(binding);
+          }
           if (observed.turn.status !== 'inProgress') break;
           await wait(pollMs, signal);
         }
         if (observed.turn.status !== 'completed' || observed.turn.error != null) throw blocked('parent turn failed/interrupted');
-        const captures = [];
-        for (const binding of children.values()) {
-          const toolResultFile = path.join(evidenceRoot, `${operationId}.child-${sha(binding.agentPath).slice(7)}.json`);
-          const capture = await captureAppServerChild(rpc, { binding, bundle, cwd: workspace, toolResultFile });
-          const toolResult = JSON.parse(await fs.readFile(toolResultFile, 'utf8'));
-          captures.push({ binding, ...capture, toolResult });
-          await onChildCompleted?.({ binding, toolResult, capture });
-          await record({ type: 'native.child.completed', binding, finalResponseSha256: capture.finalResponseSha256 });
-        }
+        // Also reobserve already captured children after the principal ends.
+        // A changed/extra turn or modified envelope cannot replace the first.
+        for (const binding of children.values()) await collect(binding);
+        if (new Set(previousReady.map(event => event.binding?.agentPath)).size !== previousReady.length
+          || previousReady.some(event => !children.has(event.binding?.agentPath)
+            || !captures.has(event.binding?.agentPath))) throw blocked('persisted child readiness is orphaned or duplicated');
         const messages = observed.items.filter(item => item.type === 'agentMessage');
         const answer = messages.at(-1);
         if (!answer || ![null, undefined, 'final_answer'].includes(answer.phase)
@@ -136,7 +185,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         await assertAppServerBundle(bundle);
         await record({ type: 'native.turn.completed', ...dispatch });
         return { ...dispatch, completed: true, turnStarted: true, response: answer.text,
-          commandResults, captures, eventsPath: eventsFile, usage: null, toolCalls: null,
+          commandResults, captures: [...captures.values()], eventsPath: eventsFile, usage: null, toolCalls: null,
           requestedModel: model, requestedEffort: effort, reportedModel: null,
           authorThread: role === 'author' ? { threadId: dispatch.threadId, cwd: workspace,
             bundleSha256: sha(Buffer.from(JSON.stringify(bundle))), role: 'author' } : null };
@@ -148,7 +197,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           message: error.message, dispatch, dispatchAttempted, stderrSample });
         return { ...dispatch, threadId: dispatch?.threadId ?? null, completed: false,
           turnStarted: dispatchAttempted ? null : false, response: null, usage: null, toolCalls: null,
-          captures: [], commandResults: [], eventsPath: eventsFile, error: error.message,
+          captures: [...captures.values()], commandResults: [], eventsPath: eventsFile, error: error.message,
           errorCode: error.code ?? 'NATIVE_TRANSPORT_UNPROVEN', requestedModel: model, requestedEffort: effort,
           observation: dispatch, stderrSample };
       } finally { clearTimeout(historyTimer); }

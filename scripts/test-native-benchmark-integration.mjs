@@ -67,7 +67,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification']]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','formal-successor'],['fresh','formal-exhausted']]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   t.after(async () => { await finishOfflineFixture(fixture); });
   const configurationPath = path.join(fixture.root, 'benchmarks/sentinel-todo/benchmark.json');
@@ -126,6 +126,24 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     assert.ok((await fs.readFile(path.join(state.workspace,'src/cli.mjs'),'utf8')).includes('args.length === 0'));
     return;
   }
+  if(fault==='formal-exhausted'){
+    assert.equal(result.status,'BLOCKED');
+    assert.equal(backend.operations.some(item=>item.operation==='SPEC_CLOSE'),false);
+    const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json')));
+    const formal=JSON.parse(await fs.readFile(state.operations.at(-1).evidencePath));
+    assert.equal(formal.captureProof.matched,2);assert.equal(formal.captureProof.rejectedResponses.length,2);
+    const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
+    assert.equal(ledger.total,8);assert.equal(ledger.reservations.length,0);
+    return;
+  }
+  if(fault==='formal-successor'){
+    const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json')));
+    const formal=JSON.parse(await fs.readFile(state.operations.find(o=>o.operation==='VALIDATE_SLICE').evidencePath));
+    assert.equal(formal.captureProof.matched,2);assert.equal(formal.captureProof.rejectedResponses.length,1);
+    assert.equal(formal.turn.captures[0].toolResult.finalResponse.includes('Canonical task identity:'),true);
+    const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
+    assert.equal(ledger.total,9);assert.equal(ledger.reservations.length,0);
+  }
   assert.equal(result.status, 'PASS', JSON.stringify(result));
   const starts = backend.calls.filter(call => call.method === 'turn/start');
   assert.ok(starts.length > 0);
@@ -137,7 +155,8 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     assert.ok(text[0].text.startsWith(`$${skill[0].name}\n`), 'normal explicit mention agrees with native skill item');
   }
   const extra = fault === 'findings-cycle' ? 2 : 0;
-  assert.equal(result.operations, 6 + extra); assert.equal(result.runnerTurns, 2 + extra); assert.equal(result.mainTurns, 6 + extra);
+  const refusalChild=fault==='formal-successor'?1:0;
+  assert.equal(result.operations, 6 + extra); assert.equal(result.runnerTurns, 2 + extra + refusalChild); assert.equal(result.mainTurns, 6 + extra);
   const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
   for (const operation of state.operations) {
     // The manager persists the exact launcher it sends, including the mention.
@@ -164,7 +183,7 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
   assert.equal(new Set(reviews.map(item => item.threadId)).size, 2 + (extra ? 1 : 0));
   assert.ok(reviews.every(item => !authors.some(author => author.threadId === item.threadId)));
   const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
-  assert.equal(ledger.total, 8 + 2 * extra); assert.equal(ledger.reservations.length, 0);
+  assert.equal(ledger.total, 8 + 2 * extra + refusalChild); assert.equal(ledger.reservations.length, 0);
   assert.ok(ledger.turns.every(turn => turn.state === 'completed'));
   const terminal = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/terminal-evidence.json')));
   assert.equal(terminal.source.inspection.state, 'COMPLETE'); assert.equal(terminal.state, 'SPEC_CLOSED');

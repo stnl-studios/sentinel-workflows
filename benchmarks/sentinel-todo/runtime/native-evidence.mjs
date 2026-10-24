@@ -46,8 +46,9 @@ export async function preparationHandoff(product, specPath, commandResults) {
   return structuredClone(request);
 }
 
-export function assertNativeCaptures(image, captures) {
-  if (!image?.files || captures.length === 0) fail('native captures or official image absent');
+export function assertNativeCaptures(image, captures, { restoreCaptureSources } = {}) {
+  // image must come from the product's public, fully validating capture reader.
+  if (!image?.files || !image.inspection || captures.length === 0) fail('native captures or verified official image absent');
   const activation = JSON.parse(Buffer.from(image.activationBytes));
   const operationAttemptId = activation.lastAttempt?.operationAttemptId;
   if (!operationAttemptId) fail('current invocation publication is absent');
@@ -55,20 +56,42 @@ export function assertNativeCaptures(image, captures) {
   for (const [name, bytes] of image.files) if (name.startsWith('evidence/') && name.endsWith('.json')) {
     const bundle = JSON.parse(Buffer.from(bytes));
     const objects = new Map(bundle.objects?.map(object => [object.id, Buffer.from(object.bytesBase64, 'base64')]) ?? []);
-    for (const record of [...(bundle.implementation ?? []), bundle.validation,
-      ...(bundle.findingsChecks ?? []), ...(bundle.support ?? [])].filter(Boolean)) {
-      if (record.origin?.operationAttemptId !== operationAttemptId || record.sources?.transport !== 'native') continue;
+    const records = [...(bundle.implementation ?? []), bundle.validation,
+      ...(bundle.findingsChecks ?? []), ...(bundle.support ?? [])].filter(Boolean);
+    const current = records.filter(record => record.origin?.operationAttemptId === operationAttemptId);
+    const allowed = new Set(current);
+    for (const record of current) if (record.origin?.operation === 'VALIDATE_SLICE') {
+      if (typeof restoreCaptureSources !== 'function') fail('public product source verifier absent');
+      const source = restoreCaptureSources('current-validation', record, objects);
+      const origin = JSON.parse(Buffer.from(source.origin)), binding = origin.admission?.binding?.normalization;
+      if (!binding) continue;
+      if (binding.operation !== 'VALIDATE_SLICE' || binding.status !== 'settled' || binding.used !== 1
+        || binding.round !== 1 || binding.consumedInvocations !== 1
+        || binding.sourceOperationAttemptId === operationAttemptId) fail('formal normalization is not one bounded predecessor');
+      const predecessors = records.filter(item => item.kind === 'rejection'
+        && item.origin?.operation === 'VALIDATE_SLICE'
+        && item.origin.operationAttemptId === binding.sourceOperationAttemptId);
+      if (predecessors.length !== 1) fail('authenticated formal predecessor absent/ambiguous');
+      allowed.add(predecessors[0]);
+    }
+    for (const record of allowed) {
+      if (record.sources?.transport !== 'native') continue;
       const object = objects.get(record.sources.concludedToolResult);
       if (!object) fail('current operation has no retained concluded tool result');
       const value = JSON.parse(object);
       if (value?.agentId && value.status === 'completed' && typeof value.finalResponse === 'string') official.push({ value, record });
     }
   }
+  if (new Set(captures.map(item => item.binding.agentPath)).size !== captures.length
+    || official.length !== captures.length) fail('native capture count/identity differs from retained invocation lineage');
   for (const capture of captures) {
-    if (!official.some(({ value }) => value.agentId === capture.binding.agentPath
-      && value.finalResponse === capture.toolResult.finalResponse)) fail('official retained capture differs from the public child');
+    if (official.filter(({ value }) => value.agentId === capture.binding.agentPath
+      && value.finalResponse === capture.toolResult.finalResponse).length !== 1) fail('official retained capture differs from the public child');
   }
-  return { matched: captures.length, responseHashes: captures.map(item => item.finalResponseSha256) };
+  return { matched: captures.length, responseHashes: captures.map(item => item.finalResponseSha256),
+    rejectedResponses: official.filter(item => item.record.kind === 'rejection').map(item => ({
+      operationAttemptId: item.record.origin.operationAttemptId,
+      finalResponseSha256: sha(Buffer.from(item.value.finalResponse, 'utf8')) })) };
 }
 
 export async function retainBeforeClose({ product, specPath, workspace, artifacts }) {

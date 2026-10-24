@@ -21,7 +21,7 @@ export async function checkAppServerSchema(directory) {
   const requests = await read('ClientRequest.json');
   const methods = new Set(requests.oneOf.flatMap(value => value.properties?.method?.enum ?? []));
   for (const method of ['initialize', 'skills/extraRoots/set', 'skills/list', 'thread/start',
-    'turn/start', 'thread/read', 'thread/turns/list', 'thread/items/list']) {
+    'turn/start', 'thread/read', 'thread/turns/list', 'thread/items/list', 'experimentalFeature/list']) {
     expect(methods.has(method), `missing stable method ${method}`);
   }
   const roots = await read('v2/SkillsExtraRootsSetParams.json');
@@ -40,6 +40,11 @@ export async function checkAppServerSchema(directory) {
   properties(variant('agentMessage'), ['id', 'text', 'phase'], 'agentMessage');
   properties(variant('commandExecution'), ['command', 'cwd', 'status', 'exitCode', 'aggregatedOutput'], 'commandExecution');
   expect(history.definitions?.SubAgentActivityKind?.enum?.includes('started'), 'started activity kind');
+  expect(history.definitions?.SubAgentActivityKind?.enum?.includes('completed'), 'completed activity kind');
+  properties(await read('v2/ExperimentalFeatureListParams.json'), ['threadId','cursor','limit'], 'experimentalFeature/list');
+  const featureResponse=await read('v2/ExperimentalFeatureListResponse.json');
+  properties(featureResponse,['data','nextCursor'],'experimentalFeature/list response');
+  properties(featureResponse.definitions?.ExperimentalFeature,['name','enabled'],'agent feature metadata');
   properties(await read('v2/ThreadItemsListParams.json'), ['threadId', 'turnId', 'cursor', 'sortDirection'], 'thread/items/list');
   properties(await read('v2/ThreadTurnsListParams.json'), ['threadId', 'itemsView', 'cursor'], 'thread/turns/list');
   for (const kind of ['Items', 'Turns']) {

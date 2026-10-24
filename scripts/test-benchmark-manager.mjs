@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,11 +9,47 @@ import { admitOperation, assertNativeLauncher, budgetSnapshot, decideOutcome, gu
   providerConfigurationError,
   initializeTurnBudget, nextHandoff, recoverableRunnerHandoff, settleTurn, startReservedTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 import * as manager from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
+import { assertNativeCaptures } from '../benchmarks/sentinel-todo/runtime/native-evidence.mjs';
+import { nativeOperationCase } from './fixtures/current-native-operation.mjs';
+import { normalizedFormal } from './fixtures/current-native-normalization.mjs';
+import { captureCurrentExecution } from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
+import { restoreCaptureSources } from '../skills/workflows/stnl-slice-executor/runtime/execution-evidence-proof.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MANAGER = path.join(ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs');
 const RECOVERY_BUDGETS = JSON.parse(await fs.readFile(path.join(ROOT,
   'benchmarks/sentinel-todo/benchmark.json'), 'utf8')).cases.find((item) => item.id === 'A').budgets;
+
+for(const exhausted of [false,true])test(`public normalized formal retains only its authenticated predecessor (${exhausted?'exhausted':'valid'})`,async t=>{
+  const f=await nativeOperationCase(t),carrier={...f,view:{execution:f.image.f.execution}};
+  const captures=[];
+  const beforeCapture=async({tool})=>{const toolResult=JSON.parse(await fs.readFile(tool));captures.push({
+    binding:{agentPath:toolResult.agentId},toolResult,finalResponseSha256:'sha256:'+createHash('sha256').update(toolResult.finalResponse).digest('hex')});};
+  await normalizedFormal(carrier,{invalid:true,beforeCapture});
+  await normalizedFormal(carrier,{successor:true,invalid:exhausted,beforeCapture});
+  const image=await captureCurrentExecution(f.specPath);
+  const proof=assertNativeCaptures(image,captures,{restoreCaptureSources});
+  assert.equal(proof.matched,2);assert.equal(proof.rejectedResponses.length,exhausted?2:1);
+  const selected=image.inspection.deliveries.find(item=>item.deliveryId===f.delivery.deliveryId);
+  assert.equal(selected.formalStatus,exhausted?null:'PASS');
+  if(exhausted){
+    assert.equal(image.inspection.state,'VALIDATION_BLOCKED');
+    await assert.rejects(normalizedFormal(carrier,{successor:true}),error=>error.code==='UNSUPPORTED_FORMAT');
+    assert.deepEqual(Buffer.from((await captureCurrentExecution(f.specPath)).activationBytes),Buffer.from(image.activationBytes));
+  }
+  for(const input of [[captures[1]],[captures[0],captures[0]],
+    [{...captures[0],toolResult:{...captures[0].toolResult,finalResponse:captures[0].toolResult.finalResponse+'changed'}},captures[1]],
+    [{...captures[0],binding:{agentPath:'/root/foreign'}},captures[1]]])
+    assert.throws(()=>assertNativeCaptures(image,input,{restoreCaptureSources}),error=>error.code==='NATIVE_EVIDENCE_UNPROVEN');
+  assert.throws(()=>assertNativeCaptures(image,captures),/public product source verifier absent/u);
+  const entry=[...image.files].find(([name])=>name.startsWith('evidence/')&&name.endsWith('.json'));
+  const bundle=JSON.parse(Buffer.from(entry[1]));
+  const original=Buffer.from(entry[1]),file=path.join(f.image.f.execution,entry[0]);
+  bundle.support.find(record=>record.kind==='rejection').operationAttemptId=randomUUID();
+  await fs.writeFile(file,JSON.stringify(bundle));
+  try{await assert.rejects(captureCurrentExecution(f.specPath),error=>['INVALID_CURRENT_IMAGE','EVIDENCE_STALE','INTEGRITY_MISMATCH'].includes(error.code));}
+  finally{await fs.writeFile(file,original);}
+});
 
 function officialRecoveryInput() {
   const execution = { state: 'DIVERGENCE_BLOCKED', currentFingerprint: 'authority',
@@ -137,16 +173,20 @@ test('independent synthetic Case C transcript detects unmeasured delegation with
 test('normal operator context selects the generic profile and keeps implementation before checks',()=>{
   const bundle={runner:{path:'/frozen/stnl_validation_runner.toml',sha256:`sha256:${'a'.repeat(64)}`,model:'gpt-6-luna',effort:'medium'}};
   for(const operation of ['EXECUTE_SLICE','APPLY_FINDINGS','VALIDATE_SLICE']){
-    const context=manager.nativeRunnerContext(operation,bundle);
+    const context=manager.nativeRunnerContext(operation,bundle,'/run/operation.events.jsonl');
     assert.ok(context.includes(bundle.runner.path)&&context.includes(bundle.runner.sha256));
     assert.ok(context.includes('Select model=gpt-6-luna and reasoning_effort=medium explicitly'));
     assert.ok(context.includes('not a registered runner type'));
     assert.equal(context.includes('before delegating read-only verification'),operation!=='VALIDATE_SLICE');
     assert.equal(context.includes('The child must not implement'),operation!=='VALIDATE_SLICE');
+    assert.ok(context.includes('Do not author an envelope or copy/strip mailbox text'));
+    assert.ok(context.includes('/run/operation.events.jsonl'));
+    assert.equal(context.includes('reserve-dispatch --terminal'),operation==='VALIDATE_SLICE');
   }
   assert.equal(manager.nativeRunnerContext('PLAN',bundle),'');
   assert.throws(()=>manager.nativeRunnerContext('EXECUTE_SLICE',{runner:{...bundle.runner,effort:'high'}}),/missing explicit generic runner profile/u);
   assert.throws(()=>manager.nativeRunnerContext('EXECUTE_SLICE',null),/missing explicit generic runner profile/u);
+  assert.throws(()=>manager.nativeRunnerContext('VALIDATE_SLICE',bundle),/missing official capture event path/u);
 });
 
 test('native launcher disagreement stops before SDK and runner dispatch for every runner operation', () => {
