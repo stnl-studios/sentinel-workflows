@@ -31,7 +31,8 @@ export async function checkAppServerSchema(directory) {
   properties(listing.definitions?.SkillMetadata, ['name', 'path', 'enabled'], 'SkillMetadata');
   properties(listing.definitions?.SkillsListEntry, ['cwd', 'errors', 'skills'], 'SkillsListEntry');
   const history = await read('v2/ThreadReadResponse.json');
-  properties(history.definitions?.Thread, ['id', 'parentThreadId', 'forkedFromId', 'cliVersion', 'cwd', 'agentRole', 'model', 'reasoningEffort'], 'Thread');
+  properties(history.definitions?.Thread, ['id', 'parentThreadId', 'forkedFromId', 'cliVersion', 'cwd', 'agentRole', 'model', 'reasoningEffort', 'historyMode'], 'Thread');
+  expect(history.definitions?.ThreadHistoryMode?.enum?.includes('paginated'), 'paginated history metadata');
   properties(history.definitions?.Turn, ['id', 'status', 'error', 'items', 'itemsView'], 'Turn');
   const variants = history.definitions?.ThreadItem?.oneOf;
   const variant = name => variants?.find(value => value.properties?.type?.enum?.includes(name));

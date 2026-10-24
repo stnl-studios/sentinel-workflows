@@ -80,7 +80,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             throw blocked('initial public history observation deadline exceeded; dispatch remains uncertain');
           }
           try {
-            const reading = readAppServerTurn(rpc, dispatch);
+            const reading = readAppServerTurn(rpc, { ...dispatch, cwd: workspace });
             observed = await (!historyObserved && historyDeadline ? Promise.race([reading, historyDeadline]) : reading);
           } catch (error) {
             if (historyObserved || !historyDeadline || error.initialHistoryUnavailable !== true) throw error;

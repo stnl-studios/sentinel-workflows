@@ -83,7 +83,14 @@ function rpcRejection(method, value, threadId) {
         && (prefix.startsWith('failed to read thread: ')
           || prefix.startsWith('failed to list thread history: ')
           || prefix.startsWith(`failed to load thread history for thread ${threadId.toLowerCase()}: `))));
-  return Object.assign(fail(`App Server rejected ${method}${detail}`), { rpcError: { code, description }, initialHistoryUnavailable });
+  // Local paginated reads also report Unsupported while the metadata index
+  // has no row. This exact operation is only a candidate for contextual
+  // observation below; method absence, other operations and permissions stay
+  // fatal. Never infer this condition from a diagnostic category.
+  const paginatedIndexUnavailable = scoped && code === -32601
+    && rawPrefix === 'list_turns is not supported yet';
+  return Object.assign(fail(`App Server rejected ${method}${detail}`), {
+    rpcError: { code, description }, initialHistoryUnavailable, paginatedIndexUnavailable });
 }
 
 async function physical(file, directory = false) {
@@ -340,7 +347,8 @@ export async function startAppServerTurn(rpc, { bundle, cwd, skillName, prompt, 
   const started = await rpc.request(threadId === null ? 'thread/start' : 'thread/resume', {
     ...(threadId === null ? {} : { threadId }), cwd, model, approvalPolicy, sandbox, config: selection.config });
   requireThat(id(started?.thread?.id) && started.thread.cliVersion === APP_SERVER_VERSION
-    && started.thread.cwd === cwd && (threadId === null || started.thread.id === threadId), 'thread creation identity/version differs');
+    && started.thread.cwd === cwd && started.thread.historyMode === 'paginated'
+    && (threadId === null || started.thread.id === threadId), 'thread creation identity/version/history mode differs');
   await assertAppServerBundle(bundle);
   const response = await rpc.request('turn/start', { threadId: started.thread.id, effort,
     input: [selection.input, { type: 'text', text: prompt }], ...(outputSchema === undefined ? {} : { outputSchema }) });
@@ -392,9 +400,20 @@ export function deniedShellTemporaryFile(item) {
   return [...denials].some((denial) => hasShellTemporaryRedirection(item.command, denial[1]));
 }
 
-export async function readAppServerTurn(rpc, { threadId, turnId }) {
+export async function readAppServerTurn(rpc, { threadId, turnId, cwd }) {
   requireThat(id(threadId) && id(turnId), 'missing scoped turn identity');
-  const turns = await pages(rpc, 'thread/turns/list', { threadId, itemsView: 'full' });
+  let turns;
+  try { turns = await pages(rpc, 'thread/turns/list', { threadId, itemsView: 'full' }); }
+  catch (error) {
+    if (error.paginatedIndexUnavailable !== true) throw error;
+    const { thread } = await rpc.request('thread/read', { threadId, includeTurns: false });
+    requireThat(id(cwd) && thread?.id === threadId && thread.cliVersion === APP_SERVER_VERSION
+      && thread.cwd === cwd && thread.parentThreadId == null
+      && thread.historyMode === 'paginated', 'initial history index metadata differs');
+    // The provider alone may defer this within its existing fresh-dispatch
+    // deadline, before any valid observation. No fallback or new turn.
+    throw Object.assign(error, { initialHistoryUnavailable: true });
+  }
   const selected = turns.filter(turn => turn.id === turnId);
   if (turns.length === 0) throw Object.assign(fail('public history has no turn yet'), { initialHistoryUnavailable: true });
   requireThat(selected.length === 1, 'scoped turn absent/ambiguous in public history');

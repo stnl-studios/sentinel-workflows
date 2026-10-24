@@ -102,7 +102,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         await fs.writeFile(path.join(workspace, 'src/native-filter.test.mjs'), checkSource.replace("assert.equal(code,0);", "let pending='';assert.equal(await runCli(['--store',store,'list','--pending'],{stdout:{write:s=>{pending+=s;}},stderr:{write:()=>{}}}),0);assert.deepEqual(pending.trim().split('\\n').map(JSON.parse).map(x=>x.id),[2]);assert.equal(code,0);"));
       }
       const agentPath = `/root/check-${randomUUID()}`, childId = randomUUID();
-      const child = { id: childId, cwd: workspace, cliVersion: '0.163.0', parentThreadId: thread.id,
+      const child = { id: childId, cwd: workspace, cliVersion: '0.163.0', historyMode: 'paginated', parentThreadId: thread.id,
         forkedFromId: null, agentRole: 'default', model: 'gpt-6-luna', reasoningEffort: 'medium', turns: [] };
       threads.set(childId, child);
       turn.items.push({ id: randomUUID(), type: 'subAgentActivity', kind: 'started', agentPath,
@@ -151,7 +151,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         return { data: [{ cwd: workspace, skills, errors: [] }] };
       }
       if (method === 'thread/start') {
-        const thread = { id: randomUUID(), cwd: workspace, cliVersion: '0.163.0', parentThreadId: null, turns: [] };
+        const thread = { id: randomUUID(), cwd: workspace, cliVersion: '0.163.0', historyMode: 'paginated', parentThreadId: null, turns: [] };
         threads.set(thread.id, thread); return { thread: structuredClone(thread) };
       }
       if (method === 'thread/resume' || method === 'thread/read') return { thread: structuredClone(threads.get(params.threadId)) };

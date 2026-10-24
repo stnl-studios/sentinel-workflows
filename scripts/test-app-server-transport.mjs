@@ -75,13 +75,13 @@ function server({ bundle, cwd, response = '  resultado íntegro\r\n𝛑\n', muta
       if (method === 'initialize') return { userAgent: 'codex-cli/0.163.0' };
       if (method === 'skills/extraRoots/set') return {};
       if (method === 'skills/list') return structuredClone(state.listing);
-      if (method === 'thread/start') return { thread: { id: parent, cwd, cliVersion: '0.163.0' } };
+      if (method === 'thread/start') return { thread: { id: parent, cwd, cliVersion: '0.163.0', historyMode: 'paginated' } };
       if (method === 'turn/start') return { turn: { id: 'parent-turn' } };
       if (method === 'thread/read') {
-        if (provider && params.threadId === parent) return { thread: { id: parent, cwd, cliVersion: '0.163.0', parentThreadId: null } };
+        if (provider && params.threadId === parent) return { thread: { id: parent, cwd, cliVersion: '0.163.0', historyMode: 'paginated', parentThreadId: null } };
         assert.equal(params.threadId, child); return { thread: structuredClone(state.thread) };
       }
-      if (method === 'thread/resume') return { thread: { id: parent, cwd, cliVersion: '0.163.0' } };
+      if (method === 'thread/resume') return { thread: { id: parent, cwd, cliVersion: '0.163.0', historyMode: 'paginated' } };
       if (method === 'thread/turns/list') {
         if (provider && params.threadId === parent) return { data: [{ id: 'parent-turn', status: 'completed', error: null }], nextCursor: null };
         assert.equal(params.threadId, child); return { data: structuredClone(state.turns), nextCursor: null };
@@ -189,6 +189,21 @@ test('S2 unsupported context/policy is rejected before configuration or turn eff
     await assert.rejects(() => startAppServerTurn(s.rpc, { ...args, ...extra }), blocked);
   }
   assert.equal(s.calls.length, 0);
+});
+
+for(const operation of ['thread/start','thread/resume'])for(const mode of ['legacy',null,undefined])test(`S2 ${operation} unsupported history mode ${mode} blocks before model dispatch`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true}),request=s.rpc.request;
+  s.rpc.request=async(method,params)=>{
+    const result=await request(method,params);
+    if(method===operation)result.thread.historyMode=mode;
+    return result;
+  };
+  await assert.rejects(()=>startAppServerTurn(s.rpc,{bundle:f.bundle,cwd:f.root,
+    skillName:'stnl-slice-executor',prompt:'payload',model:'gpt-6.1-sol',effort:'medium',
+    ...(operation==='thread/resume'?{threadId:parent,admittedAuthorThread:{threadId:parent,cwd:f.root,
+      bundleSha256:sha(Buffer.from(JSON.stringify(f.bundle))),role:'author'}}:{}),
+    approvalPolicy:null,sandbox:null}),blocked);
+  assert.equal(s.calls.filter(c=>c.method==='turn/start').length,0);
 });
 
 test('S2 server handshake version drift blocks initialization completion', async () => {
@@ -526,6 +541,7 @@ for (const [name, first] of [
   ['load-enoent', { error: { code: -32603, message: `failed to load thread history for thread ${parent}: No such file or directory (os error 2)` } }],
   ['empty-page', { data: [], nextCursor: null }],
   ['metadata-not-yet-readable', { error: emptyMetadataError() }],
+  ['paginated-index-not-yet-readable', { error: { code: -32601, message: 'list_turns is not supported yet' } }],
 ]) test(`initial public history ${name} is observed on the same dispatch without another turn`, async t => {
   const h = await historyBootstrapFixture(t, n => n === 1 ? first : undefined);
   const result = await h.provider.runTurn(h.args);
@@ -558,6 +574,67 @@ test('initial metadata absence cannot bypass the deadline or permit a resumed tu
   await fs.writeFile(path.join(h.f.root,'history-bootstrap.events.jsonl'),'');
   const before=h.reads();const resumed=await h.provider.runTurn({...h.args,observation:{threadId:parent,turnId:'parent-turn'}});
   assert.equal(resumed.completed,false);assert.equal(h.reads(),before+1);
+  assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
+});
+
+for (const [name, value] of [
+  ['method-absent', {code:-32601,message:'Method not found'}],
+  ['other-operation', {code:-32601,message:'paginated_history is not supported yet'}],
+  ['unknown-wrapper', {code:-32601,message:'wrapper: list_turns is not supported yet'}],
+  ['permission', {code:-32601,message:'list_turns is not supported yet; permission denied'}],
+]) test(`unsupported history ${name} is fatal without metadata fallback`, async t => {
+  const h=await historyBootstrapFixture(t,()=>({error:value}));
+  const result=await h.provider.runTurn(h.args);
+  assert.equal(result.completed,false);assert.equal(h.reads(),1);
+  assert.equal(h.s.calls.filter(c=>c.method==='thread/read').length,0);
+});
+
+for(const [name,patch] of [
+  ['legacy',{historyMode:'legacy'}],['missing-mode',{historyMode:null}],
+  ['foreign-id',{id:child}],['foreign-cwd',{cwd:'/other'}],
+  ['wrong-version',{cliVersion:'0.162.0'}],['child',{parentThreadId:child}],
+]) test(`initial paginated index requires matching public metadata: ${name}`,async t=>{
+  const h=await historyBootstrapFixture(t,()=>({error:{code:-32601,message:'list_turns is not supported yet'}}));
+  const request=h.s.rpc.request;
+  h.s.rpc.request=async(method,params)=>{
+    const result=await request(method,params);
+    if(method==='thread/read')Object.assign(result.thread,patch);
+    return result;
+  };
+  const result=await h.provider.runTurn(h.args);
+  assert.equal(result.completed,false);assert.equal(h.reads(),1);
+});
+
+test('initial paginated index observation keeps the existing deadline and stops at terminal',async t=>{
+  const h=await historyBootstrapFixture(t,n=>n===1
+    ?{error:{code:-32601,message:'list_turns is not supported yet'}}
+    :{data:[{id:'parent-turn',status:'interrupted',error:null}],nextCursor:null});
+  const result=await h.provider.runTurn(h.args);
+  assert.equal(result.completed,false);assert.equal(result.error,'parent turn failed/interrupted');
+  assert.equal(h.reads(),2);assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
+});
+
+test('unsupported paginated index is fatal after a valid observation',async t=>{
+  const h=await historyBootstrapFixture(t,n=>n===1
+    ?{data:[{id:'parent-turn',status:'inProgress',error:null}],nextCursor:null}
+    :{error:{code:-32601,message:'list_turns is not supported yet'}});
+  const result=await h.provider.runTurn(h.args);
+  assert.equal(result.completed,false);assert.equal(h.reads(),2);
+});
+
+test('unsupported paginated index cannot refresh resumed observation',async t=>{
+  const h=await historyBootstrapFixture(t,()=>({error:{code:-32601,message:'list_turns is not supported yet'}}));
+  await fs.writeFile(path.join(h.f.root,'history-bootstrap.events.jsonl'),'');
+  const result=await h.provider.runTurn({...h.args,observation:{threadId:parent,turnId:'parent-turn'}});
+  assert.equal(result.completed,false);assert.equal(h.reads(),1);
+  assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,0);
+});
+
+test('a persistently unavailable paginated index cannot certify completion or extend the deadline',async t=>{
+  const h=await historyBootstrapFixture(t,()=>({error:{code:-32601,message:'list_turns is not supported yet'}}));
+  const before=Date.now(),result=await h.provider.runTurn({...h.args,timeoutMs:25});
+  assert.equal(result.completed,false);assert.equal(result.response,null);
+  assert.deepEqual(result.captures,[]);assert.ok(Date.now()-before<500);
   assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
 });
 
