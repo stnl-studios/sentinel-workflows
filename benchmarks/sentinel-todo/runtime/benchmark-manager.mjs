@@ -550,7 +550,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         REPLAN_REASON: 'Follow the exact current public requirements and handoff.' })
         + (operation === 'REVIEW_PLAN' ? `\nCANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}\n` : '')
         + (operation === 'VALIDATE_SLICE' ? '\nSolicito validação integral terminal do estado atual quando admissível pelo contrato normal; se não for admissível, reporte o bloqueio. Não certifique COMPLETE com julgamento apenas local.\n' : '')
-        + `\nProject working directory: ${workspace}\nRequirements source: ${requirementsPath}\n`
+        + `\nProject working directory: ${workspace}\nOriginal requirements input: ${requirementsPath}\n`
         + nativeRunnerContext(operation, provider.bundle, path.join(caseRoot, `${operationId}.events.jsonl`));
       const promptFile = path.join(prompts, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.md`);
       if (RUNNER_OPERATIONS.has(operation)) assertNativeLauncher(prompt, { operation, specPath }, specInput(slice));

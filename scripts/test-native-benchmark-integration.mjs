@@ -153,6 +153,13 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     assert.equal(skill.length, 1); assert.equal(text.length, 1);
     assert.equal(skill[0].path, path.join(runRoot, 'snapshot/skills/workflows', skill[0].name, 'SKILL.md'));
     assert.ok(text[0].text.startsWith(`$${skill[0].name}\n`), 'normal explicit mention agrees with native skill item');
+    if (['stnl-execution-planner', 'stnl-plan-reviewer'].includes(skill[0].name)) {
+      const originalInput = text[0].text.match(/^Original requirements input: (.+)$/mu)?.[1];
+      assert.equal(originalInput, path.join(runRoot, 'case-a/workspace/requirements.md'),
+        'original context input must be distinct from the canonical Requirements source carrier');
+      assert.doesNotMatch(text[0].text, /^Requirements source: /mu,
+        'launcher must not label the original input as the canonical authority source');
+    }
   }
   const extra = fault === 'findings-cycle' ? 2 : 0;
   const refusalChild=fault==='formal-successor'?1:0;

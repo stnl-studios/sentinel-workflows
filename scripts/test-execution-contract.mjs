@@ -6,6 +6,7 @@ import test from 'node:test';
 import {computeRequirementsAuthority,inspectExecutionState} from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import {parseSemanticExecutionPayload,assertRunnerVerdictConsistency} from '../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs';
 import {captureRunnerResponse} from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
+import {createHash} from 'node:crypto';
 const ROOT=path.resolve(import.meta.dirname,'..');
 async function temporary(t,prefix='stnl-contract-'){const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),prefix)));t.after(()=>fs.rm(root,{recursive:true,force:true}));return root;}
 test("success verdicts reconcile every mechanical exit without suppressing legitimate failures", () => {
@@ -155,6 +156,21 @@ test("SPEC_PATH rejects directory and file traversal through symlink ancestors",
 });
 
 
+
+test('requirements authority differs from raw file SHA while actual requirement drift changes it', async t => {
+  const root = await temporary(t), source = path.join(root, 'requirements.md');
+  const initial = '# Requirements\n\n- AC-001: Preserve the selected observable behavior.\n';
+  await fs.writeFile(source, initial);
+  const first = await computeRequirementsAuthority(source);
+  assert.notEqual(first, createHash('sha256').update(initial).digest('hex'),
+    'raw file integrity and requirements authority are distinct contracts');
+  assert.equal(await computeRequirementsAuthority(source), first, 'unchanged authority is stable');
+  await fs.writeFile(source, initial.replace('selected observable behavior', 'selected observable behavior and ordering'));
+  const changed = await computeRequirementsAuthority(source);
+  assert.notEqual(changed, first, 'real requirement drift must remain detectable');
+  await fs.writeFile(source, initial);
+  assert.equal(await computeRequirementsAuthority(source), first, 'restoring the same input restores its authority');
+});
 
 test("lifecycle shared-only changes stale planning and deterministic lifecycle CLOSE preserves the fingerprint", async (t) => {
   const readySource = path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready");
