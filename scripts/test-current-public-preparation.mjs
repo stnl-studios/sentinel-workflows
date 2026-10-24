@@ -123,13 +123,57 @@ test('B-T14/B-T17 public padded authoring and CLI FAIL retry retain both capture
  const agentId='mechanical-integral-fail-retry';await bindNative(formal.handle,agentId);const measured=await verifyNative(dispatch.originFile);
  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result:{status:'PASS',commands:measured.commands,
    evidence:'Mechanical complete pay check passed after the retained failed round.',findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner writes.'},newFindings:[]});
- const tool=path.join(f.root,'formal-result.json');await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',finalResponse}));
- await captureNative(formal.handle,tool);await publish(formal.handle);
+ // Same basename as the controller's private copy, but a separate caller-owned
+ // directory. Geometry, not the filename, distinguishes input from output.
+ const inputRoot=path.join(f.root,'tmp/native-results');await fs.mkdir(inputRoot);
+ const tool=path.join(inputRoot,'round-1.tool-result.json'),inputBytes=JSON.stringify({agentId,status:'completed',finalResponse});
+ await fs.writeFile(tool,inputBytes,{flag:'wx'});
+ await call(['capture-native','--handle',formalHandle,'--tool-result-file',tool]);
+ assert.equal(await fs.readFile(tool,'utf8'),inputBytes);
+ assert.deepEqual(JSON.parse(await fs.readFile(path.join(path.dirname(dispatch.originFile),'round-1.tool-result.json'),'utf8')),JSON.parse(inputBytes));
+ await call(['publish','--handle',formalHandle]);
  const complete=await inspectCurrentExecution(f.specPath);assert.equal(complete.state,'COMPLETE');assert.equal(complete.deliveries[0].counters.implementationChecks,2);
  const bundle=JSON.parse(await fs.readFile(path.join(path.dirname(f.specPath),'execution/evidence',authority.deliveries[0].deliveryId+'.json')));
  const expected='sha256:'+createHash('sha256').update(failedSources[0].bytes).digest('hex');assert.ok(bundle.objects.some(item=>item.id===expected));
  const closed=await publishCandidate('CLOSE',path.dirname(f.specPath),null);assert.equal(closed.publication,'confirmed');assert.equal(closed.cleanup,'complete');
  assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
+});
+
+test('public capture rejects a caller envelope aliasing the private formal output and preserves the partial proof',async t=>{
+ const f=await fixture(t,{form:'lifecycle',single:true});
+ await publishPreparationCandidate(f);const {authority}=await serializePlanPathClaims(f);
+ await publishPreparationCandidate({...f,reviewDecision:reviewFor(authority)});
+ await run('git',['-C',f.root,'add','.gitignore','docs/spec/feature_spec.md','src/pay.test.mjs']);
+ await run('git',['-C',f.root,'-c','user.name=Mechanical Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture base']);
+ let image=await inspectCurrentExecution(f.specPath);
+ const execution=await begin({specPath:f.specPath,slice:'slice-01',expectedActivationId:image.activationId,operation:'EXECUTE_SLICE'});
+ const prepared=await reserveDispatch(execution.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+ await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+ await bindNative(execution.handle,'mechanical-execute');const checked=await verifyNative(prepared.originFile);
+ const {head,...result}=payload(1,'TESTS_PASS',0);result.commands=checked.commands;
+ const initialInput=path.join(f.root,'execute-envelope.json');await fs.writeFile(initialInput,JSON.stringify({agentId:'mechanical-execute',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+ await captureNative(execution.handle,initialInput);await publish(execution.handle);
+ image=await inspectCurrentExecution(f.specPath);
+ const formal=await begin({specPath:f.specPath,slice:'slice-01',expectedActivationId:image.activationId,operation:'VALIDATE_SLICE'});
+ const handleFile=path.join(f.root,'formal-handle.json');await fs.writeFile(handleFile,JSON.stringify(formal.handle));
+ const cli=path.resolve('skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
+ const call=async args=>JSON.parse((await run(process.execPath,[cli,...args])).stdout);
+ const dispatch=await call(['reserve-dispatch','--handle',handleFile,'--terminal','--response-variant','stnl-current-native-judgment-v1']);
+ await call(['bind-native','--handle',handleFile,'--agent-id','mechanical-formal']);
+ const observed=await call(['verify-native','--origin-file',dispatch.originFile]);
+ const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result:{status:'PASS',commands:observed.commands,
+  evidence:'Mechanical pay proof only.',findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner writes.'},newFindings:[]});
+ const privateRoot=path.dirname(dispatch.originFile),input=path.join(privateRoot,'round-1.tool-result.json');
+ const inputBytes=JSON.stringify({agentId:'mechanical-formal',status:'completed',finalResponse});
+ await fs.writeFile(input,inputBytes,{flag:'wx'});
+ await assert.rejects(call(['capture-native','--handle',handleFile,'--tool-result-file',input]),error=>/EEXIST/u.test(error.stdout));
+ assert.equal(await fs.readFile(input,'utf8'),inputBytes);
+ assert.equal(await fs.readFile(path.join(privateRoot,'round-1.response.json'),'utf8'),finalResponse);
+ const owner=JSON.parse(await fs.readFile(path.join(privateRoot,'owner.json'),'utf8'));
+ assert.equal(owner.runner.status,'running');assert.equal(owner.candidate,null);
+ assert.equal((await call(['resume','--handle',handleFile])).nextAction,'await-same-agent');
+ await assert.rejects(inspectCurrentExecution(f.specPath),error=>error.code==='OWNER_UNCERTAIN');
+ // Deliberately no recovery, publication, removal or rewritten conclusion.
 });
 
 async function editDetails(f,transform){
