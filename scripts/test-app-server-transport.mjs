@@ -220,6 +220,127 @@ for (const parentItems of [true, false]) test(`partial ${parentItems ? 'parent' 
   }
 });
 
+function auxiliaryFollowupServer(options) {
+  const s = server({ ...options, provider: true });
+  const followup = structuredClone(s.state.turns[0]); followup.id = 'followup-turn';
+  followup.items.at(-1).id = 'followup-answer'; followup.items.at(-1).text = 'Second auxiliary advice.';
+  s.state.turns.push(followup);
+  s.state.parentItems.push({ ...s.state.parentItems[0], id: 'subagent-completed-child-turn', kind: 'completed' },
+    { ...s.state.parentItems[0], id: 'followup-call', kind: 'interacted' },
+    { ...s.state.parentItems[0], id: 'subagent-completed-followup-turn', kind: 'completed' });
+  const request = s.rpc.request.bind(s.rpc);
+  s.rpc.request = async (method, params) => method === 'thread/items/list' && params.threadId === child
+    ? { data: structuredClone(s.state.turns.find(turn => turn.id === params.turnId).items)
+      .map(item => ({ turnId: params.turnId, item })), nextCursor: null }
+    : request(method, params);
+  return s;
+}
+
+test('auxiliary follow-up has two distinct completion events and two charged turns, never a formal capture', async t => {
+  const f = await fixture(t), s = auxiliaryFollowupServer({ bundle: f.bundle, cwd: f.root });
+  const p = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  const charged = new Set(); let started = 0, completed = 0;
+  const result = await p.runTurn({ prompt: 'Offline selected operation', workflowSkill: 'stnl-slice-executor',
+    model: 'gpt-6-luna', effort: 'high', operationId: 'aux-followup', role: 'review',
+    observeFormalBinding: async () => null, onChildStarted: () => { started++; },
+    onChildTurns: (binding, turns) => { for (const turn of turns) charged.add(`${binding.agentThreadId}:${turn.id}`); },
+    onAuxiliaryCompleted: () => { completed++; } });
+  assert.equal(result.completed, true, result.error); assert.equal(started, 1); assert.equal(completed, 1);
+  assert.equal(charged.size, 2); assert.deepEqual(result.captures, []);
+  const events = (await fs.readFile(result.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.some(event => event.type === 'native.child.completed'), false);
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1);
+});
+
+test('reobserving both auxiliary completions deduplicates advice settlement and charges by public turn ID', async t => {
+  const f = await fixture(t), s = auxiliaryFollowupServer({ bundle: f.bundle, cwd: f.root });
+  const followup = s.state.turns.pop(), followupEvents = s.state.parentItems.splice(-2);
+  const request = s.rpc.request.bind(s.rpc); let parentDone = false, completed = 0, observations = 0;
+  s.rpc.request = async (method, params) => {
+    const value = await request(method, params);
+    if (method === 'thread/turns/list' && params.threadId === parent) value.data[0].status = parentDone ? 'completed' : 'inProgress';
+    return value;
+  };
+  const p = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  const charged = new Set();
+  const result = await p.runTurn({ prompt: 'Offline selected operation', workflowSkill: 'stnl-slice-executor',
+    model: 'gpt-6-luna', effort: 'high', operationId: 'aux-reobserve', role: 'review',
+    observeFormalBinding: async () => null,
+    onChildTurns: (binding, turns) => { observations++; for (const turn of turns) charged.add(`${binding.agentThreadId}:${turn.id}`); },
+    onAuxiliaryCompleted: () => {
+      completed++;
+      if (completed === 1) {
+        assert.equal(charged.size, 1, 'the first advice is settled before the follow-up exists');
+        s.state.turns.push(followup); s.state.parentItems.push(...followupEvents);
+      } else parentDone = true;
+    } });
+  assert.equal(result.completed, true, result.error); assert.equal(completed, 2);
+  assert.ok(observations >= 3); assert.equal(charged.size, 2); assert.deepEqual(result.captures, []);
+});
+
+for (const fault of ['duplicate-event', 'extra-completion', 'foreign-completion', 'duplicate-turn', 'failed-followup', 'incomplete-followup'])
+test(`auxiliary follow-up rejects ${fault} without formal capture or another turn`, async t => {
+  const f = await fixture(t), s = auxiliaryFollowupServer({ bundle: f.bundle, cwd: f.root });
+  const last = s.state.parentItems.at(-1);
+  if (fault === 'duplicate-event') last.id = 'subagent-completed-child-turn';
+  if (fault === 'extra-completion') s.state.turns.pop();
+  if (fault === 'foreign-completion') last.agentThreadId = 'foreign';
+  if (fault === 'duplicate-turn') s.state.turns[1].id = s.state.turns[0].id;
+  if (fault === 'failed-followup') s.state.turns[1].status = 'failed';
+  if (fault === 'incomplete-followup') s.state.turns[1].status = 'inProgress';
+  const p = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  const result = await p.runTurn({ prompt: 'Offline selected operation', workflowSkill: 'stnl-slice-executor',
+    model: 'gpt-6-luna', effort: 'high', operationId: `aux-${fault}`, role: 'review', observeFormalBinding: async () => null });
+  assert.equal(result.completed, false); assert.deepEqual(result.captures, []);
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1);
+});
+
+for (const followup of [true, false]) test(`a designated formal child rejects ${followup ? 'multiple turns' : 'repeated completion for one turn'}`, async t => {
+  const f = await fixture(t), s = auxiliaryFollowupServer({ bundle: f.bundle, cwd: f.root });
+  if (!followup) s.state.turns.pop();
+  const p = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc });
+  const charged = new Set();
+  const result = await p.runTurn({ prompt: 'Offline formal controller', workflowSkill: 'stnl-slice-executor',
+    model: 'gpt-6-luna', effort: 'high', operationId: 'formal-followup', role: 'review',
+    observeFormalBinding: async () => ({ agentPath: identity.agentPath }),
+    onChildTurns: (binding, turns) => { for (const turn of turns) charged.add(`${binding.agentThreadId}:${turn.id}`); } });
+  assert.equal(result.completed, false); assert.match(result.error, /formal child has repeated completion or follow-up/u);
+  assert.equal(charged.size, followup ? 2 : 1); assert.deepEqual(result.captures, []);
+});
+
+for (const announce of [true, false]) test(`formal follow-up ${announce ? 'announced' : 'unannounced'} after readiness cannot replace the first bytes`, async t => {
+  const f = await fixture(t), firstText = '  first official response\r\n𝛑\n';
+  const s = server({ bundle: f.bundle, cwd: f.root, provider: true, response: firstText });
+  s.state.parentItems.push({ ...s.state.parentItems[0], id: 'first-done', kind: 'completed' });
+  const request = s.rpc.request.bind(s.rpc); let parentDone = false, firstFile, firstBytes, ready = 0;
+  s.rpc.request = async (method, params) => {
+    if (method === 'thread/items/list' && params.threadId === child) return {
+      data: structuredClone(s.state.turns.find(turn => turn.id === params.turnId).items)
+        .map(item => ({ turnId: params.turnId, item })), nextCursor: null };
+    const value = await request(method, params);
+    if (method === 'thread/turns/list' && params.threadId === parent) value.data[0].status = parentDone ? 'completed' : 'inProgress';
+    return value;
+  };
+  const p = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  const charged = new Set();
+  const result = await p.runTurn({ prompt: 'Offline formal controller', workflowSkill: 'stnl-slice-executor',
+    model: 'gpt-6-luna', effort: 'high', operationId: `formal-first-${announce}`, role: 'review',
+    observeFormalBinding: async () => ({ agentPath: identity.agentPath }),
+    onChildTurns: (binding, turns) => { for (const turn of turns) charged.add(`${binding.agentThreadId}:${turn.id}`); },
+    onChildCompleted: async ({ capture }) => {
+      ready++; firstFile = capture.file; firstBytes = await fs.readFile(firstFile);
+      const next = structuredClone(s.state.turns[0]); next.id = 'second-formal-turn';
+      next.items.at(-1).id = 'second-answer'; next.items.at(-1).text = 'different second response'; s.state.turns.push(next);
+      if (announce) s.state.parentItems.push({ ...s.state.parentItems[0], id: 'second-done', kind: 'completed' });
+      parentDone = true;
+    } });
+  assert.equal(result.completed, false); assert.equal(ready, 1); assert.equal(charged.size, 2);
+  assert.equal(result.captures.length, 1); assert.equal(result.captures[0].toolResult.finalResponse, firstText);
+  assert.deepEqual(await fs.readFile(firstFile), firstBytes);
+  assert.equal(JSON.parse(firstBytes).finalResponse, firstText);
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1);
+});
+
 test('S2 frozen paths select the intended skill despite homonyms; all siblings/runner are pinned', async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root });
   await initializeAppServer(s.rpc);

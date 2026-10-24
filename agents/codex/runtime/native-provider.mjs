@@ -170,9 +170,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           }
           for (const item of observed.items) if (item.type === 'subAgentActivity' && item.kind === 'completed') {
             const binding = children.get(item.agentPath);
-            if (!binding || binding.agentThreadId !== item.agentThreadId
-              || observed.items.filter(value => value.type === 'subAgentActivity' && value.kind === 'completed'
-                && value.agentPath === item.agentPath).length !== 1) throw blocked('unmatched/duplicate completed child identity');
+            if (!binding || binding.agentThreadId !== item.agentThreadId) throw blocked('unmatched completed child identity');
           }
           if (observeFormalBinding !== null) {
             const rootCompleted = new Set(observed.items.filter(item => item.type === 'subAgentActivity' && item.kind === 'completed')
@@ -211,6 +209,15 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
                 }
               } });
               views.set(binding.agentThreadId, view);
+              const completions = observed.items.filter(item => item.type === 'subAgentActivity' && item.kind === 'completed'
+                && item.agentPath === binding.agentPath).length;
+              // Distinct completion items can describe distinct auxiliary
+              // turns. They never relax the formal runner's single-turn rule.
+              if (formal.has(binding.agentThreadId) || designated) {
+                if (completions > 1 || view.turns.length > 1) throw blocked('formal child has repeated completion or follow-up');
+              } else if (completions > view.turns.filter(turn => turn.status === 'completed').length) {
+                throw blocked('auxiliary completion count exceeds completed public turns');
+              }
               if (view.turns.some(item => ['failed', 'interrupted'].includes(item.status))) throw blocked('auxiliary turn failed/interrupted; preserve its effects');
               if (designated) {
                 const previous = formal.get(binding.agentThreadId);

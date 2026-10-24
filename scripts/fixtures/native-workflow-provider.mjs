@@ -44,7 +44,10 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       if (followup) child.turns.push({ ...structuredClone(childTurn), id: randomUUID() });
       for (let i = 1; i < turns; i++) child.turns.push({ ...structuredClone(childTurn), id: randomUUID() });
       if (nested) auxiliary(child, childTurn);
-      parentTurn.items.push({ id: randomUUID(), type: 'subAgentActivity', kind: 'completed', agentPath, agentThreadId: id });
+      for (const [index, completed] of child.turns.entries()) {
+        if (index) parentTurn.items.push({ id: randomUUID(), type: 'subAgentActivity', kind: 'interacted', agentPath, agentThreadId: id });
+        parentTurn.items.push({ id: `subagent-completed-${completed.id}`, type: 'subAgentActivity', kind: 'completed', agentPath, agentThreadId: id });
+      }
       return child;
     };
     if (fault === 'aux-run-eight' || fault === 'aux-run-nine') {
