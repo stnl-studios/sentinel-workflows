@@ -35,11 +35,11 @@ Expected Tests and obligation proofs remain explanatory prose and do not define 
 
 Run `node "<SKILL_ROOT>/runtime/prepare-plan-candidate.mjs" --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>` then `node "<SKILL_ROOT>/runtime/serialize-plan-paths.mjs" --spec-path <SPEC_PATH> --candidate-execution-root <CANDIDATE_EXECUTION_ROOT>`. These shared producers prepare both sets, bind delivery IDs and validate the complete candidate. No MATERIALIZE_TASKS or REVIEW_TASKS operation exists. The absorbed producers are mechanical resources, not another cognitive phase.
 
-Keep the complete draft isolated. `publish-task-candidate.mjs --spec-path SPEC_PATH --candidate-execution-root CANDIDATE_EXECUTION_ROOT` without a review returns AWAITING_REVIEW and never installs the candidate. Hand that exact owned root to independent REVIEW_PLAN. The current producer does not import or migrate incompatible preparations.
+Keep the complete draft isolated. `publish-task-candidate.mjs --spec-path SPEC_PATH --candidate-execution-root CANDIDATE_EXECUTION_ROOT` without a review returns AWAITING_REVIEW and never installs the candidate. The current producer does not import or migrate incompatible preparations.
 
 ## Output
 
-Report the exact isolated candidate root, source activation when present, current requirements authority, artifact paths, returned review request and AWAITING_REVIEW. PLAN and supported REPLAN hand the complete joint set to independent REVIEW_PLAN. No implementation, formal validation or self-approval.
+At AWAITING_REVIEW, report the exact isolated candidate root, source activation when present, current requirements authority, artifact paths and returned review request to the caller, then stop and return control. The caller invokes REVIEW_PLAN in an independent context; do not start or delegate that next operation from PLAN or REPLAN. No implementation, formal validation or self-approval.
 
 ## REPLAN
 
