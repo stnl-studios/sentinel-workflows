@@ -3,7 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { connectAppServer, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   startAppServerTurn, readAppServerTurn, bindAppServerChild, readAppServerChild, writeNativeToolResult,
-  deniedShellTemporaryFile, persistAppServerStderrSample } from './app-server-transport.mjs';
+  deniedShellTemporaryFile, persistAppServerStderrSample, observeAppServerChild } from './app-server-transport.mjs';
 
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const blocked = message => Object.assign(new Error(message), { code: 'NATIVE_TRANSPORT_UNPROVEN' });
@@ -41,7 +41,8 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
     bundle,
     async runTurn({ prompt, workflowSkill, model, effort, outputSchema, operationId, role,
       priorAuthorThread = null, signal, timeoutMs = 900_000, onChildStarted, onChildCompleted,
-      onDispatched, onUnadmittedChildren, observation = null }) {
+      onDispatched, onUnadmittedChildren, observation = null, observeFormalBinding = null,
+      onChildTurns, onFormalObserved, onAuxiliaryCompleted, validateRetainedCaptures }) {
       await assertAppServerBundle(bundle);
       if (typeof operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(operationId)) throw blocked('invalid operation evidence identity');
       const events = [], children = new Map(), captures = new Map();
@@ -51,6 +52,8 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
       const previousReady = observation === null ? [] : (await fs.readFile(eventsFile, 'utf8'))
         .split('\n').filter(Boolean).map(JSON.parse).filter(event => event.type === 'native.child.completed');
       const notified = new Set();
+      const formal = new Map(), views = new Map(), auxiliaryDone = new Set();
+      let terminalObserved = false;
       const record = async event => {
         events.push(event); await fs.appendFile(eventsFile, `${JSON.stringify(event)}\n`);
       };
@@ -68,6 +71,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             if (saved.agentId !== binding.agentPath || saved.status !== 'completed' || typeof saved.finalResponse !== 'string'
               || sha(saved.finalResponse) !== prior[0].finalResponseSha256) throw blocked('persisted first child envelope differs');
             first = { binding, file: toolResultFile, finalResponseSha256: prior[0].finalResponseSha256,
+              ...(prior[0].designation ? { designation: prior[0].designation } : {}),
               toolResult: { agentId: binding.agentPath, status: 'completed', finalResponse: saved.finalResponse } };
             captures.set(binding.agentPath, first);
           }
@@ -86,11 +90,13 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           if (!notified.has(binding.agentPath)) { await onChildCompleted?.({ binding, toolResult, capture: first }); notified.add(binding.agentPath); }
           return;
         }
-        captures.set(binding.agentPath, { binding, ...capture, toolResult });
+        captures.set(binding.agentPath, { binding, ...capture, toolResult,
+          ...(formal.has(binding.agentThreadId) ? { designation: formal.get(binding.agentThreadId) } : {}) });
         // A complete event is the ready barrier, after the exclusive file write.
         // This supplies transport bytes only; the principal still owns bind,
         // capture-native, publication and any legal normalization.
         await record({ type: 'native.child.completed', binding, toolResultFile,
+          ...(formal.has(binding.agentThreadId) ? { designation: formal.get(binding.agentThreadId) } : {}),
           finalResponseSha256: capture.finalResponseSha256 });
         await onChildCompleted?.({ binding, toolResult, capture });
         notified.add(binding.agentPath);
@@ -141,20 +147,100 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             throw blocked('initial public history observation deadline exceeded; dispatch remains uncertain');
           }
           historyObserved = true; clearTimeout(historyTimer); historyTimer = null;
-          if (observed.items.some(deniedShellTemporaryFile)) throw blocked('SANDBOX_COMMAND_DENIED: implicit temporary file denial');
+          const reportedStarts = observed.items.filter(value => value.type === 'subAgentActivity' && value.kind === 'started'
+            && typeof value.agentThreadId === 'string' && typeof value.agentPath === 'string')
+            .map(value => ({ parentThreadId: dispatch.threadId, parentTurnId: dispatch.turnId,
+              agentPath: value.agentPath, agentThreadId: value.agentThreadId, unadmitted: true }));
+          if (observed.items.some(deniedShellTemporaryFile)) throw Object.assign(
+            blocked('SANDBOX_COMMAND_DENIED: implicit temporary file denial'), { descendants: reportedStarts });
           for (const item of observed.items) {
             if (item.type !== 'subAgentActivity' || item.kind !== 'started') continue;
             const known = children.get(item.agentPath);
-            if (known && known.agentThreadId !== item.agentThreadId) throw blocked('child identity changed');
+            if (known && known.agentThreadId !== item.agentThreadId) throw Object.assign(blocked('child identity changed'), {
+              descendants: reportedStarts });
             if (!known) {
-              const binding = await bindAppServerChild(rpc, { parentThreadId: dispatch.threadId,
+              let binding;
+              try { binding = await bindAppServerChild(rpc, { parentThreadId: dispatch.threadId,
                 parentTurnId: dispatch.turnId, agentPath: item.agentPath });
-              await onChildStarted?.(binding);
+                await onChildStarted?.(binding); }
+              catch (error) { throw Object.assign(error, { descendants: [...(error.descendants ?? []), ...reportedStarts] }); }
               children.set(item.agentPath, binding);
               await record({ type: 'native.child.started', binding });
             }
           }
           for (const item of observed.items) if (item.type === 'subAgentActivity' && item.kind === 'completed') {
+            const binding = children.get(item.agentPath);
+            if (!binding || binding.agentThreadId !== item.agentThreadId
+              || observed.items.filter(value => value.type === 'subAgentActivity' && value.kind === 'completed'
+                && value.agentPath === item.agentPath).length !== 1) throw blocked('unmatched/duplicate completed child identity');
+          }
+          if (observeFormalBinding !== null) {
+            const rootCompleted = new Set(observed.items.filter(item => item.type === 'subAgentActivity' && item.kind === 'completed')
+              .map(item => item.agentThreadId));
+            const needsDesignation = [...children.values()].some(binding => !formal.has(binding.agentThreadId)
+              && !auxiliaryDone.has(binding.agentThreadId)
+              && (rootCompleted.has(binding.agentThreadId) || observed.turn.status !== 'inProgress'));
+            const designation = needsDesignation ? await observeFormalBinding() : null;
+            if (!designation && previousReady.length && formal.size === 0) {
+              if (typeof validateRetainedCaptures !== 'function') throw blocked('retained formal verifier absent');
+              const saved = [];
+              for (const ready of previousReady) {
+                const toolResult = JSON.parse(await fs.readFile(ready.toolResultFile, 'utf8'));
+                if (!ready.designation || toolResult.agentId !== ready.binding.agentPath
+                  || sha(toolResult.finalResponse) !== ready.finalResponseSha256) throw blocked('retained formal readiness differs');
+                saved.push({ ...ready, toolResult });
+              }
+              await validateRetainedCaptures(saved);
+              for (const ready of saved) formal.set(ready.binding.agentThreadId, ready.designation);
+            }
+            for (const binding of children.values()) {
+              const designated = designation?.agentPath === binding.agentPath
+                && binding.parentThreadId === dispatch.threadId && binding.parentTurnId === dispatch.turnId;
+              if (observed.turn.status === 'inProgress' && !rootCompleted.has(binding.agentThreadId)
+                && !designated && !views.has(binding.agentThreadId)) continue;
+              const view = await observeAppServerChild(rpc, { binding, cwd: workspace,
+                onTurns: turns => onChildTurns?.(binding, turns),
+                onChild: async descendant => {
+                const known = children.get(descendant.agentPath);
+                if (known && (known.agentThreadId !== descendant.agentThreadId
+                  || known.parentThreadId !== descendant.parentThreadId || known.parentTurnId !== descendant.parentTurnId)) throw blocked('descendant lineage changed');
+                if (!known) {
+                  if ([...children.values()].some(item => item.agentThreadId === descendant.agentThreadId)) throw blocked('child has duplicate lineage');
+                  await onChildStarted?.(descendant); children.set(descendant.agentPath, descendant);
+                  await record({ type: 'native.child.started', binding: descendant });
+                }
+              } });
+              views.set(binding.agentThreadId, view);
+              if (view.turns.some(item => ['failed', 'interrupted'].includes(item.status))) throw blocked('auxiliary turn failed/interrupted; preserve its effects');
+              if (designated) {
+                const previous = formal.get(binding.agentThreadId);
+                if (previous && JSON.stringify(previous) !== JSON.stringify(designation)) throw blocked('formal designation changed');
+                if (!previous) {
+                  await onFormalObserved?.(binding, designation); formal.set(binding.agentThreadId, designation);
+                  await record({ type: 'native.child.formal', binding, designation });
+                }
+              }
+              if (formal.has(binding.agentThreadId) && view.turns.length && view.turns.every(item => item.status === 'completed')) {
+                if (!captures.has(binding.agentPath)) await collect(binding);
+              } else if (view.turns.length && view.turns.every(item => item.status === 'completed')) {
+                const key = `${binding.agentThreadId}:${view.turns.map(item => item.id).join(',')}`;
+                if (!notified.has(key)) {
+                  await onAuxiliaryCompleted?.(binding); auxiliaryDone.add(binding.agentThreadId);
+                  await record({ type: 'native.auxiliary.completed', binding, turns: view.turns }); notified.add(key);
+                }
+              }
+            }
+            if (observed.turn.status !== 'inProgress') {
+              const complete = [...children.values()].every(binding => views.get(binding.agentThreadId)?.turns.length
+                && views.get(binding.agentThreadId).turns.every(item => item.status === 'completed'));
+              if (!complete) { await wait(pollMs, signal); continue; }
+              terminalObserved = true;
+              for (const binding of children.values()) if (!formal.has(binding.agentThreadId) && !auxiliaryDone.has(binding.agentThreadId)) {
+                await onAuxiliaryCompleted?.(binding); auxiliaryDone.add(binding.agentThreadId);
+                await record({ type: 'native.auxiliary.completed', binding, turns: views.get(binding.agentThreadId).turns });
+              }
+            }
+          } else for (const item of observed.items) if (item.type === 'subAgentActivity' && item.kind === 'completed') {
             const binding = children.get(item.agentPath);
             if (!binding || binding.agentThreadId !== item.agentThreadId) throw blocked('unmatched completed child identity');
             if (observed.items.filter(value => value.type === 'subAgentActivity' && value.kind === 'completed'
@@ -167,7 +253,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         if (observed.turn.status !== 'completed' || observed.turn.error != null) throw blocked('parent turn failed/interrupted');
         // Also reobserve already captured children after the principal ends.
         // A changed/extra turn or modified envelope cannot replace the first.
-        for (const binding of children.values()) await collect(binding);
+        for (const binding of children.values()) if (observeFormalBinding === null || formal.has(binding.agentThreadId)) await collect(binding);
         if (new Set(previousReady.map(event => event.binding?.agentPath)).size !== previousReady.length
           || previousReady.some(event => !children.has(event.binding?.agentPath)
             || !captures.has(event.binding?.agentPath))) throw blocked('persisted child readiness is orphaned or duplicated');
@@ -184,7 +270,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         }
         await assertAppServerBundle(bundle);
         await record({ type: 'native.turn.completed', ...dispatch });
-        return { ...dispatch, completed: true, turnStarted: true, response: answer.text,
+        return { ...dispatch, completed: true, turnStarted: true, response: answer.text, terminalObserved,
           commandResults, captures: [...captures.values()], eventsPath: eventsFile, usage: null, toolCalls: null,
           requestedModel: model, requestedEffort: effort, reportedModel: null,
           authorThread: role === 'author' ? { threadId: dispatch.threadId, cwd: workspace,
@@ -199,7 +285,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           turnStarted: dispatchAttempted ? null : false, response: null, usage: null, toolCalls: null,
           captures: [...captures.values()], commandResults: [], eventsPath: eventsFile, error: error.message,
           errorCode: error.code ?? 'NATIVE_TRANSPORT_UNPROVEN', requestedModel: model, requestedEffort: effort,
-          observation: dispatch, stderrSample };
+          observation: dispatch, stderrSample, terminalObserved };
       } finally { clearTimeout(historyTimer); }
     },
     close() { connection?.close(); },

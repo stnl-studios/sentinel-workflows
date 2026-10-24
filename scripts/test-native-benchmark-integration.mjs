@@ -9,7 +9,7 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import { allocateOfflineFixture, finishOfflineFixture } from './fixtures/offline-checkout.mjs';
 import { describeOfflineSdk } from '../agents/codex/runtime/offline-provider-context.mjs';
 import { offlineNativeWorkflow } from './fixtures/native-workflow-provider.mjs';
-import { invocationContext } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
+import { invocationContext, decideOutcome } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
 const repo = path.resolve(import.meta.dirname, '..');
 
@@ -87,18 +87,20 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   }
   assert.ok(sample.length <= 1024);
   assert.equal(state.status, 'BLOCKED'); assert.equal(ledger.total, phase === 'initialize' ? 0 : 1);
-  assert.equal(ledger.reservations.length, 0); assert.equal(state.operations.length, phase === 'initialize' ? 0 : 1);
+  assert.equal(ledger.reservations.length, phase === 'initialize' ? 0 : 8,
+    'uncertain dispatch retains auxiliary financial margin'); assert.equal(state.operations.length, phase === 'initialize' ? 0 : 1);
   if (phase !== 'initialize') assert.equal(ledger.turns[0].state, 'uncertain');
   assert.deepEqual(calls, phase === 'initialize' ? ['initialize'] : ['initialize', 'skills/extraRoots/set']);
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','formal-successor'],['fresh','formal-exhausted']]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','formal-successor'],['fresh','formal-exhausted'], ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   t.after(async () => { await finishOfflineFixture(fixture); });
   const configurationPath = path.join(fixture.root, 'benchmarks/sentinel-todo/benchmark.json');
   const configuration = JSON.parse(await fs.readFile(configurationPath));
   configuration.contextPolicy = { regime, authorContinuityOperations: regime === 'fresh' ? [] : ['PLAN', 'EXECUTE_SLICE', 'SPEC_CLOSE'] };
+  configuration.turnBudget.maxTurnsPerRun = 30;
   await fs.writeFile(configurationPath, JSON.stringify(configuration));
   const runRoot = path.join(fixture.root, 'benchmark-temp/run-native-offline');
   await fs.mkdir(runRoot, { recursive: true });
@@ -122,7 +124,7 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     const args = { runRoot, caseId: 'A', configuration, snapshotMetadata: metadata,
       maxOperations: null, mode: 'case', product, signal: new AbortController().signal };
     result = await manager.runCase(args);
-    if (fault?.startsWith('interrupt-')) {
+    if (fault?.startsWith('interrupt-') || fault === 'aux-followup-interrupt') {
       assert.equal(result.status, 'BLOCKED');
       const before = backend.calls.filter(call => call.method === 'turn/start').length;
       const prior = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
@@ -130,7 +132,10 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
       const firstEvidence = await fs.readFile(prior.operations.at(-1).evidencePath);
       const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
       assert.ok(ledger.turns.some(turn => turn.state === 'uncertain'));
-      if (fault === 'interrupt-execute') assert.equal(ledger.reservations.length, 3);
+      if (fault === 'interrupt-execute') assert.equal(ledger.reservations.length, 10,
+        'uncertain parent retains all unused formal and auxiliary credits');
+      if (fault === 'aux-followup-interrupt') assert.equal(ledger.reservations.length, 8,
+        'both auxiliary turns and the formal first turn consume their distinct credits before interruption');
       result = await manager.runCase({ ...args, resume: true });
       assert.ok(firstEvidence.equals(await fs.readFile(prior.operations.at(-1).evidencePath)), 'first failed observation stays byte-identical');
       assert.equal(backend.calls.filter(call => call.method === 'turn/start').length, 6,
@@ -201,10 +206,12 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
   }
   const extra = fault === 'findings-cycle' ? 2 : 0;
   const refusalChild=fault==='formal-successor'?1:0;
+  const auxiliaryCalls = fault === 'aux-run-eight' ? 8
+    : ['aux-followup', 'aux-followup-interrupt', 'aux-descendant'].includes(fault) ? 2 : fault?.startsWith('aux-') ? 1 : 0;
   assert.deepEqual(backend.operations.map(item => item.operation), ['SPEC_INIT', 'PLAN', 'REVIEW_PLAN',
     'EXECUTE_SLICE', 'VALIDATE_SLICE', ...(extra ? ['APPLY_FINDINGS', 'VALIDATE_SLICE'] : []), 'SPEC_CLOSE'],
   'the manager follows each public handoff once, retaining the separate independent review');
-  assert.equal(result.operations, 6 + extra); assert.equal(result.runnerTurns, 2 + extra + refusalChild); assert.equal(result.mainTurns, 6 + extra);
+  assert.equal(result.operations, 6 + extra); assert.equal(result.runnerTurns, 2 + extra + refusalChild + auxiliaryCalls); assert.equal(result.mainTurns, 6 + extra);
   const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
   for (const operation of state.operations) {
     // The manager persists the exact launcher it sends, including the mention.
@@ -213,6 +220,18 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     assert.ok(starts.some(call => call.params.input.some(item => item.type === 'text' && item.text === prompt)));
     assert.ok(prompt.includes(`SPEC_PATH=${state.specPath}`));
     assert.equal(evidence.promptSha256, `sha256:${createHash('sha256').update(prompt).digest('hex')}`);
+  }
+  if (fault === null && regime === 'fresh') {
+    const read = async name => {
+      const evidence = JSON.parse(await fs.readFile(state.operations.find(item => item.operation === name).evidencePath));
+      return { ...evidence.officialReadback, preparation: evidence.preparation };
+    };
+    const plan = await read('PLAN'), review = await read('REVIEW_PLAN'), executed = await read('EXECUTE_SLICE');
+    assert.equal(decideOutcome('PLAN', plan, true).result, 'PASS');
+    assert.equal(decideOutcome('PLAN', { ...executed, preparation: plan.preparation }, true).result, 'BLOCKED');
+    assert.equal(decideOutcome('REVIEW_PLAN', review, true).result, 'PASS');
+    assert.equal(decideOutcome('REVIEW_PLAN', { ...executed, preparation: review.preparation }, true).result, 'BLOCKED',
+      'an Initial review cannot approve a workflow already advanced into execution');
   }
   const raw = JSON.parse(await fs.readFile(state.finalizer.rawPath));
   const ajv = new Ajv2020({ strict: false, allErrors: true });
@@ -231,8 +250,12 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
   assert.equal(new Set(reviews.map(item => item.threadId)).size, 2 + (extra ? 1 : 0));
   assert.ok(reviews.every(item => !authors.some(author => author.threadId === item.threadId)));
   const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
-  assert.equal(ledger.total, 8 + 2 * extra + refusalChild); assert.equal(ledger.reservations.length, 0);
+  assert.equal(ledger.total, 8 + 2 * extra + refusalChild + auxiliaryCalls); assert.equal(ledger.reservations.length, 0);
   assert.ok(ledger.turns.every(turn => turn.state === 'completed'));
+  assert.equal(ledger.turns.filter(turn => turn.childKind === 'auxiliary').length, auxiliaryCalls);
+  assert.equal(ledger.turns.filter(turn => turn.childKind === 'formal').length, 2 + extra + refusalChild);
+  assert.equal(new Set(ledger.turns.filter(turn => turn.role === 'runner').map(turn => `${turn.threadId}:${turn.turnId}`)).size,
+    2 + extra + refusalChild + auxiliaryCalls, 'each public child turn is charged once, including follow-ups');
   const terminal = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/terminal-evidence.json')));
   assert.equal(terminal.source.inspection.state, 'COMPLETE'); assert.equal(terminal.state, 'SPEC_CLOSED');
   const consumer = await import(url('benchmarks/sentinel-todo/runtime/native-evidence.mjs'));
@@ -320,7 +343,7 @@ test('literal manager entry parses ordinary run --case A and retains its normal 
   await assert.rejects(fs.lstat(path.join(fixture.root,'benchmark-temp/.active-run.json')),{code:'ENOENT'});
 });
 
-for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-child']) test(`normal entry blocks ${fault} without successor, refund or proof substitution`, async t => {
+for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-child','aux-only','aux-run-nine','aux-run-eleven','aux-followup-twelve']) test(`normal entry blocks ${fault} without successor, refund or proof substitution`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   t.after(async () => { await finishOfflineFixture(fixture); });
   const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
@@ -346,31 +369,55 @@ for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-c
     assert.notEqual(state.status,'PASS'); assert.ok(!backend.operations.some(item => item.operation === 'SPEC_CLOSE'));
     const ledger = JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
     assert.equal(backend.calls.filter(call => call.method === 'turn/start').length,
-      fault === 'unexpected-plan-child' ? 2 : fault === 'budget' ? 3 : 4);
+      ['unexpected-plan-child', 'aux-run-eleven'].includes(fault) ? 2 : ['budget', 'aux-run-nine'].includes(fault) ? 3 : 4);
     if (fault === 'unexpected-plan-child') {
       assert.deepEqual(backend.operations.map(item => item.operation), ['SPEC_INIT', 'PLAN']);
       assert.equal(state.terminal.result, 'BLOCKED');
       const evidence = JSON.parse(await fs.readFile(state.operations.at(-1).evidencePath));
-      assert.match(evidence.turn.error, /native child outside reserved operation margin/u);
+      assert.match(evidence.turn.error, /auxiliary turn failed\/interrupted/u);
       assert.equal(evidence.officialReadback.execution.state, 'NO_EXECUTION');
-      assert.equal(ledger.total, 3); assert.equal(ledger.reservations.length, 0);
-      const unexpected = ledger.turns.filter(turn => turn.unadmitted);
+      assert.equal(ledger.total, 3); assert.equal(ledger.reservations.length, 7);
+      const unexpected = ledger.turns.filter(turn => turn.childKind === 'pending');
       assert.equal(unexpected.length, 1);
-      assert.equal(unexpected[0].operation, 'PLAN'); assert.equal(unexpected[0].state, 'uncertain');
+      assert.equal(unexpected[0].operation, 'PLAN'); assert.equal(unexpected[0].state, 'dispatched',
+        'the unverified child credit stays charged and unsettled');
       assert.equal(unexpected[0].agentPath, '/root/review_plan');
       await assert.rejects(manager.main(['clean','--run',runId]),/pending\/uncertain/);
+    } else if (fault === 'aux-only') {
+      const evidence = JSON.parse(await fs.readFile(state.operations.at(-1).evidencePath));
+      assert.equal(evidence.turn.captures.length, 0, 'auxiliary advice cannot emit a formal ready envelope');
+      assert.equal(evidence.outcome.blocker, 'OWNER_UNCERTAIN');
+      assert.match(evidence.officialReadback.execution.error, /activeAttempt declares an unresolved or different owner/u);
+      assert.equal(ledger.total, 5); assert.equal(ledger.reservations.length, 0);
+      assert.equal(ledger.turns.filter(turn => turn.childKind === 'auxiliary').length, 1);
+    } else if (fault === 'aux-run-nine') {
+      assert.equal(ledger.total, 12, 'the ninth auxiliary is counted even though the boundary blocks');
+      assert.equal(ledger.turns.filter(turn => turn.unadmitted).length, 1);
+      assert.equal(ledger.turns.filter(turn => turn.childKind === 'auxiliary').length, 4);
+      assert.ok(ledger.turns.some(turn => turn.state === 'uncertain'));
+      assert.equal(ledger.reservations.length, 0);
+    } else if (fault === 'aux-run-eleven') {
+      assert.equal(ledger.total, 13, 'all eleven emitted children count even when the ninth triggers the refusal');
+      assert.equal(ledger.turns.filter(turn => turn.unadmitted).length, 3);
+      assert.equal(ledger.reservations.length, 0);
+    } else if (fault === 'aux-followup-twelve') {
+      assert.equal(ledger.total, 17, 'all twelve auxiliary turns plus the observed formal child count');
+      assert.equal(ledger.turns.filter(turn => turn.unadmitted).length, 2);
+      assert.equal(ledger.reservations.length, 0);
     } else if (fault === 'budget') {
       assert.equal(ledger.total,3); assert.equal(ledger.reservations.length,0);
     } else {
       assert.ok(ledger.turns.some(turn => turn.state === 'uncertain'));
-      assert.equal(ledger.reservations.length,2);
+      assert.equal(ledger.reservations.length, fault === 'grandchildren' ? 8 : 10);
       await assert.rejects(manager.main(['clean','--run',runId]),/pending\/uncertain/);
       if (fault === 'grandchildren') {
-        assert.equal(ledger.turns.filter(turn => turn.unadmitted).length,2);
+        assert.equal(ledger.turns.filter(turn => turn.childKind === 'formal').length,1);
+        assert.equal(ledger.turns.filter(turn => turn.childKind === 'pending').length,2,
+          'both observed descendants remain charged; designation alone grants no capture');
         const firstFile = state.operations.at(-1).evidencePath, first = await fs.readFile(firstFile);
         assert.notEqual(await manager.main(['run','--resume',runId,'--json'],{offline}),0);
         const after = JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
-        assert.equal(after.total,ledger.total); assert.equal(after.turns.filter(turn => turn.unadmitted).length,2);
+        assert.equal(after.total,ledger.total); assert.equal(after.turns.filter(turn => turn.childKind === 'pending').length,2);
         assert.equal(backend.calls.filter(call => call.method === 'turn/start').length,4);
         assert.ok(first.equals(await fs.readFile(firstFile)));
       }

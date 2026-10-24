@@ -25,13 +25,35 @@ assert.equal(code,0);assert.deepEqual(out.trim().split('\\n').map(JSON.parse).ma
 
 export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = null }) {
   const threads = new Map(), calls = [], operations = [];
-  const automatic = ['automatic-capture', 'formal-successor', 'formal-exhausted'].includes(fault);
+  const automatic = true;
   let interrupted = false;
   let preparation = null;
   function command(items, result) { items.push({ id: randomUUID(), type: 'commandExecution', status: 'completed',
     exitCode: 0, aggregatedOutput: JSON.stringify(result) }); }
   async function authored(operation, prompt, thread, turn) {
     const specPath = /^SPEC_PATH=(.*)$/mu.exec(prompt)?.[1];
+    const auxiliary = (parent = thread, parentTurn = turn, { followup = false, nested = false, turns = 1 } = {}) => {
+      const agentPath = `${parent === thread ? '/root' : '/root/aux'}/aux-${randomUUID()}`, id = randomUUID();
+      const child = { id, cwd: workspace, cliVersion: '0.163.0', historyMode: 'paginated', parentThreadId: parent.id,
+        forkedFromId: parent.id, agentRole: 'default', model: 'gpt-6.1-sol', reasoningEffort: 'medium', turns: [] };
+      const childTurn = { id: randomUUID(), status: 'completed', error: null, itemsView: 'full',
+        items: [{ id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text: 'PASS — auxiliary advice only.' }] };
+      child.turns.push(childTurn); threads.set(id, child);
+      parentTurn.items.push({ id: randomUUID(), type: 'subAgentActivity', kind: 'started', agentPath,
+        agentThreadId: id, model: child.model, reasoningEffort: child.reasoningEffort });
+      if (followup) child.turns.push({ ...structuredClone(childTurn), id: randomUUID() });
+      for (let i = 1; i < turns; i++) child.turns.push({ ...structuredClone(childTurn), id: randomUUID() });
+      if (nested) auxiliary(child, childTurn);
+      parentTurn.items.push({ id: randomUUID(), type: 'subAgentActivity', kind: 'completed', agentPath, agentThreadId: id });
+      return child;
+    };
+    if (fault === 'aux-run-eight' || fault === 'aux-run-nine') {
+      const count = operation === 'PLAN' ? 4 : operation === 'REVIEW_PLAN' ? (fault === 'aux-run-nine' ? 5 : 4) : 0;
+      for (let i = 0; i < count; i++) auxiliary();
+    }
+    if (fault === 'aux-run-eleven' && operation === 'PLAN') for (let i = 0; i < 11; i++) auxiliary();
+    if (operation === 'EXECUTE_SLICE' && ['aux-before-reservation', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant'].includes(fault))
+      auxiliary(thread, turn, { followup: ['aux-followup', 'aux-followup-interrupt'].includes(fault), nested: fault === 'aux-descendant' });
     if (!specPath) throw new Error('fixture requires the real launcher SPEC_PATH');
     operations.push({ operation, threadId: thread.id, specPath });
     if (operation === 'SPEC_INIT') {
@@ -66,7 +88,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         const childId = randomUUID();
         threads.set(childId, { id: childId, parentThreadId: thread.id, cliVersion: '0.163.0',
           cwd: workspace, historyMode: 'paginated', forkedFromId: null, agentRole: 'default',
-          model: 'gpt-6-luna', reasoningEffort: 'high', turns: [] });
+          model: 'gpt-6-luna', reasoningEffort: 'high', turns: [{ id: randomUUID(), status: 'interrupted', error: null, items: [] }] });
         turn.items.push({ id: randomUUID(), type: 'subAgentActivity', kind: 'started',
           agentPath: '/root/review_plan', agentThreadId: childId });
       }
@@ -97,6 +119,9 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         || (operation !== 'VALIDATE_SLICE' && !prompt.includes('before delegating read-only verification'))) throw new Error('generic profile/work-order context missing');
       let dispatch = await reserveDispatch(admitted.handle, { responseVariant: 'stnl-current-native-judgment-v1',
         ...(operation === 'VALIDATE_SLICE' ? { terminal: true } : {}) });
+      if (operation === 'EXECUTE_SLICE' && ['aux-after-reservation', 'aux-only'].includes(fault)) {
+        auxiliary(); if (fault === 'aux-only') return;
+      }
       if (operation === 'EXECUTE_SLICE' && fault !== 'premature-verification') {
         await fs.copyFile(path.join(repo, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
         await fs.writeFile(path.join(workspace, 'src/native-filter.test.mjs'), checkSource);
@@ -122,6 +147,8 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       turn.items.push({ id: randomUUID(), type: 'subAgentActivity', kind: 'started', agentPath,
         agentThreadId: childId, model: 'gpt-6-luna', reasoningEffort: 'medium' });
       await bindNative(admitted.handle, agentPath);
+      if (operation === 'EXECUTE_SLICE' && fault === 'aux-after-formal') auxiliary();
+      if (operation === 'EXECUTE_SLICE' && fault === 'aux-followup-twelve') auxiliary(thread, turn, { turns: 12 });
       const measured = await verifyNative(dispatch.originFile);
       const needsFix = fault === 'findings-cycle' && operation === 'VALIDATE_SLICE'
         && operations.filter(item => item.operation === 'VALIDATE_SLICE').length === 1;
@@ -200,8 +227,9 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       if (!thread) throw new Error('foreign public thread query');
       if (method === 'thread/turns/list') {
         const target = fault === 'interrupt-close' ? 'SPEC_CLOSE' : 'EXECUTE_SLICE';
-        if (['interrupt-execute', 'interrupt-close'].includes(fault) && !interrupted
-          && operations.at(-1)?.operation === target && thread.parentThreadId === null) {
+        if (['interrupt-execute', 'interrupt-close', 'aux-followup-interrupt'].includes(fault) && !interrupted
+          && operations.at(-1)?.operation === target && thread.parentThreadId === null
+          && thread.turns.at(-1)?.status === 'completed') {
           interrupted = true; throw Object.assign(new Error('OFFLINE injected observation I/O failure after normal publication'), { code: 'EIO' });
         }
         return { data: structuredClone(thread.turns), nextCursor: null };

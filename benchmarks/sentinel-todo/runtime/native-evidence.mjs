@@ -7,6 +7,55 @@ const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}
 const fail = message => { throw Object.assign(new Error(message), { code: 'NATIVE_EVIDENCE_UNPROVEN' }); };
 const equal = isDeepStrictEqual;
 
+// Read-only designation, not inference from a child's name, output or birth
+// order. The active product owner authenticates the invocation and its binding.
+export async function observeFormalRunner({ product, specPath, operation, slice }) {
+  if (!['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE'].includes(operation)) return null;
+  const { workspace, context } = await product.resolveCurrentExecutionContext(specPath);
+  const read = async file => product.parseCurrentJson((await product.readOwnedFile(file)).bytes.toString('utf8'));
+  const activationFile = path.join(context.logicalExecutionRoot, 'activation.json');
+  const activation = product.validateCurrentActivation(await read(activationFile));
+  if (activation.activeAttempt === null) return null;
+  const attempt = activation.activeAttempt;
+  if (attempt.operation !== operation || attempt.slice !== slice) fail('formal designation belongs to another operation/slice');
+  const roots = await product.resolveExecutionFilesystemRoots(product.executionWorkspaceFromContext(context, workspace));
+  const root = path.join(roots.materialRoot, attempt.operationRef.operationId);
+  const physical = await fs.lstat(root);
+  if (!physical.isDirectory() || physical.isSymbolicLink() || await fs.realpath(root) !== root
+    || physical.dev !== Number(roots.officialAnchor.identity.dev)) fail('formal operation root differs');
+  const marker = path.join(root, 'owner.json'), record = await read(marker);
+  const binding = product.validateCurrentOperationAllocationBinding(record, {
+    operationId: attempt.operationRef.operationId, specKey: roots.specKey,
+    logicalExecutionRoot: context.logicalExecutionRoot, logicalSpecRoot: context.logicalSpecRoot,
+    ownershipToken: attempt.ownershipToken, namespaceIdentity: roots.materialRootIdentity,
+    filesystemDevice: roots.officialAnchor.identity.dev,
+    filesystemContext: { productRoot: roots.productRoot, temporaryRoot: roots.temporaryRoot, excludedRoots: roots.excludedRoots },
+    filesystemBinding: { targetParentIdentity: roots.targetParentIdentity, leaseParentIdentity: roots.leaseParentIdentity,
+      materialRootIdentity: roots.materialRootIdentity },
+  });
+  const { operationRef, ...owner } = attempt;
+  if (!equal(binding.owner, owner) || product.currentOperationBindingSha256(binding) !== operationRef.allocationSha256) fail('formal owner binding differs');
+  const registry = await read(roots.operationRegistry);
+  if (registry.format !== 'stnl-current-operation-registry-v1' || registry.executionRoot !== context.logicalExecutionRoot
+    || !Array.isArray(registry.operations) || registry.operations.filter(x => x.operationId === binding.operationId && x.marker === marker).length !== 1
+    || registry.operations.filter(x => x.operationId === binding.operationId).length !== 1) fail('formal registry association differs');
+  await product.captureCurrentActiveExecution(specPath, attempt);
+  const runner = record.runner;
+  if (!runner || ['reserved', 'aborted'].includes(runner.status)) return null;
+  if (!['running', 'captured'].includes(runner.status) || typeof runner.agentId !== 'string'
+    || ![1, 2, 3].includes(runner.round)) fail('formal designation is not an observable running binding');
+  const originFile = path.join(root, `round-${runner.round}.origin.json`);
+  if (runner.originFile !== originFile) fail('formal origin path differs');
+  const origin = await read(originFile), agent = await read(path.join(root, `round-${runner.round}.agent.json`));
+  if (!equal(origin.owner, owner) || !equal(origin.admission?.binding, binding)
+    || origin.dispatchId !== runner.dispatchId || origin.attempt !== runner.round
+    || origin.specPath !== context.logicalAuthorityPath || origin.workspace !== context.productRoot
+    || agent.agentId !== runner.agentId || agent.originFile !== originFile) fail('formal origin/agent/round differs');
+  if (!equal(await read(activationFile), activation) || !equal(await read(marker), record)) fail('formal designation changed during observation');
+  return { agentPath: runner.agentId, operationAttemptId: owner.operationAttemptId,
+    operationId: binding.operationId, dispatchId: runner.dispatchId, round: runner.round };
+}
+
 export function validateNativeLedger(ledger, state, runId, { settled = false } = {}) {
   if (ledger?.version !== 1 || !Number.isSafeInteger(ledger.total) || ledger.total < 0
     || !Number.isSafeInteger(ledger.limit) || ledger.limit < 1 || ledger.total > ledger.limit
@@ -15,9 +64,12 @@ export function validateNativeLedger(ledger, state, runId, { settled = false } =
     || new Set(ledger.reservations.map(item => item.id)).size !== ledger.reservations.length
     || ledger.turns.some(turn => !Number.isSafeInteger(turn.number) || turn.number < 1
       || !['main', 'runner'].includes(turn.role)
+      || turn.childKind !== undefined && !['pending', 'auxiliary', 'formal'].includes(turn.childKind)
       || !['completed', 'failed', 'dispatched', 'uncertain', 'not_dispatched'].includes(turn.state))
     || ledger.total !== ledger.turns.filter(turn => turn.state !== 'not_dispatched').length
     || settled && (ledger.reservations.length !== 0 || ledger.turns.some(turn => !['completed', 'not_dispatched'].includes(turn.state)))) fail('native ledger is absent, inconsistent or unsettled');
+  if (ledger.turns.filter(turn => turn.childKind === 'auxiliary' && turn.state !== 'not_dispatched').length > 8
+    || settled && ledger.turns.some(turn => turn.childKind === 'pending')) fail('auxiliary ledger is over budget or unresolved');
   const counted = ledger.turns.filter(turn => turn.caseId === state.caseId && turn.state !== 'not_dispatched');
   if (counted.some(turn => turn.runId !== runId)
     || counted.filter(turn => turn.role === 'main').length !== state.mainTurns
@@ -79,7 +131,7 @@ export function assertNativeCaptures(image, captures, { restoreCaptureSources } 
       const object = objects.get(record.sources.concludedToolResult);
       if (!object) fail('current operation has no retained concluded tool result');
       const value = JSON.parse(object);
-      if (value?.agentId && value.status === 'completed' && typeof value.finalResponse === 'string') official.push({ value, record });
+      if (value?.agentId && value.status === 'completed' && typeof value.finalResponse === 'string') official.push({ value, record, objects });
     }
   }
   if (new Set(captures.map(item => item.binding.agentPath)).size !== captures.length
@@ -87,6 +139,18 @@ export function assertNativeCaptures(image, captures, { restoreCaptureSources } 
   for (const capture of captures) {
     if (official.filter(({ value }) => value.agentId === capture.binding.agentPath
       && value.finalResponse === capture.toolResult.finalResponse).length !== 1) fail('official retained capture differs from the public child');
+    if (capture.designation) {
+      const matched = official.find(({ value }) => value.agentId === capture.binding.agentPath
+        && value.finalResponse === capture.toolResult.finalResponse);
+      const profile = matched.record.origin.operation === 'EXECUTE_SLICE' ? 'initial-implementation'
+        : matched.record.origin.operation === 'APPLY_FINDINGS' ? 'current-findings' : 'current-validation';
+      if (typeof restoreCaptureSources !== 'function') fail('formal source verifier absent');
+      const origin = JSON.parse(Buffer.from(restoreCaptureSources(profile, matched.record, matched.objects).origin));
+      if (capture.designation.agentPath !== capture.binding.agentPath
+        || origin.owner.operationAttemptId !== capture.designation.operationAttemptId
+        || origin.admission.binding.operationId !== capture.designation.operationId
+        || origin.dispatchId !== capture.designation.dispatchId || origin.attempt !== capture.designation.round) fail('formal designation differs from authenticated source');
+    }
   }
   return { matched: captures.length, responseHashes: captures.map(item => item.finalResponseSha256),
     rejectedResponses: official.filter(item => item.record.kind === 'rejection').map(item => ({

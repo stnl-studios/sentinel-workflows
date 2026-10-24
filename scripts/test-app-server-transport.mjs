@@ -7,7 +7,7 @@ import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { appServerEnvironment, appServerRpc, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
-  selectAppServerBundle, startAppServerTurn, bindAppServerChild, readAppServerChild,
+  selectAppServerBundle, startAppServerTurn, bindAppServerChild, readAppServerChild, observeAppServerChild,
   writeNativeToolResult, captureAppServerChild, persistAppServerStderrSample, readAppServerAgentFeatures } from '../agents/codex/runtime/app-server-transport.mjs';
 import { createNativeProvider } from '../agents/codex/runtime/native-provider.mjs';
 import { reservedOperation } from './fixtures/current-native-operation.mjs';
@@ -99,6 +99,126 @@ function server({ bundle, cwd, response = '  resultado íntegro\r\n𝛑\n', muta
     },
   } };
 }
+
+test('auxiliary observation authenticates lineage and cost without granting formal capture', async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root,
+    mutate(state) { state.thread.forkedFromId = parent; state.thread.model = 'gpt-6.1-sol'; state.items = []; } });
+  const binding = await bindAppServerChild(s.rpc, identity);
+  assert.deepEqual(await observeAppServerChild(s.rpc, { binding, cwd: f.root }),
+    { turns: [{ id: 'child-turn', status: 'completed' }], children: [] });
+  await assert.rejects(readAppServerChild(s.rpc, { binding, bundle: f.bundle, cwd: f.root }), blocked,
+    'an auxiliary, even completed with a PASS-like answer, is not a formal runner');
+  assert.ok(s.calls.every(call => /^thread\//u.test(call.method)), 'observation must not admit any turn');
+});
+for (const [name, mutate] of [
+  ['foreign-parent', state => { state.thread.parentThreadId = 'foreign'; }],
+  ['foreign-workspace', state => { state.thread.cwd = '/foreign'; }],
+  ['error-with-completed', state => { state.turns[0].error = { message: 'uncertain' }; }],
+  ['duplicate-turn', state => { state.turns.push(structuredClone(state.turns[0])); }],
+  ['duplicate-edge', state => { state.items = [1, 2].map(index => ({ id: `edge-${index}`, type: 'subAgentActivity',
+    kind: 'started', agentPath: '/root/nested', agentThreadId: 'nested' })); }],
+]) test(`auxiliary observation blocks ${name}`, async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, mutate });
+  const binding = await bindAppServerChild(s.rpc, identity);
+  await assert.rejects(observeAppServerChild(s.rpc, { binding, cwd: f.root }), blocked);
+});
+
+test('auxiliary turn IDs and known descendants remain accountable when later item or binding reads fail', async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root });
+  const binding = await bindAppServerChild(s.rpc, identity), charged = [];
+  const rpc = { async request(method, params) {
+    if (method === 'thread/turns/list') return { data: [...s.state.turns, { id: 'followup', status: 'completed', error: null }], nextCursor: null };
+    if (method === 'thread/items/list' && params.turnId === 'followup') return { data: [
+      { turnId: 'followup', item: { id: 'edge', type: 'subAgentActivity', kind: 'started', agentPath: '/root/nested', agentThreadId: 'nested' } },
+      { turnId: 'followup', item: { id: 'denied', type: 'commandExecution', command: 'cat <<EOF',
+        aggregatedOutput: "zsh:1: can't create temp file for here document: operation not permitted" } },
+    ], nextCursor: null };
+    return s.rpc.request(method, params);
+  } };
+  await assert.rejects(observeAppServerChild(rpc, { binding, cwd: f.root,
+    onTurns: turns => charged.push(...turns.map(turn => turn.id)) }), error => {
+    assert.match(error.message, /SANDBOX_COMMAND_DENIED/u);
+    assert.deepEqual(error.descendants.map(value => value.agentThreadId), ['nested']); return true;
+  });
+  assert.deepEqual(charged, ['child-turn', 'followup'], 'failure cannot refund an already observed follow-up');
+});
+
+test('duplicate auxiliary history is rejected after charging its distinct observed turns', async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root });
+  const binding = await bindAppServerChild(s.rpc, identity), charged = [];
+  const rpc = { request(method, params) {
+    if (method === 'thread/turns/list') return { data: [s.state.turns[0], { id: 't2' }, { id: 't2' }], nextCursor: null };
+    return s.rpc.request(method, params);
+  } };
+  await assert.rejects(observeAppServerChild(rpc, { binding, cwd: f.root,
+    onTurns: turns => charged.push(...turns.map(turn => turn.id)) }), /duplicate auxiliary turns/u);
+  assert.deepEqual(charged, ['child-turn', 't2']);
+});
+
+test('partial auxiliary pagination counts known turns but cannot certify the view', async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root });
+  const binding = await bindAppServerChild(s.rpc, identity), charged = [];
+  const rpc = { request(method, params) {
+    if (method === 'thread/turns/list') {
+      if (params.cursor === null) return { data: [{ id: 't1' }, { id: 't2' }], nextCursor: 'next' };
+      throw Error('OFFLINE second page unavailable');
+    }
+    return s.rpc.request(method, params);
+  } };
+  await assert.rejects(observeAppServerChild(rpc, { binding, cwd: f.root,
+    onTurns: turns => charged.push(...turns.map(turn => turn.id)) }), /second page unavailable/u);
+  assert.deepEqual(charged, ['t1', 't2']);
+});
+
+test('a terminal principal cannot hand off while its auxiliary remains active', async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true,
+    mutate(state) { state.turns[0].status = 'inProgress'; } });
+  const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  const result = await provider.runTurn({ prompt: 'offline', workflowSkill: 'stnl-slice-executor', model: 'gpt-6-luna',
+    effort: 'high', operationId: 'active-auxiliary', role: 'author', timeoutMs: 100, observeFormalBinding: async () => null });
+  assert.equal(result.completed, false); assert.equal(result.terminalObserved, false);
+  assert.deepEqual(result.captures, []);
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1);
+});
+
+test('parent denial preserves already observed child identities as uncertain cost, never formal proof', async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true,
+    mutate(state) { state.parentItems.push({ id: 'denied', type: 'commandExecution', command: 'cat <<EOF',
+      aggregatedOutput: "zsh:1: can't create temp file for here document: operation not permitted" }); } });
+  const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc });
+  const observed = [];
+  const result = await provider.runTurn({ prompt: 'offline', workflowSkill: 'stnl-slice-executor', model: 'gpt-6-luna',
+    effort: 'high', operationId: 'denied-cost', role: 'author', observeFormalBinding: async () => null,
+    onUnadmittedChildren: children => observed.push(...children) });
+  assert.equal(result.completed, false); assert.match(result.error, /SANDBOX_COMMAND_DENIED/u);
+  assert.deepEqual(observed.map(value => value.agentThreadId), [child]); assert.deepEqual(result.captures, []);
+});
+
+for (const parentItems of [true, false]) test(`partial ${parentItems ? 'parent' : 'auxiliary'} item history retains known child cost without certifying lineage`, async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true });
+  const rpc = { notify: s.rpc.notify, request(method, params) {
+    if (method === 'thread/items/list' && params.threadId === (parentItems ? parent : child)) {
+      if (params.cursor !== null) throw Error('OFFLINE item page unavailable');
+      const item = { id: 'partial-spawn', type: 'subAgentActivity', kind: 'started',
+        agentPath: parentItems ? identity.agentPath : '/root/nested', agentThreadId: parentItems ? child : 'nested' };
+      return { data: [{ turnId: params.turnId, item }], nextCursor: 'next' };
+    }
+    return s.rpc.request(method, params);
+  } };
+  if (parentItems) {
+    const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc });
+    const charged = [];
+    const result = await provider.runTurn({ prompt: 'offline', workflowSkill: 'stnl-slice-executor', model: 'gpt-6-luna',
+      effort: 'high', operationId: 'partial-parent', role: 'author', onUnadmittedChildren: values => charged.push(...values) });
+    assert.equal(result.completed, false); assert.deepEqual(result.captures, []);
+    assert.deepEqual(charged.map(value => value.agentThreadId), [child]);
+  } else {
+    const binding = await bindAppServerChild(rpc, identity);
+    await assert.rejects(observeAppServerChild(rpc, { binding, cwd: f.root }), error => {
+      assert.deepEqual(error.descendants.map(value => value.agentThreadId), ['nested']); return true;
+    });
+  }
+});
 
 test('S2 frozen paths select the intended skill despite homonyms; all siblings/runner are pinned', async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root });

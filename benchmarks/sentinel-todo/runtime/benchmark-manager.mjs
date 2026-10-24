@@ -10,7 +10,7 @@ import { assertSnapshotIntegrity, createSnapshot } from './benchmark-snapshot.mj
 import { createReporter } from './benchmark-ui.mjs';
 import { budgetViolation, artifactMetrics } from './benchmark.mjs';
 import { contextPolicy, preparationHandoff, assertNativeCaptures,
-  retainBeforeClose, finishCloseEvidence, validateNativeLedger } from './native-evidence.mjs';
+  retainBeforeClose, finishCloseEvidence, validateNativeLedger, observeFormalRunner } from './native-evidence.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
@@ -152,12 +152,15 @@ async function updateLedger(runRoot, mutator, limit) {
   return job;
 }
 function availableTurns(ledger) { return ledger.limit - ledger.total - ledger.reservations.length; }
-export async function admitOperation({ runRoot, runId, caseId, operation, runnerRequired, runnerSlots = runnerRequired ? 1 : 0, limit }) {
+export async function admitOperation({ runRoot, runId, caseId, operation, runnerRequired, runnerSlots = runnerRequired ? 1 : 0, auxiliaryLimit = 0, limit }) {
   return updateLedger(runRoot, (ledger) => {
     if (!Number.isSafeInteger(runnerSlots) || runnerSlots < 0 || runnerSlots > 3) fail('invalid native child margin');
     if (availableTurns(ledger) < 1 + runnerSlots) throw budgetPause();
     const main = randomUUID();
-    const runners = Array.from({ length: runnerSlots }, () => randomUUID());
+    if (![0, 8].includes(auxiliaryLimit)) fail('invalid auxiliary limit');
+    const auxiliaryUsed = ledger.turns.filter(item => item.childKind && item.childKind !== 'formal' && item.state !== 'not_dispatched').length;
+    const margin = Math.min(Math.max(0, auxiliaryLimit - auxiliaryUsed), availableTurns(ledger) - 1 - runnerSlots);
+    const runners = Array.from({ length: runnerSlots + margin }, () => randomUUID());
     ledger.reservations.push({ id: main, runId, caseId, role: 'main', operation,
       reservedAt: new Date().toISOString() });
     for (const runner of runners) ledger.reservations.push({ id: runner, runId, caseId,
@@ -203,14 +206,14 @@ export async function settleTurn(runRoot, number, turn, limit) {
     } else entry.state = turn?.completed ? 'completed' : turn?.turnStarted == null ? 'uncertain' : 'failed';
   }, limit);
 }
-async function recordUnadmittedChild(runRoot, { caseId, operation, binding }) {
+async function recordUnadmittedChild(runRoot, { caseId, operation, binding, turnId = null }) {
   return updateLedger(runRoot, ledger => {
     if (ledger.turns.some(turn => turn.caseId === caseId && turn.operation === operation
-      && turn.threadId === binding.agentThreadId)) return false;
+      && turn.threadId === binding.agentThreadId && (turnId === null || turn.turnId === turnId))) return false;
     ledger.total++;
     ledger.turns.push({ number: ++ledger.nextNumber, caseId, operation, role: 'runner',
       runId: path.basename(runRoot), state: 'uncertain', threadId: binding.agentThreadId, agentPath: binding.agentPath,
-      unadmitted: true, startedAt: new Date().toISOString() });
+      ...(turnId === null ? {} : { turnId }), unadmitted: true, startedAt: new Date().toISOString() });
     return true;
   });
 }
@@ -324,7 +327,14 @@ export function decideOutcome(operation, readback, completed, readinessResult = 
   if (execution?.error || BLOCKED_STATES.has(execution?.state)) {
     return { result: 'BLOCKED', blocker: execution?.error ? 'OFFICIAL_READBACK_ERROR' : `OFFICIAL_${execution.state}` };
   }
-  if (['PLAN', 'REPLAN'].includes(operation) && readback.preparation?.status === 'AWAITING_REVIEW') return { result: 'PASS', blocker: null };
+  if (['PLAN', 'REPLAN'].includes(operation) && readback.preparation?.status === 'AWAITING_REVIEW') {
+    if (operation === 'PLAN' && !['EMPTY', 'NO_EXECUTION'].includes(execution?.state)) return { result: 'BLOCKED', blocker: 'PLAN_ADVANCED_FLOW' };
+    if (operation === 'REPLAN' && readback.preparation.expectedActivationId
+      && readback.preparation.expectedActivationId !== execution?.activationId) return { result: 'BLOCKED', blocker: 'REPLAN_ADVANCED_FLOW' };
+    return { result: 'PASS', blocker: null };
+  }
+  if (operation === 'REVIEW_PLAN' && readback.preparation?.authority?.preparationRevision === 1
+    && execution?.state !== 'MATERIALIZED_PRISTINE') return { result: 'BLOCKED', blocker: 'REVIEW_PLAN_ADVANCED_FLOW' };
   if (operation === 'VALIDATE_SLICE' && execution?.state === 'VALIDATION_NEEDS_FIX') return { result: 'NEEDS_FIX', blocker: null };
   const accepted = {
     PLAN: ['PLANNED_DRAFT'], REVIEW_PLAN: ['MATERIALIZED_PRISTINE', 'EXECUTION_STARTED', 'IMPLEMENTED_AWAITING_VALIDATION', 'FINDINGS_CORRECTED'],
@@ -420,7 +430,13 @@ export async function loadProduct(snapshot) {
   const projection = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs')).href);
   const evidence = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs')).href);
   const proof = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/execution-evidence-proof.mjs')).href);
+  const publication = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs')).href);
+  const workspace = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/execution-workspace.mjs')).href);
   return { ...execution, ...readiness, ...provider, ...current, ...kernel, ...projection, ...evidence, ...proof,
+    readOwnedFile: publication.readOwnedFile, resolveExecutionFilesystemRoots: publication.resolveExecutionFilesystemRoots,
+    validateCurrentOperationAllocationBinding: publication.validateCurrentOperationAllocationBinding,
+    resolveCurrentExecutionContext: workspace.resolveCurrentExecutionContext,
+    executionWorkspaceFromContext: workspace.executionWorkspaceFromContext,
     validateWorkspace: lifecycle.validateWorkspace, workspaceSnapshot: lifecycle.workspaceSnapshot,
     deriveCloseExecutionDisposition: lifecycle.deriveCloseExecutionDisposition,
     assertPreparationCandidate: preparation.assertPreparationCandidate };
@@ -573,7 +589,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       // than being called free. No promise of a financial/HTTP limit is made.
       const runnerSlots = ['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation) ? 3 : operation === 'VALIDATE_SLICE' ? 2 : 0;
       const admission = pending?.admission ?? await admitOperation({ runRoot, runId: path.basename(runRoot), caseId,
-        operation, runnerRequired: runnerSlots > 0, runnerSlots, limit: turnLimit });
+        operation, runnerRequired: runnerSlots > 0, runnerSlots, auxiliaryLimit: 8, limit: turnLimit });
       const reserved = [...(pending?.reserved ?? admission.runners)], startedChildren = new Map(pending?.startedChildren ?? []);
       let mainNumber = pending?.mainNumber ?? null, turn = null;
       const startedAt = new Date().toISOString(), startedMs = Date.now();
@@ -588,6 +604,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           effort: route.effort, role, priorAuthorThread: prior, operationId, signal,
           observation: pending?.dispatch ?? null,
           onDispatched: checkpoint,
+          observeFormalBinding: () => observeFormalRunner({ product, specPath, operation, slice }),
+          validateRetainedCaptures: async captures => assertNativeCaptures(await product.captureCurrentExecution(specPath), captures, product),
           onUnadmittedChildren: async bindings => {
             for (const binding of bindings) if (await recordUnadmittedChild(runRoot, { caseId, operation, binding })) state.runnerTurns++;
           },
@@ -607,8 +625,51 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
             const number = await startReservedTurn(runRoot, reservation, turnLimit);
             state.runnerTurns++;
             startedChildren.set(binding.agentThreadId, number);
+            await updateLedger(runRoot, ledger => Object.assign(ledger.turns.find(item => item.number === number),
+              { threadId: binding.agentThreadId, agentPath: binding.agentPath, childKind: 'pending' }));
             await checkpoint(state.pendingObservation.dispatch);
           },
+          onChildTurns: async (binding, turns) => {
+            let exceeded = false;
+            for (const childTurn of turns) {
+              const ledger = await readJson(ledgerPath(runRoot));
+              const entries = ledger.turns.filter(item => item.threadId === binding.agentThreadId);
+              if (entries.some(item => item.turnId === childTurn.id)) continue;
+              let number = entries.find(item => item.turnId === undefined)?.number;
+              if (number === undefined) {
+                const reservation = reserved.shift();
+                if (!reservation) {
+                  await recordUnadmittedChild(runRoot, { caseId, operation, binding, turnId: childTurn.id });
+                  exceeded = true; continue;
+                }
+                number = await startReservedTurn(runRoot, reservation, turnLimit);
+              }
+              await updateLedger(runRoot, value => {
+                const entry = value.turns.find(item => item.number === number);
+                Object.assign(entry, { threadId: binding.agentThreadId, agentPath: binding.agentPath,
+                  turnId: childTurn.id, childKind: entry.childKind ?? 'pending' });
+              });
+              await checkpoint(state.pendingObservation.dispatch);
+            }
+            if (exceeded) fail('observed child follow-up exceeds admitted margin');
+          },
+          onAuxiliaryCompleted: async binding => {
+            await updateLedger(runRoot, ledger => {
+              for (const entry of ledger.turns.filter(item => item.threadId === binding.agentThreadId)) entry.childKind = 'auxiliary';
+              if (ledger.turns.filter(item => item.childKind === 'auxiliary' && item.state !== 'not_dispatched').length > 8)
+                fail('auxiliary call limit exceeded');
+            });
+            const ledger = await readJson(ledgerPath(runRoot));
+            for (const entry of ledger.turns.filter(item => item.threadId === binding.agentThreadId))
+              await settleTurn(runRoot, entry.number, { completed: true, turnStarted: true, threadId: binding.agentThreadId }, turnLimit);
+          },
+          onFormalObserved: async (binding, designation) => updateLedger(runRoot, ledger => {
+            const entries = ledger.turns.filter(item => item.threadId === binding.agentThreadId);
+            if (entries.length !== 1) fail('formal child has multiple admitted turns');
+            Object.assign(entries[0], { childKind: 'formal', designation });
+            if (ledger.turns.filter(item => item.operation === operation && item.childKind === 'formal'
+              && startedChildren.has(item.threadId)).length > runnerSlots) fail('formal call limit exceeded');
+          }),
           onChildCompleted: async ({ binding }) => settleTurn(runRoot,
             startedChildren.get(binding.agentThreadId), { completed: true, turnStarted: true, threadId: binding.agentThreadId }, turnLimit),
         });
@@ -618,7 +679,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       } finally {
         // An uncertain parent may still spawn: its admitted margin remains
         // reserved until official terminal observation proves it unused.
-        if (turn?.completed === true || turn?.turnStarted === false) {
+        if (turn?.completed === true || turn?.turnStarted === false || turn?.terminalObserved === true) {
           for (const reservation of reserved) await releaseReservation(runRoot, reservation, turnLimit);
         }
         if (mainNumber !== null) await settleTurn(runRoot, mainNumber, turn, turnLimit);
@@ -655,7 +716,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           return { exitCode: 0, retainedEvent: previousEvent.index };
         })() : command(argsForJournal({ journal, operation, route, outcome, slice,
         readback: { ...readback, preparation }, readinessResult: readiness,
-        turn: { ...turn, prompt }, durationMs: Date.now() - startedMs, runnerCount: startedChildren.size }));
+        turn: { ...turn, prompt }, durationMs: Date.now() - startedMs, runnerCount: turn.captures.length }));
       if (journalResult.exitCode !== 0) outcome = { result: 'BLOCKED', blocker: 'JOURNAL_REJECTED',
         diagnostic: journalResult.stderr, priorOutcome: outcome };
       const evidencePath = path.join(caseRoot, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}${pending === null ? '' : `.observation-${randomUUID()}`}.json`);

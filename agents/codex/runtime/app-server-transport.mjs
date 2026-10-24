@@ -371,12 +371,14 @@ export async function startAppServerTurn(rpc, { bundle, cwd, skillName, prompt, 
   return { threadId: started.thread.id, turnId: response.turn.id, agentFeatures };
 }
 
-async function pages(rpc, method, params) {
-  const items = [], seen = new Set(), itemIds = new Set(); let cursor = null;
+async function pages(rpc, method, params, onPage = null) {
+  const items = [], seen = new Set(), itemIds = new Set(), observedChildren = []; let cursor = null;
+  try {
   for (let page = 0; page < 32; page++) {
     const result = await rpc.request(method, { ...params, cursor, limit: 100,
       ...(method === 'experimentalFeature/list' ? {} : { sortDirection: 'asc' }) });
     requireThat(Array.isArray(result?.data), 'public history page absent');
+    await onPage?.(result.data);
     for (const entry of result.data) {
       if (method !== 'thread/items/list') { items.push(entry); continue; }
       // 0.163 returns ThreadItemEntry, not a bare ThreadItem. Enforce its
@@ -386,6 +388,10 @@ async function pages(rpc, method, params) {
         && id(entry.item.id) && id(entry.item.type), 'public item entry absent or foreign');
       requireThat(!itemIds.has(entry.item.id), 'duplicate public history item');
       itemIds.add(entry.item.id); items.push(entry.item);
+      if (entry.item.type === 'subAgentActivity' && entry.item.kind === 'started'
+        && id(entry.item.agentThreadId) && id(entry.item.agentPath)) observedChildren.push({
+        parentThreadId: params.threadId, parentTurnId: params.turnId, agentPath: entry.item.agentPath,
+        agentThreadId: entry.item.agentThreadId, unadmitted: true });
     }
     // Optional nullable cursor: omitted and null both mean None in 0.163.
     if (result.nextCursor == null) return items;
@@ -393,6 +399,10 @@ async function pages(rpc, method, params) {
     seen.add(result.nextCursor); cursor = result.nextCursor;
   }
   throw fail('public history page limit reached; result incomplete');
+  } catch (error) {
+    if (observedChildren.length) error.descendants = [...(error.descendants ?? []), ...observedChildren];
+    throw error;
+  }
 }
 
 function hasShellTemporaryRedirection(command, kind) {
@@ -449,6 +459,45 @@ async function parentBinding(rpc, { parentThreadId, parentTurnId, agentPath }) {
 }
 
 export async function bindAppServerChild(rpc, identity) { return (await parentBinding(rpc, identity)).binding; }
+
+// Observes cost/lifecycle only. This view does not certify a validation runner,
+// interpret a verdict, or emit a capture-native ready envelope.
+export async function observeAppServerChild(rpc, { binding, cwd, onTurns, onChild }) {
+  const { binding: current } = await parentBinding(rpc, binding);
+  requireThat(Object.keys(current).every(key => current[key] === binding[key]), 'observed child binding changed');
+  const { thread } = await rpc.request('thread/read', { threadId: binding.agentThreadId, includeTurns: false });
+  requireThat(thread?.id === binding.agentThreadId && thread.parentThreadId === binding.parentThreadId
+    && thread.cliVersion === APP_SERVER_VERSION && thread.cwd === cwd, 'auxiliary child metadata differs');
+  const observedTurns = new Map();
+  const turns = await pages(rpc, 'thread/turns/list', { threadId: binding.agentThreadId, itemsView: 'full' }, async page => {
+    for (const turn of page) if (id(turn?.id)) observedTurns.set(turn.id, { id: turn.id, status: turn.status });
+    await onTurns?.([...observedTurns.values()]);
+  });
+  requireThat(new Set(turns.map(turn => turn.id)).size === turns.length, 'duplicate auxiliary turns');
+  requireThat(turns.every(turn => id(turn.id)), 'invalid auxiliary turn identity');
+  // Cost counts unique observed IDs; the malformed full view still fails.
+  const children = [], observedChildren = [];
+  try {
+  for (const turn of turns) {
+    requireThat(id(turn.id) && ['inProgress', 'completed', 'failed', 'interrupted'].includes(turn.status)
+      && (turn.status !== 'completed' || turn.error == null), 'invalid auxiliary turn');
+    const items = await pages(rpc, 'thread/items/list', { threadId: binding.agentThreadId, turnId: turn.id });
+    const starts = items.filter(item => item.type === 'subAgentActivity' && item.kind === 'started');
+    observedChildren.push(...starts.filter(item => id(item.agentThreadId) && id(item.agentPath))
+      .map(item => ({ parentThreadId: binding.agentThreadId, parentTurnId: turn.id,
+        agentPath: item.agentPath, agentThreadId: item.agentThreadId, unadmitted: true })));
+    if (items.some(deniedShellTemporaryFile)) throw fail('SANDBOX_COMMAND_DENIED: auxiliary command denial');
+    const paths = new Set();
+    for (const item of starts) {
+      requireThat(!paths.has(item.agentPath), 'duplicate auxiliary child edge'); paths.add(item.agentPath);
+      const child = await bindAppServerChild(rpc, { parentThreadId: binding.agentThreadId,
+        parentTurnId: turn.id, agentPath: item.agentPath });
+      await onChild?.(child); children.push(child);
+    }
+  }
+  } catch (error) { throw Object.assign(error, { descendants: [...(error.descendants ?? []), ...observedChildren] }); }
+  return { turns: turns.map(turn => ({ id: turn.id, status: turn.status })), children };
+}
 
 // Observe the contract-loaded generic profile approved by the product. A
 // completed read with exact bytes is evidence of loading, not developer priority
