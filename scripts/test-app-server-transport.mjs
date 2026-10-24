@@ -287,13 +287,40 @@ for(const [name,change]of Object.entries({
   assert.equal(s.calls.some(c=>c.method==='turn/start'),false);
 });
 
-test('generic contract loading accepts complete ordinary hash plus cat output, with official identity',async t=>{
+for (const order of ['hash-first', 'read-first']) for (const hash of ['sha256sum', 'shasum -a 256'])
+test(`generic contract loading accepts exact ${order} ${hash} output, with official identity`,async t=>{
   const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root});
-  const command=`sha256sum ${f.bundle.runner.path} && cat ${f.bundle.runner.path}`;
+  const read=`cat ${f.bundle.runner.path}`, digest=`${hash} ${f.bundle.runner.path}`;
+  const command=order==='hash-first'?`${digest} && ${read}`:`${read} && ${digest}`;
   s.state.items[0].command=`/bin/zsh -lc '${command}'`;
-  s.state.items[0].aggregatedOutput=`${f.bundle.runner.sha256.slice(7)}  ${f.bundle.runner.path}\n${s.state.items[0].aggregatedOutput}`;
+  const text=s.state.items[0].aggregatedOutput,line=`${f.bundle.runner.sha256.slice(7)}  ${f.bundle.runner.path}\n`;
+  s.state.items[0].aggregatedOutput=order==='hash-first'?line+text:text+line;
   const binding=await bindAppServerChild(s.rpc,identity);
   assert.equal((await readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root})).finalResponse,s.state.items.at(-1).text);
+  assert.ok(s.calls.every(call=>['thread/read','thread/items/list','thread/turns/list'].includes(call.method)));
+});
+
+for (const order of ['hash-first', 'read-first']) for (const invalid of
+  ['truncated', 'extra-output', 'wrong-hash', 'foreign-hash-path', 'foreign-read-path', 'reversed-output', 'foreign-identity', 'extra-shell-effect'])
+test(`generic ${order} contract read rejects ${invalid} without a new turn`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root});
+  const text=s.state.items[0].aggregatedOutput,read=`cat ${f.bundle.runner.path}`,digest=`shasum -a 256 ${f.bundle.runner.path}`;
+  const line=`${f.bundle.runner.sha256.slice(7)}  ${f.bundle.runner.path}\n`;
+  const output=(body,hashLine)=>order==='hash-first'?hashLine+body:body+hashLine;
+  const command=order==='hash-first'?`${digest} && ${read}`:`${read} && ${digest}`;
+  s.state.items[0].command=`/bin/zsh -lc '${command}'`;
+  s.state.items[0].aggregatedOutput=output(text,line);
+  if(invalid==='truncated')s.state.items[0].aggregatedOutput=output(text.slice(0,-1),line);
+  if(invalid==='extra-output')s.state.items[0].aggregatedOutput+='extra';
+  if(invalid==='wrong-hash')s.state.items[0].aggregatedOutput=output(text,'0'.repeat(64)+`  ${f.bundle.runner.path}\n`);
+  if(invalid==='foreign-hash-path')s.state.items[0].aggregatedOutput=output(text,`${f.bundle.runner.sha256.slice(7)}  /other/runner.toml\n`);
+  if(invalid==='foreign-read-path')s.state.items[0].command=s.state.items[0].command.replace(read,'cat /other/runner.toml');
+  if(invalid==='reversed-output')s.state.items[0].aggregatedOutput=order==='hash-first'?text+line:line+text;
+  if(invalid==='foreign-identity')s.state.thread.parentThreadId='foreign';
+  if(invalid==='extra-shell-effect')s.state.items[0].command=`/bin/zsh -lc '${command}; touch other'`;
+  const binding=await bindAppServerChild(s.rpc,identity);
+  await assert.rejects(()=>readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root}),blocked);
+  assert.ok(s.calls.every(call=>['thread/read','thread/items/list','thread/turns/list'].includes(call.method)));
 });
 
 test('generic contract read preserves paths with spaces/quotes and double-quoted shell display',async t=>{

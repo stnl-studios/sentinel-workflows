@@ -436,21 +436,24 @@ export async function bindAppServerChild(rpc, identity) { return (await parentBi
 
 // Observe the contract-loaded generic profile approved by the product. A
 // completed read with exact bytes is evidence of loading, not developer priority
-// or proof of semantic obedience. Accept ordinary bounded cat/hash+cat forms;
+// or proof of semantic obedience. Accept bounded cat/hash+cat/cat+hash forms;
 // never execute parsed shell text or accept a claim/echo as a read.
 const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const shellDoubleQuote = value => `"${value.replace(/[\\$`"]/gu, '\\$&')}"`;
 function contractReadForms(file) {
   const operands = [shellQuote(file), shellDoubleQuote(file), ...(/^[a-zA-Z0-9_./-]+$/u.test(file) ? [file] : [])];
-  const plain = new Set(), hashed = new Set();
+  const plain = new Set(), hashFirst = new Set(), readFirst = new Set();
   for (const operand of operands) for (const cat of ['cat', '/bin/cat']) for (const flags of ['', '-- ']) {
     const read = `${cat} ${flags}${operand}`; plain.add(read);
-    for (const hash of ['sha256sum', 'shasum -a 256']) hashed.add(`${hash} ${operand} && ${read}`);
+    for (const hash of ['sha256sum', 'shasum -a 256']) {
+      hashFirst.add(`${hash} ${operand} && ${read}`);
+      readFirst.add(`${read} && ${hash} ${operand}`);
+    }
   }
   const wrap = forms => new Set([...forms].flatMap(form => [form,
     ...['/bin/zsh -lc', '/bin/sh -c', '/bin/bash -lc'].flatMap(shell =>
       [shellQuote(form), shellDoubleQuote(form)].map(script => `${shell} ${script}`))]));
-  return { plain: wrap(plain), hashed: wrap(hashed) };
+  return { plain: wrap(plain), hashFirst: wrap(hashFirst), readFirst: wrap(readFirst) };
 }
 async function assertGenericContractLoad(items, bundle, cwd) {
   const firstAction = items.find(item => !['userMessage', 'agentMessage', 'reasoning'].includes(item.type));
@@ -460,8 +463,9 @@ async function assertGenericContractLoad(items, bundle, cwd) {
   requireThat(Buffer.from(text, 'utf8').equals(bytes) && sha(bytes) === bundle.runner.sha256,
     'generic runner contract bytes differ');
   const forms = contractReadForms(bundle.runner.path), command = firstAction.command;
-  const expected = forms.plain.has(command) ? text : forms.hashed.has(command)
-    ? `${bundle.runner.sha256.slice(7)}  ${bundle.runner.path}\n${text}` : null;
+  const hashLine = `${bundle.runner.sha256.slice(7)}  ${bundle.runner.path}\n`;
+  const expected = forms.plain.has(command) ? text : forms.hashFirst.has(command)
+    ? hashLine + text : forms.readFirst.has(command) ? text + hashLine : null;
   requireThat(expected !== null && firstAction.aggregatedOutput === expected,
     'generic runner complete contract output absent, truncated or foreign');
 }
