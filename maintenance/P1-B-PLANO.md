@@ -7,12 +7,12 @@
 
 | Onde estamos | Situação comprovada |
 | --- | --- |
-| Unidade corrente | **U3 — Qualificação e QA.** Corrida de coleta da fixture identificada/reproduzida/corrigida (§26.52),151/250. Integração38/38 e lifecycle10/10; sem nova prova real. Contrato formal/contexto corrigidos ainda sem aceite composto. S2 anterior separado; U3.18 não iniciada. |
+| Unidade corrente | **U3 — Qualificação e QA.** Prova composta0d8a09d encerrada BLOCKED em EXECUTE (§26.53),157/250. INIT/PLAN/REVIEW_PLAN passaram;filho concluiu sem verificação e captura recusou observação ausente. Sem aceite composto atual;S2 anterior separado,U3.18 não iniciada. |
 | Entrega corrente | **U3.16 — adaptação aceita no alcance offline.** Oracle/observer/N, Initial, convertido/REPLAN, captura/retomada e CLOSE/readers/export passaram mecanicamente. Sem qualificação runtime, FULL real ou aceite U3/P1-B. U3.15-D conserva seu PASS nativo delimitado; C conserva TESTS_FAIL. |
 | Última execução nativa aceita | **Janela nativa21:40:43–22:22 UTC concluída**, dez invocações novas; preparação, EXECUTE, formal integral, CLOSE e revisão passaram. Fonte/bundle finais estáveis, sem consumir a reserva. |
 | Base aceita | U1/U2 com PASS histórico delimitado; U3.5/U3.6 com aceite EC-1 nativo/manual. Nenhuma recertificação global automática. |
 | Foco atual | **Coleta offline aguarda autorias já iniciadas.** Manager podia encerrar por excesso de auxiliares enquanto void finish ainda escrevia; hooks agora fazem join antes de copiar. Não ignora ENOENT,altera produto/coletor ou liquida ledger incerto. Restrições de scratch e contrato formal preservadas. |
-| Autorização atual | Passagem offline encerrada,151/250:uma revisão adicional,zero modelo de produto/confiança. Global140igual;63conjuntosQA movidos recuperavelmente,pacote176KiB/workspace4KiB sóxcrun_db. Nenhuma nova rodada ou recuperação. Archive anterior pendente sem contorno;sempush/instalação/U3.18/RECONCILE. |
+| Autorização atual | Rodada única autorizada encerrada,157/250;nenhum retry/recuperação iniciado. Trust exato removido,global140igual,cópia/cache inativos naLixeira e evidência mínima1312KiB. Limpeza prévia/complementar65992KiB de resíduos antigos;tmp inteira ainda cerca2,11GiB,discriminada em§26.53. Archive bloqueado não repetido;sempush/instalação/U3.18/RECONCILE. |
 
 **Caminho:** produto/QA → Codex nativo → adaptação offline da bancada → prova focal autorizada → **U3.18, executar benchmark completo** → U4, equalização Claude → U5, entrega → U6, teste Claude por Aj.
 
@@ -3942,3 +3942,57 @@ Localizações recuperáveis dos conjuntos integrais (correspondem aos16IDs da t
 **Integridade e limpeza:**140registros pessoais iguais em hash/modo à baseline de§26.51. QA terminou normalmente;63conjuntos próprios movidos recuperavelmente pelaLixeira oficial,exit0/todasorigens ausentes. Inspeção19881arquivos/6121diretórios semxcrun_db nosalvos;workspace354156→4KiB,sóxcrun_db intocado. Mínimo176KiB em tmp/u3-planejamento/U3.17-offline-collection-race-2026-10-25,total94524KiB;RED,reprodução,TAPs finais,parecer e hashes. Sempurga/emptyTrash/pastaexterna/limpezanegada/arquivamentobloqueadorepetido. Sem push/PR/merge/instalação/global/main/Claude/U3.18/RECONCILE. Falhas/SKIPs históricos continuam delimitados,não reexecutados ou chamados verdes.
 
 **Saída para a próxima decisão:** causa da corrida offline tratada com regressão e integração final,sem depender de rerun até passar. Não há outro gate offline obrigatório pendente deste delta. Falta uma prova composta em novo freeze que exercite o contexto de tmp e o contrato formal corrigidos,preserve primeira resposta/origem/captura/publicação/reobservação,confronte critérios e variantes,testes/receita/oracle e chegue a COMPLETE/CLOSE/leitor/revisão final com integridade/limpeza. Perfis autorais Sol/medium e formal Luna/medium permanecem,assim como8aux/30local/250total. Isso exige rodada/confiança específica;nenhuma foi iniciada nesta passagem e nenhum PASS antigo foi transferido. U3.17 permanece aberta eU3.18 não iniciou.
+
+
+<a id="u317-0d8a09d-real"></a>
+### 26.53. Nova prova composta0d8a09d — limpeza e freeze
+
+**Entrada autorizada:** Aj informou push manual e aprovou nova prova integral com confiança apenas no novo workspace. Checkout principal limpo em0d8a09d0909d2c04cac7ac0a5c4bbb6f49b4e57e,branch feature/p1b-workflow-redesign;nenhum push executado pelo agente. Consumo inicial151/250,teto local30,até8turnos auxiliares,retorno autoral Initial único e segunda recusa encerra.
+
+**Limpeza prévia efetiva:** tmp/u3-planejamento94408→37584KiB;tmp inteiro2274488→2217664KiB.104alvos próprios de QA/distribuição/cópias regeneráveis e diagnósticos de causas já tratadas movidos pela Lixeira oficial,exit0/todasorigens ausentes.56872KiB retirados,2753entradas inspecionadas,semxcrun_db ou autoria alheia nosalvos. Não esvaziada aLixeira. Retidos controles/evidências de pendências históricas e do FAILsemântico,baseline pessoal e QA/revisão da candidata atual;as demais frentes antigas de tmp não foram classificadas automaticamente como resíduos desta prova. Não há retenção de snapshot integral ativo antigo sob qualification. Arquivamentos de chats antes bloqueados não foram repetidos.
+
+**Freeze/preflight:** fonte funcional458arquivos sha256:b7d52601e1d2c9c9ba505801b4f5fd56c9354f069ba385b425b09dcdb35ff7ca;configurada458arquivos sha256:335318a59023d977d79e6d9ba9126069b6bdba4f76acafcb8388e7efcdf035ac. Cópia Git independente,dependências locais sem instalação,CLI/SDK0.163.0. Únicas alterações do manifesto da cópia:maxTurnsPerRun100→30 e PLAN/EXECUTE/APPLY Sol6.1/medium;demais perfis intactos,formalLuna/medium. Contrato runner sha256:47ced63ae8cfa2bd17dadd5ade7a041a94f0f4288474bb8f21588c51e1174de6.140registros pessoais idênticos à baseline anterior. Seed/workspace semsymlink/configuração local inesperada.
+
+**Rodada encerrada:** run-20261025125559-86daef51,12:55:59→13:06:36UTC25/10,managerexit1/BLOCKED. Confiança normal somente no Git workspace próprio;conferida única tabela219bytes e demais bytes atuais de config.toml exatamente iguais à baseline,modo0600. Nenhuma outra alteração pessoal. Não houve reenvio ou extensão de prazo. Evidências mínimas em attempt-0d8a09d,sem dados brutos noGit.
+
+
+**Resultado por estágio e consumo:** INIT PASS,PLAN PASS,REVIEW_PLAN PASS/MATERIALIZED_PRISTINE. EXECUTE implementou alterações e preparou testes,mas encerrou BLOCKED/OWNER_UNCERTAIN.151→157/250:4principais+1auxiliar de REVIEW_PLAN+1filho de checkEXECUTE;6turnos concluídos,local6/30,auxiliar1/8,semrefund. A autoria do plano passou com contexto scratch/alocação corrigido;isso não mede causalidade semântica isolada. O retorno autoral após recusa não foi exercitado. Receita/check,formal integral,oracle,COMPLETE/CLOSE,export/leitorSPEC_CLOSED e revisão final independente NÃO executados. Nenhum PASS parcial fechaU3.17 ou transfereS2 anterior.
+
+**Bloqueio observado,sem remendo:** o filho /root/execute_slice_01_check fez somente cat integral do contrato29108bytes e shasum,hash47ced63a… correto. Sua primeira finalResponse foi “Contrato lido integralmente. SHA-256 confere: `47ced63ae8cfa2bd17dadd5ade7a041a94f0f4288474bb8f21588c51e1174de6`. Aguardando o aviso de vínculo antes de qualquer verificação.” O principal realizou bind-native com identidade oficial e tentou capture-native;produtor recusouENOENT de round-1.observation.json. Não houve verify-native,observação ou publicação. resume conservou running/await-same-agent;manager detectou owner não encerrado e parou. O nome OWNER_UNCERTAIN é o diagnóstico do manager,não prova de novo bug de identidade nem autorização de recovery.
+
+**Evidência e limite causal:** consulta pública em novo processo confirmou seis threads completed/notLoaded e reobservou envelope/resposta literalmente iguais,semturn/start ourecipe. SHA256daresposta7c91e8810626d83fba9333dae5337dbc0f953c7537f1c15a5ad2e1b8e292b535. O carregamento do contrato corrigido e captura de transporte são observáveis;verificação válida,captura de produto/publicação/readbackS2 não ocorreram. A projeção pública do pai contém a entrada normal completa e atividades started/completed/interacted,mas não o texto enviado ao filho;itens públicos do filho não expõem userMessage. Portanto não está provado se o handoff pediu um ACK intermediário ou se o filho tomou essa decisão apesar de instrução completa. A finalResponse mostra a espera pelo vínculo,sem demonstrar o motivo interno. Não criar outro parágrafo/patch/retry a partir dessa lacuna,nem normalizar esse ACK como resultado formal. Próximo passo técnico mínimo é esclarecer a coordenação spawn/bind/verificação do episódio usando evidência pública suportada antes de propor outra prova;nenhuma recuperação,novo owner ou nova confiança iniciado aqui.
+
+**Encerramento/integridade:** manager terminal,markerativo ausente,assertSnapshotIntegrity PASS em novo processo;fonte configurada e snapshot d7bf70a56a2bc5594150180b3f25474ebfbf967a110c61104d45463f340ff793 íntegros. Trust exato219bytes removido com lock/CAS,config final sha256:c46fe7fdfbf36bdb0f087579842cd389335081e8fad4e7ffd4b7e1df4eef425b,0600 e140registros iguais. Instalação global/main/Claude/sandbox intocados. Arquivamento não repetido após RPC outside adapter scope;seis chats terminais permanecem pendentes dessa disposição. Nenhuma sessão privada ou caminho negado consultado.
+
+**Limpeza final desta passagem:** qualification integral696524KiB e cache2192KiB movidos pelaLixeira oficial,exit0/origens ausentes;2564entradas inspecionadas semxcrun_db. Owner/registro/primeira resposta/run/freeze permanecem no conjunto integral recuperável;mínimo copiado não substitui alocação/CAS nem permite resume. Eventos ativos são projeções declaradas,com comandos de memória não pertinentes omitidos e hashes dos originais.14alvos antigos adicionais1720KiB de contextos/PLAN/auxiliares superados e distribuição sintética input-classification7400KiB foram retirados recuperavelmente,com resultados/pareceres e pendências reais preservados. Total de resíduos antigos retirados nesta passagem65992KiB,além da cópia/cache criados para a prova. Pacote atual1312KiB;tmp/u3-planejamento94408→29728KiB,total tmp2274488→2209808KiB≈2,11GiB. Não declarar tmp limpa. SememptyTrash,xcrun_db,perda permanente ou arquivo de outra autoria selecionado.
+
+**Retenção restante em u3-planejamento (KiB):**
+
+| Grupo | KiB | Finalidade e pendência concreta |
+| --- | ---: | --- |
+| U3.15/A/B | 14112 | Controles/produtos/fontes e qualificações nativas A/C/D antigos;§24 mantém proveniência/owner e dependências seladas. Retenção herdada não foi chamada necessária à nova prova: falta confirmar fechamento das referências e atividade dessas outras frentes antes de destinação integral. Distribuições regeneráveis já retiradas;resultados/pareceres ficaram. |
+| U3.16/S2 e retenção | 2128 | Schema já retirado;restam resultados de transporte,hashes/pareceres e investigação de retenção histórica. Não requalificados pelo novo run. |
+| Dois casos nativos funcionais antigos | 4828 | FAILsemântico e episódios/controles históricos;problemas não reclassificados emPASS. Falta disposição das provas/refs históricas,não modelo novo. |
+| ProvasCaseA mínimas e atual | 5148 | FAILsemânticoe3d7797,ownerformal39ba71d-sol e atual;contratos/respostas/controles necessários ao diagnóstico ainda aberto. Semsnapshot ouSDK ativo. |
+| Initialabort | 1140 | Evidência/controles da recuperação e retirement já aprovados;destinação depende da cadeia histórica,sem editarowner. |
+| Evalcausaraiz | 1136 | Pares antes/depois e controles inválidos preservados;não houve demonstração de melhora causal. |
+| Gates finais atuais | 368 | Race148,retornoautoral152,contratoformal68;TAPs finais/revisões sustentam os deltas ainda sem aceite composto. |
+| Demais documentos/diagnósticos e restos protegidos | 868 | Fontes importadas,pareceres,índices e workspaces4KiB comxcrun_db intocado. Não remover protegidos ou inventar equivalência do resumo com fonte única. |
+
+**Inventário de tmp inteira,no mesmo encerramento:**1245entradas diretas medidas,sem atribuir autoria ou terminalidade por nome/tamanho. Não se limitou a inspeção a u3-planejamento. As maiores outras frentes já eram explicitamente pendentes em§18;somente metadados/nomes e referências públicas foram lidos,não sessões privadas. Permanecem:
+
+| Grupo | Entradas | KiB | Pendência para destinação |
+| --- | ---: | ---: | --- |
+| u3-rejection-authority | 1 | 470664 | Provas/fonte/garantias de12/10;autoria/ciclo de vida e referências não confirmados nesta prova. |
+| u3-recovery | 1 | 426220 | Provas/recovery/pareceres antigos;mesma necessidade de confirmar atividade e cadeia referida. |
+| u3-reconstruction | 1 | 349124 | Mistura contratos/snapshots/provas B4 únicas e cache;§18.2 discrimina fontes que não podem ser descartadas como bloco. |
+| u3-execucao | 1 | 310448 | Fixtures/logs/proofs/checkpoints de12/10,fora do ciclo desta prova. |
+| fixtures stnl-initial / stnl Initial | 1140 | 374540 | Prefixos sugerem fixtures,mas não comprovam autoria/ausência de atividade;semremoção indiscriminada. |
+| fixtures stnl-p1b | 73 | 64472 | Mesmo limite de autoria/atividade e referências. |
+| u3-qa-* | 10 | 60560 | QA de outras frentes com auditorias/checkpoints,não inventariada por conteúdo nesta passagem. |
+| limpeza-u1-u2-20261012 | 1 | 67032 | Inventários/maps comprimidos e preservação de limpeza anterior;descartar sem fechar referências pode perder a destinação histórica. |
+| u3-execucao-bloco1b | 1 | 34900 | Provas/fixtures/handoff/checkpoint antigo;fora desta rodada. |
+| u3-planejamento | 1 | 29728 | Discriminado acima. |
+| demais frentes/arquivos | 15 | 22120 | Outras saídas/provas;sem confirmação individual de autoria/ciclo. |
+
+**Limites finais:** nesta passagem não mudou código,skill,contrato,perfil fora da cópia,aceite ou limite;não houve testesoffline novos/revisão extra para fazer a prova passar. Gates38/38 e10/10 prévios permanecem fatos do delta,sem viraremPASSreal. FAILschema/C015/B12fixture/quick_validate indisponível/SKIPCaseC/Claude históricos continuam delimitados. Sem push/PR/merge/instalação/RECONCILE/U3.18. U3.17 permanece aberta,em157/250,sem execução em andamento e sem nova rodada automática.
