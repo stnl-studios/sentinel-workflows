@@ -140,7 +140,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','formal-successor'],['fresh','formal-exhausted'], ['fresh','review-correction'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','test-coverage-correction'],['fresh','formal-successor'],['fresh','formal-exhausted'], ['fresh','review-correction'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
   t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
@@ -303,14 +303,28 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
   const preparationExtra = fault?.startsWith('review-correction') ? 2 : 0;
   const refusalChild=fault==='formal-successor'?1:0;
   const continuationChild=fault==='pre-verification-continuation'?1:0;
+  const coverageChildren=fault==='test-coverage-correction'?2:0;
   const auxiliaryCalls = fault === 'review-correction-aux' ? 3 : fault === 'aux-run-eight' ? 8
     : ['aux-followup', 'aux-followup-interrupt', 'aux-descendant'].includes(fault) ? 2 : fault?.startsWith('aux-') ? 1 : 0;
   assert.deepEqual(backend.operations.map(item => item.operation), ['SPEC_INIT', 'PLAN', 'REVIEW_PLAN',
     ...(preparationExtra ? ['PLAN', 'REVIEW_PLAN'] : []),
     'EXECUTE_SLICE', 'VALIDATE_SLICE', ...(extra ? ['APPLY_FINDINGS', 'VALIDATE_SLICE'] : []), 'SPEC_CLOSE'],
   'the manager follows each public handoff once, retaining the separate independent review');
-  assert.equal(result.operations, 6 + extra + preparationExtra); assert.equal(result.runnerTurns, 2 + extra + refusalChild + auxiliaryCalls + continuationChild); assert.equal(result.mainTurns, 6 + extra + preparationExtra);
+  assert.equal(result.operations, 6 + extra + preparationExtra); assert.equal(result.runnerTurns, 2 + extra + refusalChild + auxiliaryCalls + continuationChild + coverageChildren); assert.equal(result.mainTurns, 6 + extra + preparationExtra);
   const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
+  if(coverageChildren) {
+    const evidence=JSON.parse(await fs.readFile(state.operations.find(x=>x.operation==='EXECUTE_SLICE').evidencePath));
+    const captures=evidence.turn.captures;
+    assert.equal(captures.length,3);
+    assert.deepEqual(captures.map(x=>JSON.parse(x.toolResult.finalResponse).result.status),['TESTS_FAIL','BLOCKED','TESTS_PASS']);
+    assert.equal(new Set(captures.map(x=>x.binding.agentPath)).size,3);
+    const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));assert.equal(ledger.total,10);
+    const events=(await fs.readFile(evidence.turn.eventsPath,'utf8')).trim().split('\n').map(JSON.parse);
+    for(const capture of captures) {
+      const event=events.find(x=>x.type==='native.child.completed'&&x.binding.agentPath===capture.binding.agentPath);
+      assert.ok(event);assert.equal(JSON.parse(await fs.readFile(event.toolResultFile,'utf8')).finalResponse,capture.toolResult.finalResponse);
+    }
+  }
   if(continuationChild) {
     const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
     assert.equal(ledger.total,9);assert.equal(ledger.preVerificationContinuation.grantId,state.preVerificationContinuation.grant.id);
@@ -388,12 +402,12 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
   assert.equal(new Set(reviews.map(item => item.threadId)).size, 2 + (extra ? 1 : 0) + (preparationExtra ? 1 : 0));
   assert.ok(reviews.every(item => !authors.some(author => author.threadId === item.threadId)));
   const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
-  assert.equal(ledger.total, 8 + 2 * extra + preparationExtra + refusalChild + auxiliaryCalls + continuationChild); assert.equal(ledger.reservations.length, 0);
+  assert.equal(ledger.total, 8 + 2 * extra + preparationExtra + refusalChild + auxiliaryCalls + continuationChild + coverageChildren); assert.equal(ledger.reservations.length, 0);
   assert.ok(ledger.turns.every(turn => turn.state === 'completed'));
   assert.equal(ledger.turns.filter(turn => turn.childKind === 'auxiliary').length, auxiliaryCalls);
-  assert.equal(ledger.turns.filter(turn => turn.childKind === 'formal').length, 2 + extra + refusalChild + continuationChild);
+  assert.equal(ledger.turns.filter(turn => turn.childKind === 'formal').length, 2 + extra + refusalChild + continuationChild + coverageChildren);
   assert.equal(new Set(ledger.turns.filter(turn => turn.role === 'runner').map(turn => `${turn.threadId}:${turn.turnId}`)).size,
-    2 + extra + refusalChild + auxiliaryCalls + continuationChild, 'each public child turn is charged once, including follow-ups');
+    2 + extra + refusalChild + auxiliaryCalls + continuationChild + coverageChildren, 'each public child turn is charged once, including follow-ups');
   const terminal = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/terminal-evidence.json')));
   assert.equal(terminal.source.inspection.state, 'COMPLETE'); assert.equal(terminal.state, 'SPEC_CLOSED');
   const consumer = await import(url('benchmarks/sentinel-todo/runtime/native-evidence.mjs'));

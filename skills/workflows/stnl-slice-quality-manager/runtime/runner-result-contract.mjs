@@ -171,7 +171,8 @@ export function parseSemanticExecutionPayload(text, operation) {
   if (!["1/3", "2/3", "3/3"].includes(payload.automaticCheckRound)) {
     fail("semantic execution payload Automatic check round is invalid");
   }
-  const allowed = new Set([...fields.map(([key]) => key), "filelessReason"]);
+  const allowed = new Set([...fields.map(([key]) => key), "filelessReason",
+    ...(operation === 'EXECUTE_SLICE' ? ['testCoverageOmissions'] : [])]);
   for (const key of Object.keys(payload)) {
     if (!allowed.has(key)) fail(`unknown semantic execution payload field: ${key}`);
   }
@@ -200,6 +201,28 @@ export function parseSemanticExecutionPayload(text, operation) {
     }
   }
   if (Object.hasOwn(payload, "filelessReason")) serializeMarkdownScalar("filelessReason", payload.filelessReason, true);
+  if (Object.hasOwn(payload, 'testCoverageOmissions')) {
+    if (payload.status !== 'BLOCKED' || payload.commands.length === 0 || payload.commands.some(item => item.exit !== 0)
+      || !Array.isArray(payload.testCoverageOmissions) || payload.testCoverageOmissions.length === 0)
+      fail('testCoverageOmissions requires BLOCKED with completed zero-exit checks');
+    const seen = new Set();
+    for (const item of payload.testCoverageOmissions) {
+      if (!item || Array.isArray(item) || typeof item !== 'object'
+        || JSON.stringify(Object.keys(item).sort()) !== JSON.stringify(['evidence','expectedCorrection','obligationId','testPath','testedFileSha256']))
+        fail('testCoverageOmissions must identify obligation, observed test and correction');
+      if (!/^obligation-[0-9]{2,}$/u.test(item.obligationId ?? '')
+        || typeof item.testPath !== 'string' || !item.testPath || item.testPath.startsWith('/')
+        || /[\\\r\n\0]/u.test(item.testPath) || item.testPath.split('/').some(part => !part || part === '.' || part === '..')
+        || !/^sha256:[a-f0-9]{64}$/u.test(item.testedFileSha256 ?? '')) fail('testCoverageOmissions reference is invalid');
+      for (const key of ['evidence','expectedCorrection']) {
+        serializeMarkdownScalar(key, item[key], true);
+        if (/^(?:none|pending|n\/a|not_available)$/iu.test(item[key].trim())) fail('testCoverageOmissions requires concrete evidence and correction');
+      }
+      const key = `${item.obligationId}:${item.testPath}`;
+      if (seen.has(key)) fail('duplicate testCoverageOmissions reference');
+      seen.add(key);
+    }
+  }
   return payload;
 }
 

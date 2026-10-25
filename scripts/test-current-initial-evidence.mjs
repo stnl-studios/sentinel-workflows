@@ -458,7 +458,7 @@ test('E12 isolated byte-identical executor and quality copies', async () => {
       for (const name of names) await fs.copyFile(path.join(source,name),path.join(destination,name));
       assert.deepEqual((await fs.readdir(destination)).sort(),[...names].sort());
       const api=await import(pathToFileURL(path.join(destination,moduleName)).href);
-      assert.deepEqual(Object.keys(api).sort(),['composeInitialImplementationEvidence','validateInitialImplementationEvidence']);
+      assert.deepEqual(Object.keys(api).sort(),['assertTestCoverageCorrectionWork','composeInitialImplementationEvidence','validateInitialImplementationEvidence']);
       for (const capture of [nativeRound(),schemaRejection('native')]) {
         const input=initial([capture]);const result=api.composeInitialImplementationEvidence(input);
         assert.equal(api.validateInitialImplementationEvidence(validationInput(input,result.bytes)).outcome,result.outcome);

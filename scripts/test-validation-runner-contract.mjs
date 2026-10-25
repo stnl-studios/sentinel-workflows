@@ -425,7 +425,13 @@ test("prepared check defects use bounded execution failures while unclassified f
   assert.match(executor, /executor-prepared test, fixture or assertion[^\n]*`TESTS_FAIL`[^\n]*approved slice/u);
   assert.match(executor, /Sandbox or permission denial[^\n]*genuinely unavailable[^\n]*`BLOCKED`/u);
   assert.match(executor, /Build fixtures from the existing input and persistence contracts[^\n]*do not expand those contracts/u);
-  assert.match(executor, /Additional automatic rounds occur only after `TESTS_FAIL` in round one or two and an authorized correction/u);
+  assert.match(executor, /Additional automatic rounds occur after `TESTS_FAIL` in round one or two and an authorized correction, or after an EXECUTE `BLOCKED` whose optional `testCoverageOmissions` proof the current-operation producer admits/u);
+  assert.match(executor, /No implementation, recipe or authority changes belong to that correction/u);
+  assert.match(executor, /Other blockers, absent proof, uncertainty and exhausted calls grant no coverage correction or first-preparation Initial publication/u);
+  const native = await fs.readFile(path.join(canonical, 'codex/.codex/agents/stnl_validation_runner.toml'),'utf8');
+  assert.match(native,/mantenha `BLOCKED`[^\n]*`testCoverageOmissions`/u);
+  assert.match(native,/a omissão identificada for a única causa do bloqueio/u);
+  assert.match(native,/não reclassifique comandos verdes como `TESTS_FAIL`/u);
   assert.match(executor, /Never make a fourth automatic invocation/u);
 });
 

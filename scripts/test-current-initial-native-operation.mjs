@@ -13,6 +13,7 @@ import {inspectCurrentExecution as inspectQualityExecution} from '../skills/work
 import {installCurrentInitial,recoverCurrentInitialPublication} from '../skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs';
 import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish,normalizeSuccessor,resume,abort} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {payload as initialPayload} from './fixtures/current-initial-evidence.mjs';
+import {parseSemanticExecutionPayload} from '../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs';
 import {applyPayload} from './fixtures/current-findings-evidence.mjs';
 import {READY_FIXTURE,copyTree,PUBLISHER_CLI} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/test/publisher-fixtures.mjs';
 import {publishCandidate,TEST_ONLY_ACK,TEST_ONLY_ACK_ENV,TEST_ONLY_CRASH_ENV} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs';
@@ -25,7 +26,7 @@ const run=promisify(execFile);
 const repo=path.resolve('.');
 const operationCli=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
 const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-async function fixture({otherInput=false,kind='standalone',entry='file',sharedAncestor=false,missingAncestor=false,single=false,independentAreas=false,productRefs=false,futureLeaf=false,closeReady=false,inputTest=false}={}) {
+async function fixture({otherInput=false,kind='standalone',entry='file',sharedAncestor=false,missingAncestor=false,single=false,independentAreas=false,productRefs=false,futureLeaf=false,closeReady=false,inputTest=false,coverageOmission=false}={}) {
   const root=await fs.mkdtemp(path.join(repo,'tmp/stnl Initial test '));
   await run('git',['-C',root,'init','-q']);
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
@@ -37,6 +38,7 @@ async function fixture({otherInput=false,kind='standalone',entry='file',sharedAn
   const lifecycleHeader='# File Purpose Header\n\n```yaml\npurpose: Pay feature.\nstatus: ready\nread_when: Reviewing pay.\ndo_not_read_when: Another feature is selected.\ncontains: Pay requirements.\nowner: stnl-spec-lifecycle-manager\nupdate_policy: Author writes.\n```\n\n';
   const lifecycleBody='# Feature: Pay\n\n'+[['Objective','Pay export.'],['Context','Pay module.'],['Scope','Pay export.'],['Out of Scope','Authentication.'],['Business Rules','Observe pay.'],['Relevant Contracts','AC-001: Pay export.']].map(([name,body])=>`## ${name}\n\n${body}\n\n`).join('');
   if(!closeReady)await fs.writeFile(authorityPath,kind==='lifecycle'?lifecycleHeader+lifecycleBody:'# Initial delivery\n\nAC-001: export pay.\n');
+  if(coverageOmission)await fs.writeFile(authorityPath,'# Initial delivery\n\nAC-001: pay returns paid for a positive amount and declined for zero.\n');
   if(closeReady)await copyTree(READY_FIXTURE,path.dirname(authorityPath));
   await fs.writeFile(path.join(root,'src/pay.test.mjs'),
     'import test from "node:test";import assert from "node:assert/strict";import {pay} from "./pay.mjs";test("AC-001",()=>assert.equal(pay(),"paid"));\n');
@@ -255,6 +257,8 @@ test('Initial first APPLY valid BLOCKED stays distinct from semantic refusal',as
     finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
   const captured=await captureNative(started.handle,file);
   assert.equal(captured.status,'BLOCKED');
+  assert.equal(captured.nextAction,'publish');
+  assert.equal((await resume(started.handle)).nextAction,'publish');
   assert.equal(captured.captureClass,'formal-response');
 });
 
@@ -381,6 +385,135 @@ test('Initial valid BLOCKED is distinct from semantic refusal and remains outsid
   await assert.rejects(publish(started.handle),error=>error.code==='UNSUPPORTED_FORMAT'
     && /Initial BLOCKED requires operational recovery outside quiet profile/u.test(error.message));
   assert.equal((await captureNative(started.handle,file)).replayed,true);
+});
+
+test('Initial failed check then proved missing test uses only the existing third invocation',async t=>{
+  const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');
+  const responses=[];
+  async function conclude(dispatch,round,status,omissions) {
+    const agentId=`controlled-coverage-round-${round}`;await bindNative(started.handle,agentId);
+    const measured=await verifyNative(dispatch.originFile);
+    const {head,...result}=initialPayload(round,status);result.commands=measured.commands;
+    result.blockers=status==='BLOCKED'?'The approved zero-amount assertion is missing.':'none';
+    if(omissions)result.testCoverageOmissions=omissions;
+    const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+    const file=path.join(f.root,`coverage-result-${round}.json`);await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+    const captured=await captureNative(started.handle,file);responses.push({file,bytes:await fs.readFile(file),finalResponse});return captured;
+  }
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"broken";\n');
+  assert.equal((await conclude(first,1,'TESTS_FAIL')).nextAction,'reserve-dispatch');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=(amount=1)=>amount===0?"declined":"paid";\n');
+  const second=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const omission={obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),
+    evidence:'The prepared assertion checks paid but never invokes pay(0), required by AC-001.',expectedCorrection:'Add the zero-amount declined assertion to this prepared test.'};
+  const captured=await conclude(second,2,'BLOCKED',[omission]);
+  assert.equal(captured.status,'BLOCKED');assert.equal(captured.nextAction,'reserve-dispatch');
+  assert.equal((await resume(started.handle)).nextAction,'reserve-dispatch');
+  await assert.rejects(publish(started.handle),error=>error.code==='EVIDENCE_INCOMPLETE');
+  await fs.appendFile(path.join(f.root,'src/pay.test.mjs'),'test("AC-001 zero amount",()=>assert.equal(pay(0),"declined"));\n');
+  const third=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal((await conclude(third,3,'TESTS_PASS')).nextAction,'publish');
+  await publish(started.handle);
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'IMPLEMENTED_AWAITING_VALIDATION');
+  for(const response of responses)assert.ok(response.bytes.equals(await fs.readFile(response.file)),'each original response remains unchanged');
+  await assert.rejects(reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+});
+
+test('Coverage omission proof is closed, EXECUTE-only and never converts green commands to failure',()=>{
+  const proof={obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:`sha256:${'a'.repeat(64)}`,evidence:'AC-001 zero-amount assertion is absent.',expectedCorrection:'Add the missing assertion.'};
+  const base=initialPayload(1,'BLOCKED');base.testCoverageOmissions=[proof];
+  const parse=r=>parseSemanticExecutionPayload(JSON.stringify(r),'EXECUTE_SLICE');
+  assert.equal(parse(base).status,'BLOCKED');assert.equal(parse(base).commands[0].exit,0);
+  for(const mutate of [r=>{r.status='TESTS_PASS';},r=>{r.status='TESTS_FAIL';},r=>{r.commands[0].exit=1;},r=>{r.commands=[];},r=>{r.testCoverageOmissions=[];},r=>{r.testCoverageOmissions[0].testPath='../outside.test.mjs';},r=>{r.testCoverageOmissions[0].evidence='none';},r=>{r.testCoverageOmissions.push({...proof});},r=>{r.testCoverageOmissions[0].extra=true;}]) {
+    const value=structuredClone(base);mutate(value);assert.throws(()=>parse(value));
+  }
+  assert.throws(()=>parseSemanticExecutionPayload(JSON.stringify({...applyPayload(1,'BLOCKED',0),testCoverageOmissions:[proof]}),'APPLY_FINDINGS'));
+});
+
+async function coveragePrefixFixture(t,{inputTest=false,mutate=null}={}) {
+  const f=await fixture({single:true,coverageOmission:true,inputTest});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=(amount=1)=>amount===0?"declined":"paid";\n');
+  const agentId='controlled-coverage-prefix';await bindNative(started.handle,agentId);const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=initialPayload(1,'BLOCKED');result.commands=measured.commands;
+  result.blockers='Approved zero-amount assertion is missing from the existing test.';
+  result.testCoverageOmissions=[{obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),
+    evidence:'The current test never asserts AC-001 for zero.',expectedCorrection:'Add the required zero-amount assertion to this test.'}];
+  mutate?.(result);
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result}),file=path.join(f.root,'coverage-prefix-result.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+  return {...f,started,dispatch,file,finalResponse,captured:await captureNative(started.handle,file)};
+}
+
+for(const defect of ['coverage','discoveryActions'])test(`Rejected BLOCKED ${defect} preserves semantic-refusal publication after resume`,async t=>{
+  const f=await coveragePrefixFixture(t,{mutate:r=>{r[defect]='pending';}});
+  const bytes=await fs.readFile(f.file);
+  assert.equal(f.captured.captureClass,'initial-rejection');assert.equal(f.captured.nextAction,'publish');
+  assert.equal((await resume(f.started.handle)).nextAction,'publish');
+  assert.equal((await publish(f.started.handle)).publication,'confirmed');
+  const state=await inspectCurrentExecution(f.specPath);assert.notEqual(state.normalHandoff?.operation,'VALIDATE_SLICE');
+  assert.ok(bytes.equals(await fs.readFile(f.file)));
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+});
+
+for(const phase of ['reserved','running'])test(`Coverage correction cannot use an unconfirmed ${phase} result`,async t=>{
+  const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started}=await reserved(f,'stnl-current-native-judgment-v1');
+  if(phase==='running')await bindNative(started.handle,'coverage-unconfirmed');
+  assert.notEqual((await resume(started.handle)).nextAction,'reserve-dispatch');
+  await assert.rejects(reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+  await assert.rejects(publish(started.handle));
+});
+
+for(const [name,options] of [
+  ['unproved obligation',{mutate:r=>{r.testCoverageOmissions[0].obligationId='obligation-99';}}],
+  ['unproved hash',{mutate:r=>{r.testCoverageOmissions[0].testedFileSha256=`sha256:${'0'.repeat(64)}`;}}],
+  ['not a selected test',{mutate:r=>{r.testCoverageOmissions[0].testPath='src/pay.mjs';}}],
+  ['immutable input test',{inputTest:true}],
+  ['real external blocker',{mutate:r=>{delete r.testCoverageOmissions;r.blockers='Required external dependency is unavailable.';}}],
+])test(`Initial coverage correction refuses ${name} without publication or a second origin`,async t=>{
+  const f=await coveragePrefixFixture(t,options),before=await fs.readFile(f.file);
+  assert.equal(f.captured.status,'BLOCKED');assert.equal(f.captured.nextAction,'blocked');
+  assert.equal((await resume(f.started.handle)).nextAction,'blocked');
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+  await assert.rejects(publish(f.started.handle));
+  assert.ok(before.equals(await fs.readFile(f.file)));
+  await assert.rejects(fs.stat(path.join(path.dirname(f.dispatch.originFile),'round-2.origin.json')),{code:'ENOENT'});
+});
+
+for(const fault of ['no correction','implementation change','unrelated test','authority drift','changed response'])
+test(`Initial coverage correction rejects ${fault} and preserves its first conclusion`,async t=>{
+  const f=await coveragePrefixFixture(t),before=await fs.readFile(f.file);
+  assert.equal(f.captured.nextAction,'reserve-dispatch');
+  assert.equal((await captureNative(f.started.handle,f.file)).replayed,true);
+  if(fault==='implementation change')await fs.appendFile(path.join(f.root,'src/pay.mjs'),'// unrelated implementation change\n');
+  if(fault==='unrelated test')await fs.writeFile(path.join(f.root,'src/other.test.mjs'),'// not the attested test\n');
+  if(fault==='authority drift')await fs.appendFile(f.specPath,'\nAC-002: changed authority.\n');
+  if(fault==='changed response') {
+    const altered=path.join(f.root,'altered-result.json');await fs.writeFile(altered,JSON.stringify({agentId:'controlled-coverage-prefix',status:'completed',finalResponse:f.finalResponse+' '}));
+    await assert.rejects(captureNative(f.started.handle,altered),error=>error.code==='OWNER_MISMATCH');
+  }
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+  assert.ok(before.equals(await fs.readFile(f.file)));
+  await assert.rejects(fs.stat(path.join(path.dirname(f.dispatch.originFile),'round-2.origin.json')),{code:'ENOENT'});
+});
+
+test('Initial exhausted coverage correction remains BLOCKED after three calls and cannot publish',async t=>{
+  const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');let dispatch=first;
+  for(const round of [1,2,3]) {
+    await fs.writeFile(path.join(f.root,'src/pay.mjs'),round<3?`export const pay=()=>"broken${round}";\n`:'export const pay=()=>"paid";\n');
+    if(round>1)dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+    const agentId=`exhausted-coverage-${round}`;await bindNative(started.handle,agentId);const measured=await verifyNative(dispatch.originFile);
+    const {head,...result}=initialPayload(round,round<3?'TESTS_FAIL':'BLOCKED');result.commands=measured.commands;
+    if(round===3){result.blockers='Zero-amount assertion remains absent.';result.testCoverageOmissions=[{obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),evidence:'No assertion for the zero-amount requirement.',expectedCorrection:'Add the approved missing test.'}];}
+    const file=path.join(f.root,`exhausted-${round}.json`);await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
+    const captured=await captureNative(started.handle,file);assert.equal(captured.nextAction,round<3?'reserve-dispatch':'blocked');
+  }
+  assert.equal((await resume(started.handle)).nextAction,'blocked');
+  await assert.rejects(reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+  await assert.rejects(publish(started.handle));
 });
 
 test('Initial malformed native response cannot enter the concluded semantic refusal profile',async()=>{

@@ -3750,6 +3750,8 @@ export function composeInitialCurrentOperation({context,requirementsAuthority,pr
       fail('UNSUPPORTED_FORMAT','Initial implementation predecessor is not pristine');
     product=composeInitialImplementationEvidence({context,authority,owner,currentEvidence:current.evidence?files.get(current.evidence.path):null,
       counters:current.counters,rounds});
+    if(product.testCoverageCorrection)
+      fail('EVIDENCE_INCOMPLETE','captured test coverage omission requires correction before composition');
   } else if(owner.operation==='VALIDATE_SLICE') {
     if(rounds.length!==1 || !current.evidence) incomplete('Initial formal needs one captured response and predecessor');
     product=composeCurrentValidationEvidence({context,authority,owner,

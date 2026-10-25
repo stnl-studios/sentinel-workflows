@@ -2,7 +2,7 @@
 // these outcomes do not attest semantic model quality or native transport.
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { initialArtifacts, REQUIREMENTS } from './current-initial-preparation.mjs';
 import { payload } from './current-initial-evidence.mjs';
@@ -166,9 +166,16 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         await fs.copyFile(path.join(repo, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
         await fs.writeFile(path.join(workspace, 'src/native-filter.test.mjs'), checkSource.replace("assert.equal(code,0);", "let pending='';assert.equal(await runCli(['--store',store,'list','--pending'],{stdout:{write:s=>{pending+=s;}},stderr:{write:()=>{}}}),0);assert.deepEqual(pending.trim().split('\\n').map(JSON.parse).map(x=>x.id),[2]);assert.equal(code,0);"));
       }
-      const formalRounds = operation === 'VALIDATE_SLICE' && ['formal-successor','formal-exhausted'].includes(fault) ? 2 : 1;
+      const coverageRounds = operation === 'EXECUTE_SLICE' && fault === 'test-coverage-correction';
+      const formalRounds = coverageRounds ? 3 : operation === 'VALIDATE_SLICE' && ['formal-successor','formal-exhausted'].includes(fault) ? 2 : 1;
       for(let formalRound=0;formalRound<formalRounds;formalRound++){
-      if(formalRound){const next=await inspectCurrentExecution(specPath);
+      if(coverageRounds) {
+        const file=path.join(workspace,'src/native-filter.test.mjs');
+        const corrected=checkSource.replace("assert.equal(code,0);", "let pending='';assert.equal(await runCli(['--store',store,'list','--pending'],{stdout:{write:s=>{pending+=s;}},stderr:{write:()=>{}}}),0);assert.deepEqual(pending.trim().split('\\n').map(JSON.parse).map(x=>x.id),[2]);assert.equal(code,0);");
+        await fs.writeFile(file,formalRound===0?checkSource.replace('assert.equal(code,0);','assert.equal(code,1);'):formalRound===1?checkSource:corrected);
+        if(formalRound)dispatch=await reserveDispatch(admitted.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+      }
+      else if(formalRound){const next=await inspectCurrentExecution(specPath);
         admitted=await normalizeSuccessor({specPath,operation,slice:'slice-01',expectedActivationId:next.activationId});
         dispatch=await reserveDispatch(admitted.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal:true});}
       const agentPath = `/root/check-${randomUUID()}`, childId = randomUUID();
@@ -200,17 +207,24 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       const needsFix = fault === 'findings-cycle' && operation === 'VALIDATE_SLICE'
         && operations.filter(item => item.operation === 'VALIDATE_SLICE').length === 1;
       const corrected = fault === 'findings-cycle' && operation === 'VALIDATE_SLICE' && !needsFix;
-      const result = operation === 'EXECUTE_SLICE' ? (({ head, ...rest }) => rest)(payload(1))
+      const result = operation === 'EXECUTE_SLICE' ? (({ head, ...rest }) => rest)(payload(coverageRounds?formalRound+1:1))
         : operation === 'APPLY_FINDINGS' ? (({ head, ...rest }) => rest)(applyPayload(1, 'TESTS_PASS', 0))
         : { status: 'PASS', commands: measured.commands, evidence: 'OFFLINE semantic judgment fixture only.',
           findingReferences: needsFix || corrected ? 'finding-01' : 'none', findingDispositions: needsFix ? 'finding-01=active' : corrected ? 'finding-01=resolved' : 'none', blockers: 'none',
           unexpectedWorkspaceEffects: 'none', persistenceSummary: 'No runner edits.' };
       result.commands = measured.commands;
+      if(coverageRounds) {
+        result.status=formalRound===0?'TESTS_FAIL':formalRound===1?'BLOCKED':'TESTS_PASS';
+        if(formalRound===1) {
+          result.blockers='The prepared test omits the pending filter assertion required by the approved obligation.';
+          result.testCoverageOmissions=[{obligationId:'obligation-01',testPath:'src/native-filter.test.mjs',testedFileSha256:'sha256:'+createHash('sha256').update(await fs.readFile(path.join(workspace,'src/native-filter.test.mjs'))).digest('hex'),evidence:'The recipe-selected test checks completed but never pending output.',expectedCorrection:'Assert the pending IDs without modifying implementation or recipe.'}];
+        }
+      }
       if (needsFix) result.status = 'NEEDS_FIX';
       const findings = needsFix ? [{ id: 'finding-01', originAttempt: JSON.parse(await fs.readFile(dispatch.requestFile)).attemptId,
         severity: 'blocking', problem: 'Pending filter selects completed records.', evidence: 'The pending branch uses todo.completed.',
         impact: 'Case A pending list requirement is unmet.', relatedAuthority: 'AC-001; obligation-01', expectedCorrection: 'Select incomplete records and assert pending output.' }] : [];
-      const invalid = formalRounds===2 && (formalRound===0 || fault==='formal-exhausted');
+      const invalid = !coverageRounds && formalRounds===2 && (formalRound===0 || fault==='formal-exhausted');
       const text = JSON.stringify({ format: 'stnl-current-native-judgment-v1', result,
         ...(operation === 'VALIDATE_SLICE' && !invalid ? { newFindings: findings } : {}) })
         +(invalid?'\nCanonical task identity: `'+agentPath+'`':'');
@@ -232,8 +246,11 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         const value=JSON.parse(await fs.readFile(file,'utf8'));
         if(value.agentId!==agentPath||value.finalResponse!==text)throw Error('automatic source differs; no repair');
       }else await fs.writeFile(file, JSON.stringify({ agentId: agentPath, status: 'completed', finalResponse: text }));
-      command(turn.items, await captureNative(admitted.handle, file));
-      command(turn.items, await publish(admitted.handle));
+      const captured=await captureNative(admitted.handle,file);command(turn.items,captured);
+      if(coverageRounds && formalRound<2) {
+        if(captured.nextAction!=='reserve-dispatch')throw Error('coverage correction did not retain the existing correction handoff');
+        if(formalRound===1)try {await publish(admitted.handle);throw Error('intermediate omission unexpectedly published');}catch(error){if(error.code!=='EVIDENCE_INCOMPLETE')throw error;}
+      } else command(turn.items, await publish(admitted.handle));
       if (fault === 'foreign-child' && operation === 'EXECUTE_SLICE') child.parentThreadId = 'foreign';
       }
     } else if (operation === 'SPEC_CLOSE') command(turn.items, await publishCandidate('CLOSE', specPath, null));

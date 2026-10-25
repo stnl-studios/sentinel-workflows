@@ -374,6 +374,32 @@ function presentRendered(value) {
 function nonPlaceholder(value) {
   return presentRendered(value) && !/^(?:none|not_available)$/iu.test(value);
 }
+// The independent judgment attests the omission. This producer authenticates
+// its approved obligation, recipe-selected writable test and observed bytes;
+// it does not infer recoverability from prose or claim semantic determinism.
+function testCoverageCorrection(payload, authority, info, context, observed) {
+  if (payload.status !== 'BLOCKED' || !payload.testCoverageOmissions || !nonPlaceholder(payload.blockers)) return null;
+  const tests = new Set(info.recipe.checks.flatMap((check,index) => check.args.flatMap((arg,argIndex) =>
+    arg.file?.kind === 'product' ? [path.relative(context.productRoot,
+      path.resolve(info.resolved.checks[index].cwd,info.resolved.checks[index].args[argIndex])).split(path.sep).join('/')] : [])));
+  const files = new Map(observed.entries.map(item => [item.path,item]));
+  for (const omission of payload.testCoverageOmissions) {
+    const file = files.get(omission.testPath);
+    if (!authority.delivery.obligations.some(item => item.id === omission.obligationId)
+      || !tests.has(omission.testPath) || info.inputs.some(item => item.path === omission.testPath)
+      || !areaContains(info.areas,omission.testPath) || file?.kind !== 'file'
+      || file.sha256 !== omission.testedFileSha256) return null;
+  }
+  return {paths:[...new Set(payload.testCoverageOmissions.map(item => item.testPath))].sort(ordinal)};
+}
+export function assertTestCoverageCorrectionWork(correction, before, after) {
+  const changes = changedLeaves(before,after), prior = new Map(before.entries.map(item => [item.path,item]));
+  if (!changes.length || changes.some(name => !correction.paths.includes(name))
+    || correction.paths.some(name => {
+      const old = prior.get(name), current = after.entries.find(item => item.path === name);
+      return old?.kind !== 'file' || current?.kind !== 'file' || old.mode !== current.mode;
+    })) stale('test coverage correction must change only its existing approved test files');
+}
 function recordGrammarRejection(payload, entries, round) {
   const values = new Map(executionFields('EXECUTE_SLICE').map(([key, label]) => [label, payload[key]]));
   const rendered = label => {
@@ -461,7 +487,7 @@ function compose(input, info) {
     .filter(name=>previousAfter.entries.some(entry=>entry.path===name&&entry.kind==='absent')):[]);
   const runners = new Set();
   const receipts = [];
-  let productBytes = 0, productDrift=null;
+  let productBytes = 0, productDrift=null, previousCoverageCorrection=null;
   for (const [index, cap] of input.rounds.entries()) {
     const round = index + 1,globalRound=offset+round;
     verifyCapturedInvocation('initial-implementation', cap, undefined, undefined, undefined, round, transport);
@@ -492,7 +518,7 @@ function compose(input, info) {
         mismatch(`round ${round}: implementation drift witness differs`);
       productDrift=witness;
     }else if(productDrift)mismatch('implementation drift witness disappeared');
-    if (round > 1 && previousStatus !== 'TESTS_FAIL'
+    if (round > 1 && previousStatus !== 'TESTS_FAIL' && !(previousStatus === 'BLOCKED' && previousCoverageCorrection)
       && !(previousStatus==='TESTS_PASS'&&witness?.sourceRound===round-1))invalid(`round ${round}: previous round did not fail`);
     const rawText = textBytes(cap.rawResponse, `round ${round} rawResponse`).text;
     const receipt = jsonBytes(cap.receipt, `round ${round} receipt`).value;
@@ -575,6 +601,7 @@ function compose(input, info) {
     const commands = verifyWorkObservation('initial-implementation', observed, input.owner, round, info, before, input.context, `round ${round} observation`);
     expectEqual(receipt.verification, observed, 'EVIDENCE_STALE', `round ${round}: receipt observation`);
     const entries = testedState(receipt.testedState, input.context, input.owner, before, observed.after, info, round,retainedRemovals);
+    if (previousCoverageCorrection) assertTestCoverageCorrectionWork(previousCoverageCorrection,before,observed.after);
     verifyRemoval(cap.removalProofs, input.owner, round, before, observed.after);
     for(const name of retainedRemovals)if(!observed.after.entries.some(entry=>entry.path===name&&entry.kind==='absent'))retainedRemovals.delete(name);
     for(const blob of cap.removalProofs)retainedRemovals.add(jsonBytes(blob,'verified current removal').value.path);
@@ -627,6 +654,7 @@ function compose(input, info) {
       contract:{delivery:input.authority.delivery, context:input.authority.context, terminal:null, recipe:info.recipe},
       recordUtf8, testedWork:observed.after, sources:packCaptureSources('initial-implementation',cap,store)});
     previousStatus = payload.status;
+    previousCoverageCorrection = testCoverageCorrection(payload,input.authority,info,input.context,observed.after);
   }
   const bundle = {
     format:'stnl-current-evidence-v1', deliveryId:input.owner.deliveryId, slice:input.owner.slice,
@@ -638,7 +666,8 @@ function compose(input, info) {
   const resultBytes = serialized(bundle);
   return {bundle:parseCurrentJson(resultBytes.toString('utf8')), bytes:Uint8Array.from(resultBytes), sha256:raw(resultBytes),
     counters:{implementationChecks:implementation.length,findingsChecks:0,validationAttempts:0,findings:0},
-    consumedInvocations:offset+input.rounds.length, outcome:previousStatus==='rejected' ? 'rejected' : 'recorded'};
+    consumedInvocations:offset+input.rounds.length, outcome:previousStatus==='rejected' ? 'rejected' : 'recorded',
+    ...(previousStatus==='BLOCKED' && previousCoverageCorrection && offset+input.rounds.length<3 ? {testCoverageCorrection:previousCoverageCorrection} : {})};
 }
 
 export function composeInitialImplementationEvidence(input) {

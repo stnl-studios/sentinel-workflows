@@ -771,5 +771,5 @@ test('V14 extração conserva Initial e não habilita APPLY',async()=>{
   const forbidden=clone(source);forbidden.owner.operation='APPLY_FINDINGS';
   assert.throws(()=>composeInitialImplementationEvidence(forbidden),code('INVALID_CURRENT_IMAGE','initial'));
   assert.deepEqual(Object.keys(await import('../skills/workflows/stnl-slice-executor/runtime/execution-evidence-current.mjs')).sort(),
-    ['composeInitialImplementationEvidence','validateInitialImplementationEvidence']);
+    ['assertTestCoverageCorrectionWork','composeInitialImplementationEvidence','validateInitialImplementationEvidence']);
 });

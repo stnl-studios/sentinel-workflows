@@ -149,6 +149,71 @@
     "filelessReason": {
       "type": "string",
       "pattern": "^[\\s\\S]+$"
+    },
+    "testCoverageOmissions": {
+      "description": "Independent, origin-bound attestation of an existing prepared-test omission. Not formal findings or a new judgment; current producer must authenticate scope, obligation and observed file bytes before correction.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "obligationId",
+          "testPath",
+          "testedFileSha256",
+          "evidence",
+          "expectedCorrection"
+        ],
+        "properties": {
+          "obligationId": {
+            "type": "string",
+            "pattern": "^obligation-[0-9]{2,}$"
+          },
+          "testPath": {
+            "type": "string",
+            "minLength": 1
+          },
+          "testedFileSha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expectedCorrection": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "testCoverageOmissions"
+        ]
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "const": "BLOCKED"
+          },
+          "commands": {
+            "minItems": 1,
+            "items": {
+              "properties": {
+                "exit": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

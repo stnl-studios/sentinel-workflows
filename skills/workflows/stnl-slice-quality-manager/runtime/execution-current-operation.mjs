@@ -19,7 +19,7 @@ import {composePostConversionValidation,composePostConversionFindings,
   parseCurrentValidationResponse,currentEvidenceValueSha256,inspectCurrentEvidence,verifyCurrentTerminalRequest,
   composeCurrentFindingsEvidence,
   composeInitialCurrentOperation} from './current-evidence-state.mjs';
-import {composeInitialImplementationEvidence} from './execution-evidence-current.mjs';
+import {composeInitialImplementationEvidence,assertTestCoverageCorrectionWork} from './execution-evidence-current.mjs';
 import {recoverableRunnerResultDiagnostic} from './runner-result-contract.mjs';
 import {executeRunnerVerification,verificationCommand} from './runner-verification.mjs';
 import {withExecutionPublicationLock,assertNoPendingExecutionPublication,readOwnedFile,writeNew,persistAllocation,captureExecutionTree,
@@ -483,9 +483,12 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
     if(previousRound && (now.record.responseVariant??null)!==responseVariant)
       fail('OWNER_MISMATCH','native response variant changed within the operation');
     const productDrift=now.record.runner?.productDrift??null;
+    const coveragePrefix=now.owner.operation==='EXECUTE_SLICE' && previousRound
+      && now.record.runner.status==='captured' && now.record.runner.resultStatus==='BLOCKED'
+      ?await capturedImplementationPrefix(now):null;
     if(now.record.phase!=='working' || (!auxiliary && now.record.runner!==null)
       || auxiliary && previousRound && (now.record.runner.status!=='captured'
-        || !['TESTS_FAIL',...(productDrift?['TESTS_PASS']:[])].includes(now.record.runner.resultStatus)
+        || !['TESTS_FAIL',...(productDrift?['TESTS_PASS']:[]),...(coveragePrefix?.testCoverageCorrection?['BLOCKED']:[])].includes(now.record.runner.resultStatus)
         || now.record.runner.resultStatus==='TESTS_PASS'
           && productDrift.sourceRound!==previousRound
         || previousRound+(now.binding.normalization?.consumedInvocations??0)>=3))
@@ -520,6 +523,7 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
           || (now.owner.operation==='EXECUTE_SLICE'
             ?(parseCurrentJson(Buffer.from(rounds.at(-1).rawResponse).toString('utf8')).result?.status??parseCurrentJson(Buffer.from(rounds.at(-1).rawResponse).toString('utf8')).status)
             :result.auxiliaryStatus)!=='TESTS_FAIL'
+          && !result.testCoverageCorrection
           && !(productDrift&&parseCurrentJson(Buffer.from(rounds.at(-1).rawResponse).toString('utf8')).result?.status==='TESTS_PASS')
           || result.consumedInvocations!==previousRound+(now.owner.operation==='EXECUTE_SLICE'?(now.binding.normalization?.consumedInvocations??0):0))
           fail('OWNER_UNCERTAIN','previous Initial prefix is not an eligible failed check');
@@ -540,6 +544,8 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
     }
     const dispatchId=previousRound?now.record.runner.dispatchId:randomUUID();
     const {request,info,observed}=await requestInputs(image,now,dispatchId,round,previous,terminal);
+    if(coveragePrefix?.testCoverageCorrection)
+      assertTestCoverageCorrectionWork(coveragePrefix.testCoverageCorrection,previous.lastWork,observed.manifest);
     if(productDrift) {
       if(now.binding.normalization || !previous || productDrift.class!=='product-drift'
         || productDrift.sourceOperationAttemptId!==now.owner.operationAttemptId
@@ -924,6 +930,16 @@ async function capturedSources(op,round=1) {
     origin:await get('origin'),dispatch:await get('origin'),
     agentBinding:agent,agentClaim:await get('claim'),concludedToolResult:tool};
 }
+async function capturedImplementationPrefix(op,image=null) {
+  image??=await requireA1(op);
+  const rounds=[];
+  for(let round=1;round<=op.record.runner.round;round++)rounds.push(await capturedSources(op,round));
+  const request=await readJson(path.join(op.root,`round-${op.record.runner.round}.request.json`));
+  const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+  const current=continuity.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
+  return composeInitialImplementationEvidence({context:op.context,authority:request.authority,owner:op.owner,
+    currentEvidence:current.evidence?image.files.get(current.evidence.path):null,counters:current.counters,rounds});
+}
 export async function captureNative(handle,toolResultFile) {
   const op=await load(handle);
   const tool=await readJson(toolResultFile);
@@ -1030,7 +1046,7 @@ export async function captureNative(handle,toolResultFile) {
       status:parseFailure?'RUNNER_RESULT_BLOCKED':'RUNNER_RESPONSE_CAPTURED',
       captureFailure:parseFailure,error:null,testedState,verification:observation};
     await put(path.join(now.root,`round-${round}.receipt.json`),receipt);
-    let initialRejection=false;
+    let initialRejection=false,coverageCorrection=null;
     if(!parseFailure && auxiliary) {
       try {
         const rounds=[];
@@ -1044,6 +1060,7 @@ export async function captureNative(handle,toolResultFile) {
             :composeCurrentFindingsEvidence({context:now.context,authority,owner:now.owner,
               previous:{bundleBytes:image.files.get(current.evidence.path),counters:current.counters},rounds});
           initialRejection=composed.outcome==='rejected';
+          coverageCorrection=initialExecute?composed.testCoverageCorrection??null:null;
         } else {
           const verified=await inspectPostConversionFindingsPrefix({context:now.context,
             snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
@@ -1080,7 +1097,7 @@ export async function captureNative(handle,toolResultFile) {
       :concludedFindingsRejection?'findings-rejection':parseFailure?'uncertain':'formal-response';
     if(!parseFailure) now.record.runner.resultStatus=status;
     await persistAllocation(now.marker,now.record);
-    if(auxiliary && !parseFailure && !initialRejection && status==='TESTS_FAIL'
+    if(auxiliary && !parseFailure && !initialRejection && (status==='TESTS_FAIL' || coverageCorrection)
       && round+(now.binding.normalization?.consumedInvocations??0)<3) {
       const info=verifyWorkObservation('initial-implementation',{context:now.context,delivery:request.authority.delivery,slice:now.owner.slice});
       await captureRemovalBefore({root:now.root,context:now.context,owner:now.owner,round:round+1,
@@ -1093,9 +1110,10 @@ export async function captureNative(handle,toolResultFile) {
     if(completedProfile && !parseFailure && !auxiliary)await capturedComposition(now);
     return {phase:'captured',rawResponseSha256:sha(raw),status,
       nextAction:initialRejection?'publish'
-        :initialExecute && parseFailure?'publish':auxiliary && status==='TESTS_FAIL'
-        && round+(now.binding.normalization?.consumedInvocations??0)<3?'reserve-dispatch':'publish',
-      captureClass:now.record.runner.captureClass,replayed:false};
+        :initialExecute && parseFailure?'publish':auxiliary && (status==='TESTS_FAIL' || coverageCorrection)
+        && round+(now.binding.normalization?.consumedInvocations??0)<3?'reserve-dispatch'
+        :initialExecute && now.owner.preparationRevision===1 && status==='BLOCKED'?'blocked':'publish',
+      ...(coverageCorrection?{testCoverageCorrection:coverageCorrection}:{}),captureClass:now.record.runner.captureClass,replayed:false};
   });
 }
 
@@ -1321,6 +1339,9 @@ async function capturedComposition(op) {
       && round+(op.binding.normalization?.consumedInvocations??0)<3)
     fail('OWNER_UNCERTAIN','native terminal result has not been captured');
   const image=await requireA1(op);
+  if(op.owner.operation==='EXECUTE_SLICE' && op.record.runner.resultStatus==='BLOCKED'
+    && (await capturedImplementationPrefix(op,image)).testCoverageCorrection)
+    fail('EVIDENCE_INCOMPLETE','captured test coverage omission requires correction before publication');
   const origin=await readJson(path.join(op.root,'round-1.origin.json'));
   if(!same(image.activation,origin.admission.reservedActivation))
     fail('STALE_BASE','official A1 differs before composition');
@@ -1550,6 +1571,12 @@ export async function resume(handle) {
   }
   if(['candidate_promoted','activation_written','backup_created'].includes(phase))
     return {phase,nextAction:'classify-publication',owner:op.owner};
+  if(runner?.status==='captured' && op.owner.operation==='EXECUTE_SLICE' && runner.resultStatus==='BLOCKED'
+    && runner.captureClass!=='initial-rejection') {
+    const prefix=await capturedImplementationPrefix(op),correction=prefix.testCoverageCorrection;
+    return {phase:'captured',status:'BLOCKED',nextAction:correction?'reserve-dispatch':op.owner.preparationRevision===1?'blocked':'publish',
+      owner:op.owner,...(correction?{testCoverageCorrection:correction}:{}),responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes)};
+  }
   if(runner?.status==='captured') return {phase:'captured',nextAction:op.owner.preparationRevision===1
       && (op.owner.operation==='VALIDATE_SLICE' && runner.captureClass==='initial-rejection'
         || ['EXECUTE_SLICE','APPLY_FINDINGS'].includes(op.owner.operation)
