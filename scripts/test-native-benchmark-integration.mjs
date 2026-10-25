@@ -31,7 +31,10 @@ test('invocation provenance distinguishes review contexts from author continuity
       assert.equal(provenance[1], resumed ? 'thread/resume' : 'thread/start');
       assert.equal(provenance[2], resumed ? `author thread ${author.threadId}` : 'no author thread resumed');
       assert.equal(/^Temporary work directory: (.+)$/mu.exec(context.text)[1], temporaryDirectory);
-      assert.match(context.text, /pass this same restriction to every delegated agent/u);
+      assert.match(context.text, /Pass both temporary-path rules to every delegated agent/u);
+      assert.match(context.text, /Keep registered candidates and operation controls at the repository-local paths returned by public producers/u);
+      assert.match(context.text, /do not relocate those owned allocations to this scratch directory/u);
+      assert.match(context.text, /Do not choose external\/system temporary paths/u);
       assert.match(context.text, /preserve the inherited process-local TMPDIR for tool-managed temporaries/u);
     }
   }
@@ -236,9 +239,11 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     const temporaryDirectory = /^Temporary work directory: (.+)$/mu.exec(text[0].text)?.[1];
     assert.equal(temporaryDirectory, await fs.realpath(path.join(runRoot, 'case-a/tmp')),
       'every operation receives the actual already allocated case temporary directory');
-    assert.match(text[0].text, /authored scratch files and lifecycle candidates/u);
-    assert.match(text[0].text, /pass this same restriction to every delegated agent/u,
-      'the principal must transmit the same temporary boundary to auxiliaries and formal children');
+    assert.match(text[0].text, /authored scratch files and author-selected lifecycle candidates/u);
+    assert.match(text[0].text, /Keep registered candidates and operation controls at the repository-local paths returned by public producers/u);
+    assert.match(text[0].text, /Pass both temporary-path rules to every delegated agent/u);
+    assert.match(text[0].text, /Pass both temporary-path rules to every delegated agent/u,
+      'the principal must transmit scratch and owned-allocation rules to auxiliaries and formal children');
     assert.match(text[0].text, /Do not choose external\/system temporary paths/u);
     if (['stnl-execution-planner', 'stnl-plan-reviewer'].includes(skill[0].name)) {
       const originalInput = text[0].text.match(/^Original requirements input: (.+)$/mu)?.[1];
@@ -289,6 +294,11 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
       return { ...evidence.officialReadback, preparation: evidence.preparation };
     };
     const plan = await read('PLAN'), review = await read('REVIEW_PLAN'), executed = await read('EXECUTE_SLICE');
+    const ownedRoot = plan.preparation.candidateExecutionRoot;
+    assert.ok(ownedRoot.startsWith(path.join(state.workspace, 'tmp', 'sentinel') + path.sep),
+      'the public producer retains its registered allocation inside the product temporary root');
+    assert.equal(ownedRoot.startsWith(path.join(runRoot, 'case-a/tmp') + path.sep), false,
+      'a registered preparation is not relocated into the author-selected scratch directory');
     assert.equal(decideOutcome('PLAN', plan, true).result, 'PASS');
     assert.equal(decideOutcome('PLAN', { ...executed, preparation: plan.preparation }, true).result, 'BLOCKED');
     assert.equal(decideOutcome('REVIEW_PLAN', review, true).result, 'PASS');

@@ -250,7 +250,7 @@ export function invocationContext(operation, workflowSkill, policy, authorThread
   return { role, prior, text: `\nYou are executing ${operation} as ${workflowSkill}.\nContext provenance: ${provenance}.\n`
     + 'The external manager is the caller and invokes the next operation from your returned handoff. Complete this selected operation, including the internal delegation required by its skill, then return its result and public handoff.\n'
     + `Temporary work directory: ${temporaryDirectory}\n`
-    + 'Use this repository-local directory for authored scratch files and lifecycle candidates, and pass this same restriction to every delegated agent. Do not choose external/system temporary paths; preserve the inherited process-local TMPDIR for tool-managed temporaries.\n' };
+    + 'Use this repository-local directory for authored scratch files and author-selected lifecycle candidates. Keep registered candidates and operation controls at the repository-local paths returned by public producers; do not relocate those owned allocations to this scratch directory. Pass both temporary-path rules to every delegated agent. Do not choose external/system temporary paths; preserve the inherited process-local TMPDIR for tool-managed temporaries.\n' };
 }
 
 export function nativeRunnerContext(operation, bundle, eventsFile) {
