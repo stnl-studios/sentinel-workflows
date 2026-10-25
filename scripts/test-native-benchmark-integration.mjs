@@ -47,6 +47,43 @@ test('invocation provenance distinguishes review contexts from author continuity
   assert.equal(process.env.TMPDIR, originalTmpdir, 'context communication does not alter the process environment');
 });
 
+test('offline collection joins a started author after budget stop without changing its uncertain ledger', async t => {
+  const fixture = await allocateOfflineFixture(repo);
+  const gate = Promise.withResolvers(), entered = Promise.withResolvers();
+  let backend;
+  t.after(async () => { gate.resolve(); await backend?.settled?.(); await finishOfflineFixture(fixture); });
+  const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
+  const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
+  const actual = (await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
+  const sdk = await describeOfflineSdk(await fs.realpath(path.join(repo, 'agents/codex/node_modules')), fixture.root);
+  const offline = { mode: 'OFFLINE_TEST_ONLY', sdk, createNativeProvider: async args => {
+    backend = offlineNativeWorkflow({ ...args, caseRoot: args.evidenceRoot, fault: 'aux-run-eleven',
+      beforeAuthored: async operation => { if (operation === 'PLAN') { entered.resolve(); await gate.promise; } } });
+    assert.equal(typeof backend.settled, 'function', 'scripted work needs an explicit completion join');
+    return actual({ ...args, rpc: backend.rpc, pollMs: 1 });
+  } };
+  const context = process.env.NODE_TEST_CONTEXT; delete process.env.NODE_TEST_CONTEXT;
+  try { assert.notEqual(await manager.main(['run', '--case', 'A', '--json'], { offline }), 0); }
+  finally { if (context !== undefined) process.env.NODE_TEST_CONTEXT = context; }
+  assert.equal(typeof backend.settled, 'function');
+  await entered.promise;
+  const plan = backend.operations.find(operation => operation.operation === 'PLAN');
+  assert.equal(backend.threads.get(plan.threadId).turns[0].status, 'inProgress',
+    'the manager stopped while its scripted author was still paused');
+  const runId = (await fs.readdir(path.join(fixture.root, 'benchmark-temp'))).find(name => name.startsWith('run-'));
+  const ledgerFile = path.join(fixture.root, 'benchmark-temp', runId, '.turn-ledger.json');
+  const before = await fs.readFile(ledgerFile);
+  let joined = false;
+  const join = backend.settled().then(() => { joined = true; });
+  await Promise.resolve();
+  assert.equal(joined, false, 'collection cannot proceed before the admitted author completes');
+  gate.resolve(); await join;
+  assert.equal(backend.threads.get(plan.threadId).turns[0].status, 'completed');
+  assert.deepEqual(await fs.readFile(ledgerFile), before, 'joining local work cannot settle or refund the real admission ledger');
+  const ledger = JSON.parse(before);
+  assert.equal(ledger.total, 13); assert.ok(ledger.turns.some(turn => turn.state === 'uncertain'));
+});
+
 for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal entry retains bounded stderr after ${phase} failure without another admission`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   t.after(async () => { await finishOfflineFixture(fixture); });
@@ -105,7 +142,8 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
 
 for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','formal-successor'],['fresh','formal-exhausted'], ['fresh','review-correction'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
-  t.after(async () => { await finishOfflineFixture(fixture); });
+  let backend;
+  t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
   const configurationPath = path.join(fixture.root, 'benchmarks/sentinel-todo/benchmark.json');
   const configuration = JSON.parse(await fs.readFile(configurationPath));
   configuration.contextPolicy = { regime, authorContinuityOperations: regime === 'fresh' ? [] : ['PLAN', 'EXECUTE_SLICE', 'SPEC_CLOSE'] };
@@ -137,7 +175,6 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     }
     return value;
   };
-  let backend;
   const actualFactory = product.createNativeProvider;
   product.createNativeProvider = async args => {
     backend ??= offlineNativeWorkflow({ ...args, caseRoot: args.evidenceRoot, fault });
@@ -384,12 +421,12 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
 
 test('literal manager entry parses ordinary run --case A and retains its normal Node metadata', async t => {
   const fixture = await allocateOfflineFixture(repo);
-  t.after(async () => { await finishOfflineFixture(fixture); });
+  const backends = [];
+  t.after(async () => { await Promise.all(backends.map(backend => backend.settled())); await finishOfflineFixture(fixture); });
   const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
   const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
   const actual = (await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
   const sdk = await describeOfflineSdk(await fs.realpath(path.join(repo,'agents/codex/node_modules')),fixture.root);
-  const backends = [];
   const offline = { mode: 'OFFLINE_TEST_ONLY', sdk, createNativeProvider: async args => {
     const backend = offlineNativeWorkflow({ ...args, caseRoot: args.evidenceRoot }); backends.push(backend);
     return actual({ ...args, rpc: backend.rpc, pollMs: 1 });
@@ -417,7 +454,8 @@ test('literal manager entry parses ordinary run --case A and retains its normal 
 
 for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-child','aux-only','aux-run-nine','aux-run-eleven','aux-followup-twelve']) test(`normal entry blocks ${fault} without successor, refund or proof substitution`, async t => {
   const fixture = await allocateOfflineFixture(repo);
-  t.after(async () => { await finishOfflineFixture(fixture); });
+  let backend;
+  t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
   const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
   const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
   const actual = (await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
@@ -427,7 +465,6 @@ for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-c
     const configuration = JSON.parse(await fs.readFile(configPath)); configuration.turnBudget.maxTurnsPerRun = 4;
     await fs.writeFile(configPath,JSON.stringify(configuration));
   }
-  let backend;
   const offline = { mode: 'OFFLINE_TEST_ONLY', sdk, createNativeProvider: async args => {
     backend ??= offlineNativeWorkflow({ ...args, caseRoot: args.evidenceRoot, fault });
     return actual({ ...args, rpc: backend.rpc, pollMs: 1 });

@@ -25,8 +25,9 @@ const before=await fs.readFile(store);let out='';const code=await runCli(['--sto
 assert.equal(code,0);assert.deepEqual(out.trim().split('\\n').map(JSON.parse).map(x=>x.id),[1]);assert.ok(before.equals(await fs.readFile(store)));
 }finally{await fs.rm(root,{recursive:true,force:true});}});\n`;
 
-export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = null }) {
+export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = null, beforeAuthored = null }) {
   const threads = new Map(), calls = [], operations = [];
+  const startedWork = [];
   const automatic = true;
   let interrupted = false;
   let preparation = null;
@@ -62,6 +63,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       auxiliary(thread, turn, { followup: ['aux-followup', 'aux-followup-interrupt'].includes(fault), nested: fault === 'aux-descendant' });
     if (!specPath) throw new Error('fixture requires the real launcher SPEC_PATH');
     operations.push({ operation, threadId: thread.id, specPath });
+    if (beforeAuthored !== null) await beforeAuthored(operation);
     if (operation === 'SPEC_INIT') {
       const candidate = path.join(caseRoot, 'candidates/spec-draft');
       async function author(source, target) {
@@ -220,7 +222,10 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
     } else if (operation === 'SPEC_CLOSE') command(turn.items, await publishCandidate('CLOSE', specPath, null));
     else throw new Error(`fixture has no scripted author for ${operation}`);
   }
-  return { operations, calls, threads, rpc: {
+  return { operations, calls, threads,
+    // After the manager returns, join only work already started by this fixture.
+    // This neither starts turns nor settles/refunds the manager's uncertain ledger.
+    async settled() { await Promise.all(startedWork); }, rpc: {
     notify() {},
     async request(method, params) {
       calls.push({ method, params: structuredClone(params) });
@@ -249,7 +254,9 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         const finish=async()=>{await authored(normalized,prompt,thread,turn);
           turn.status='completed';if(!turn.items.some(item=>item.type==='agentMessage'&&item.phase==='final_answer'))turn.items.push({id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Offline authored operation completed.'});
         };
-        if(automatic)void finish().catch(error=>{turn.status='failed';turn.error={message:error.message};});else await finish();
+        const work = finish().catch(error=>{turn.status='failed';turn.error={message:error.message};});
+        startedWork.push(work);
+        if(!automatic)await work;
         return { turn: structuredClone(turn) };
       }
       const thread = threads.get(params.threadId);

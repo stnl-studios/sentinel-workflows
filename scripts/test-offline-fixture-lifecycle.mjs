@@ -8,6 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { allocateOfflineFixture, finishOfflineFixture, offlineSourceFilter } from './fixtures/offline-checkout.mjs';
 import { copySnapshotDependencies } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 import { assertOfflineSdk, describeOfflineSdk } from '../agents/codex/runtime/offline-provider-context.mjs';
+import { persistAllocation } from '../skills/workflows/stnl-execution-planner/runtime/execution-publication.mjs';
 
 test('source copy excludes every node_modules subtree and measurements', () => {
   assert.equal(offlineSourceFilter('/project/agents/codex/node_modules'), false);
@@ -151,4 +152,34 @@ test('archive failure retains original evidence and the complete owned fixture',
   finally { fs.writeFile = original; }
   t.after(() => finishOfflineFixture(fixture));
   assert.equal(await fs.readFile(log, 'utf8'), 'must survive');
+});
+
+test('collection racing an atomic allocation rename fails rather than omitting the transient source', async t => {
+  const fixture = await allocateOfflineFixture();
+  t.after(() => finishOfflineFixture(fixture));
+  const directory = path.join(fixture.root, '.offline-atomic'); await fs.mkdir(directory);
+  const marker = path.join(directory, 'owner.json'); await fs.writeFile(marker, '{"revision":1}');
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  const rename = fs.rename, lstat = fs.lstat;
+  let temporary, writer, encountered = false;
+  fs.rename = async (from, to) => {
+    if (to === marker) { temporary = from; entered.resolve(); await release.promise; }
+    return rename(from, to);
+  };
+  fs.lstat = async (file, ...args) => {
+    if (file === temporary) { encountered = true; release.resolve(); await writer; }
+    return lstat(file, ...args);
+  };
+  try {
+    writer = persistAllocation(marker, { revision: 2 });
+    await entered.promise;
+    await assert.rejects(finishOfflineFixture(fixture), { code: 'ENOENT' });
+    assert.equal(encountered, true, 'copy observed the temporary before its atomic rename');
+    assert.deepEqual(JSON.parse(await fs.readFile(marker, 'utf8')), { revision: 2 });
+    assert.equal((await lstat(fixture.root)).isDirectory(), true, 'failed collection retains the source fixture');
+  } finally {
+    release.resolve();
+    try { await writer; }
+    finally { fs.rename = rename; fs.lstat = lstat; }
+  }
 });
