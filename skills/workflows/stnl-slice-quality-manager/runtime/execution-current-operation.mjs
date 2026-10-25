@@ -109,6 +109,18 @@ function usesCurrentChecks(image,owner) {
   const captured=restoreCaptureSources('current-validation',bundle.validation,new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])));
   return ['stnl-current-validation-request-v1','stnl-current-validation-request-v2'].includes(parseCurrentJson(Buffer.from(captured.validationRequest).toString('utf8')).format);
 }
+function formalPredecessor(op,image) {
+  if(op.owner.operation!=='VALIDATE_SLICE'||!op.binding.normalization)return null;
+  const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+  const current=continuity.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
+  const bundle=parseCurrentJson(Buffer.from(image.files.get(current.evidence.path)).toString('utf8'));
+  const record=bundle.support.find(item=>item.kind==='rejection'
+    &&item.operationAttemptId===op.binding.normalization.sourceOperationAttemptId);
+  if(!record)fail('OWNER_MISMATCH','formal recovery predecessor is absent');
+  const capture=restoreCaptureSources('current-validation',record,new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])));
+  return {request:parseCurrentJson(Buffer.from(capture.validationRequest).toString('utf8')),
+    agent:parseCurrentJson(Buffer.from(capture.agentBinding).toString('utf8')).agentId};
+}
 function requireS2(image,slice,operation,{successor=false}={}) {
   const activation=image.activation;
   if(activation.preparationRevision<=1 || activation.activeAttempt!==null
@@ -475,6 +487,11 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
   if(responseVariant!==null && responseVariant!==NATIVE_JUDGMENT_VARIANT)
     fail('UNSUPPORTED_FORMAT','native response variant is not supported');
   const op=await load(handle);
+  if(op.owner.operation==='VALIDATE_SLICE'&&op.binding.normalization) {
+    const prior=formalPredecessor(op,await requireA1(op));
+    if(terminal!==Object.hasOwn(prior.request,'terminal'))
+      fail('FORMAL_RECOVERY_NOT_ELIGIBLE','formal recovery cannot change the frozen terminal target');
+  }
   return withExecutionPublicationLock(op.workspace,async()=>{
     const now=await load(handle);
     const auxiliary=now.owner.operation!=='VALIDATE_SLICE';
@@ -615,6 +632,8 @@ export async function bindNative(handle,agentId) {
       if((await readJson(path.join(now.root,`round-${index}.agent.json`))).agentId===agentId)
         fail('OWNER_MISMATCH','a fresh native agent is required for each findings round');
     const image=await requireA1(now);
+    if(formalPredecessor(now,image)?.agent===agentId)
+      fail('OWNER_MISMATCH','formal recovery requires a new independent agent');
     await put(path.join(now.root,`round-${round}.agent.json`),{agentId,originFile:now.record.runner.originFile});
     const work=image.observedByDelivery.get(now.owner.deliveryId);
     await put(path.join(now.root,`round-${round}.claim.json`),{agentId,originFile:now.record.runner.originFile,owner:now.owner,
@@ -632,6 +651,9 @@ export async function prepareNativeContinuation(handle,{toolResultFile,binding,f
   return withExecutionPublicationLock(op.workspace,async()=>{
     const now=await load(handle),runner=now.record.runner,round=runner?.round;
     const existing=now.record.preVerificationContinuation;
+    // A successor already spends the target's one corrective credit. Never
+    // stack an initialization continuation on top of that independent retry.
+    if(now.owner.operation==='VALIDATE_SLICE'&&now.binding.normalization)return null;
     if(!runner||now.record.phase!=='working'||!(existing?['running','captured']:['running']).includes(runner.status)
       ||now.record.responseVariant!==NATIVE_JUDGMENT_VARIANT)return null;
     const originBytes=(await readOwnedFile(runner.originFile)).bytes,origin=parseCurrentJson(originBytes.toString('utf8'));
@@ -940,9 +962,12 @@ async function capturedImplementationPrefix(op,image=null) {
   return composeInitialImplementationEvidence({context:op.context,authority:request.authority,owner:op.owner,
     currentEvidence:current.evidence?image.files.get(current.evidence.path):null,counters:current.counters,rounds});
 }
-export async function captureNative(handle,toolResultFile) {
+export async function captureNative(handle,toolResultFile,{reviewTriageFile=null}={}) {
   const op=await load(handle);
   const tool=await readJson(toolResultFile);
+  const reviewTriage=reviewTriageFile===null?null:await readJson(reviewTriageFile);
+  if(reviewTriage!==null&&op.owner.operation!=='VALIDATE_SLICE')
+    fail('FORMAL_RECOVERY_NOT_ELIGIBLE','review triage belongs only to formal validation');
   if(typeof tool.agentId!=='string' || tool.status!=='completed' || typeof tool.finalResponse!=='string')
     fail('OWNER_UNCERTAIN','official concluded tool result is required');
   return withExecutionPublicationLock(op.workspace,async()=>{
@@ -958,7 +983,11 @@ export async function captureNative(handle,toolResultFile) {
     if(await maybe(responseFile)) {
       const previous=(await readOwnedFile(responseFile)).bytes;
       if(!previous.equals(raw)) fail('OWNER_MISMATCH','same owner supplied different final bytes');
-      if(now.record.runner.status==='captured') return {phase:'captured',rawResponseSha256:sha(previous),replayed:true};
+      if(now.record.runner.status==='captured') {
+        const priorReceipt=await readJson(path.join(now.root,`round-${round}.receipt.json`));
+        if(!same(priorReceipt.reviewTriage??null,reviewTriage))fail('OWNER_MISMATCH','same capture supplied different review triage');
+        return {phase:'captured',rawResponseSha256:sha(previous),replayed:true};
+      }
       fail('OWNER_UNCERTAIN','partial native capture exists; preserve it');
     }
     const image=await requireA1(now);
@@ -1005,7 +1034,8 @@ export async function captureNative(handle,toolResultFile) {
       || !(auxiliary?['TESTS_PASS','TESTS_FAIL','BLOCKED']:['PASS','NEEDS_FIX','BLOCKED']).includes(status))
       parseFailure??='native final response envelope/status differs';
     let productHead=null;
-    if(!parseFailure || (initialExecute?parsed?.head:parsed?.result?.head)!==undefined) {
+    const measuredFormalHead=!auxiliary&&origin.responseVariant===NATIVE_JUDGMENT_VARIANT;
+    if(measuredFormalHead || !parseFailure || (initialExecute?parsed?.head:parsed?.result?.head)!==undefined) {
       try {
         const result=await run('git',['-C',now.context.productRoot,'rev-parse','HEAD'],{timeout:10000});
         productHead=result.stdout.endsWith('\n')?result.stdout.slice(0,-1):null;
@@ -1014,9 +1044,10 @@ export async function captureNative(handle,toolResultFile) {
         || (initialExecute?parsed.head:parsed.result.head)!==productHead))
         parseFailure='native result HEAD differs from verified product Git HEAD';
     }
-    const headBindingFailure=(initialExecute?parsed?.head:parsed?.result?.head)!==undefined
+    const expectedHead=measuredFormalHead?observation.binding?.head:(initialExecute?parsed?.head:parsed?.result?.head);
+    const headBindingFailure=expectedHead!==undefined
       && (!/^[a-f0-9]{40}$/u.test(productHead??'')
-        || (initialExecute?parsed.head:parsed.result.head)!==productHead);
+        || expectedHead!==productHead);
     const taskRoot=path.dirname(path.join(now.context.logicalExecutionRoot,`tasks/${now.owner.slice}.md`));
     const baselineManifest=(await readJson(path.join(now.root,`round-${round}.baseline.json`))).manifest;
     const byPath=new Map(observation.after.entries.map(item=>[item.path,item]));
@@ -1044,7 +1075,8 @@ export async function captureNative(handle,toolResultFile) {
       semanticResponseFile:responseFile,semanticResponseSha256:hex(raw),
       semanticResponseStatus:parseFailure?null:status,
       status:parseFailure?'RUNNER_RESULT_BLOCKED':'RUNNER_RESPONSE_CAPTURED',
-      captureFailure:parseFailure,error:null,testedState,verification:observation};
+      captureFailure:parseFailure,error:null,testedState,verification:observation,
+      ...(reviewTriage===null?{}:{reviewTriage})};
     await put(path.join(now.root,`round-${round}.receipt.json`),receipt);
     let initialRejection=false,coverageCorrection=null;
     if(!parseFailure && auxiliary) {
@@ -1107,7 +1139,10 @@ export async function captureNative(handle,toolResultFile) {
       fail('RUNNER_RESULT_REJECTED',`native final response preserved but rejected: ${parseFailure}`);
     // Syntax alone cannot establish a completed-profile judgment. In particular
     // NEEDS_FIX must carry its active blocker before this capture can publish.
-    if(completedProfile && !parseFailure && !auxiliary)await capturedComposition(now);
+    if((completedProfile && !parseFailure && !auxiliary)||reviewTriage!==null)await capturedComposition(now);
+    if(reviewTriage!==null) {
+      now.record.runner.captureClass='formal-review-incomplete';await persistAllocation(now.marker,now.record);
+    }
     return {phase:'captured',rawResponseSha256:sha(raw),status,
       nextAction:initialRejection?'publish'
         :initialExecute && parseFailure?'publish':auxiliary && (status==='TESTS_FAIL' || coverageCorrection)
@@ -1602,7 +1637,7 @@ function commandArguments(argv) {
   const rules={inspect:[['--spec-path'],[]],begin:[['--spec-path','--slice','--expected-activation-id','--operation'],[]],
     'reserve-dispatch':[['--handle'],['--response-variant','--terminal']],
     'bind-native':[['--handle','--agent-id'],[]],'verify-native':[['--origin-file'],[]],
-    'capture-native':[['--handle','--tool-result-file'],[]],abort:[['--handle'],['--tool-result-file']],
+    'capture-native':[['--handle','--tool-result-file'],['--review-triage-file']],abort:[['--handle'],['--tool-result-file']],
     publish:[['--handle'],[]],cleanup:[['--handle'],[]],resume:[['--handle'],[]],
     normalize:[[],['--handle','--spec-path','--slice','--expected-activation-id']]};
   const reject=reason=>fail('INVALID_ARGUMENTS',reason),rule=Object.hasOwn(rules,argv[0])?rules[argv[0]]:null;
@@ -1639,7 +1674,7 @@ export async function main(argv=process.argv.slice(2)) {
       {responseVariant:flag('--response-variant'),terminal:options['--terminal']??false});
     else if(command==='bind-native') result=await bindNative(handle,flag('--agent-id'));
     else if(command==='verify-native') result=await verifyNative(flag('--origin-file'));
-    else if(command==='capture-native') result=await captureNative(handle,flag('--tool-result-file'));
+    else if(command==='capture-native') result=await captureNative(handle,flag('--tool-result-file'),{reviewTriageFile:flag('--review-triage-file')});
     else if(command==='normalize' && handle) result=await normalize(handle);
     else if(command==='normalize') result=await normalizeSuccessor({specPath:flag('--spec-path'),
       slice:flag('--slice'),expectedActivationId:flag('--expected-activation-id')});

@@ -11,9 +11,9 @@ import {resolveCurrentExecutionContext} from '../skills/workflows/stnl-slice-exe
 import {inspectCurrentExecution,captureCurrentExecution,captureCurrentActiveExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {inspectCurrentExecution as inspectQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
 import {installCurrentInitial,recoverCurrentInitialPublication} from '../skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs';
-import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish,normalizeSuccessor,resume,abort} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish,normalizeSuccessor,resume,abort,prepareNativeContinuation} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {payload as initialPayload} from './fixtures/current-initial-evidence.mjs';
-import {parseSemanticExecutionPayload} from '../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs';
+import {parseSemanticExecutionPayload,formalRecoveryBudget} from '../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs';
 import {applyPayload} from './fixtures/current-findings-evidence.mjs';
 import {READY_FIXTURE,copyTree,PUBLISHER_CLI} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/test/publisher-fixtures.mjs';
 import {publishCandidate,TEST_ONLY_ACK,TEST_ONLY_ACK_ENV,TEST_ONLY_CRASH_ENV} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs';
@@ -1073,6 +1073,117 @@ for(const secondInvalid of [false,true])test(`D1 Initial concluded formal refusa
   const image=await inspectCurrentExecution(f.specPath),current=image.deliveries.find(item=>item.slice==='slice-01');
   assert.equal(current.counters.validationAttempts,secondInvalid?0:1);
   if(secondInvalid)assert.equal(image.normalHandoff,null);else assert.equal(current.formalStatus,'PASS');
+});
+
+async function formalRecoveryFixture() {
+  const f=await fixture();await installCurrentInitial(f);
+  const implementation=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await bindNative(implementation.started.handle,'mechanical-recovery-implementation');
+  const measured=await verifyNative(implementation.dispatch.originFile),{head,...result}=initialPayload(1);result.commands=measured.commands;
+  const tool=path.join(f.root,'implementation.json');await fs.writeFile(tool,JSON.stringify({agentId:'mechanical-recovery-implementation',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+  await captureNative(implementation.started.handle,tool);await publish(implementation.started.handle);
+  const {context}=await resolveCurrentExecutionContext(f.specPath);
+  return {...f,head:(await run('git',['-C',f.root,'rev-parse','HEAD'])).stdout.trim(),delivery:{slice:'slice-01'},view:{execution:context.logicalExecutionRoot}};
+}
+const incompleteReviewTriage=({request,requestBytes,finalResponse})=>({
+  format:'stnl-formal-review-triage-v1',owner:request.owner,requestSha256:digest(requestBytes),responseSha256:digest(Buffer.from(finalResponse)),
+  category:'incomplete-review',inputsAvailable:true,externalBlockers:[],
+  missingWork:[{obligationId:request.authority.delivery.obligations[0].id,evidence:'The reviewer explicitly states it did not inspect the prepared AC-001 assertions.',remainingWork:'Independently inspect the prepared assertions against the AC-001 behavior.'}]});
+
+test('formal recovery budget is shared by initialization and successor with no identity reset',()=>{
+  const inherited={operation:'VALIDATE_SLICE',status:'settled',round:1,consumedInvocations:1};
+  assert.deepEqual(formalRecoveryBudget(1),{consumedInvocations:1,resumable:true});
+  assert.deepEqual(formalRecoveryBudget(2),{consumedInvocations:2,resumable:false});
+  assert.deepEqual(formalRecoveryBudget(1,inherited),{consumedInvocations:2,resumable:false});
+  for(const [turns,lineage] of [[2,inherited],[1,{...inherited,consumedInvocations:2}],[1,{...inherited,status:'exhausted'}],[3,null],[0,null]])
+    assert.throws(()=>formalRecoveryBudget(turns,lineage),e=>e.code==='FORMAL_RECOVERY_NOT_ELIGIBLE');
+});
+
+test('formal recovery rejects foreign model metadata as content, preserving bytes and admitting one successor',async()=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  const response=JSON.stringify({format:'stnl-current-native-judgment-v1',head:'unknown',result:{status:'BLOCKED',newFindings:[]}});
+  const first=await normalizedFormal(f,{invalid:true,invalidText:response,responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal(first.captured.captureClass,'formal-rejection');
+  assert.equal(first.finalResponse,response);
+  assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff.operation,'VALIDATE_SLICE');
+  await normalizedFormal(f,{successor:true,responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal((await inspectCurrentExecution(f.specPath)).deliveries[0].formalStatus,'PASS');
+});
+
+test('formal recovery cannot use invalid model content to hide actual Git HEAD drift',async()=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  const first=await normalizedFormal(f,{invalid:true,captureOnly:true,responseVariant:'stnl-current-native-judgment-v1',
+    beforeCapture:async()=>{await run('git',['-C',f.root,'-c','user.name=Mechanical fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-qm','Unrelated HEAD drift']);}});
+  assert.equal(first.captureError?.code,'RUNNER_RESULT_REJECTED');
+  assert.equal((await resume(first.start.handle)).nextAction,'stop-and-diagnose');
+  await assert.rejects(publish(first.start.handle));
+});
+
+test('formal recovery explicitly triages an incomplete valid review without changing its BLOCKED response',async()=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  const first=await normalizedFormal(f,{status:'BLOCKED',blockers:'Independent inspection of the AC-001 test assertions was not completed.',reviewTriage:incompleteReviewTriage,responseVariant:'stnl-current-native-judgment-v1',
+    beforePublish:async({start,dispatch,tool,reviewTriageFile})=>{
+      const observed=await fs.readFile(path.join(path.dirname(dispatch.originFile),'round-1.observation.json'));
+      assert.equal((await captureNative(start.handle,tool,{reviewTriageFile})).replayed,true);
+      const wrong=path.join(f.root,'foreign-triage.json');await fs.writeFile(wrong,'{}');
+      await assert.rejects(captureNative(start.handle,tool,{reviewTriageFile:wrong}),e=>e.code==='OWNER_MISMATCH');
+      assert.deepEqual(await fs.readFile(path.join(path.dirname(dispatch.originFile),'round-1.observation.json')),observed);
+    }});
+  assert.equal(first.captured.captureClass,'formal-review-incomplete');
+  assert.equal(JSON.parse(first.finalResponse).result.status,'BLOCKED');
+  assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff.operation,'VALIDATE_SLICE');
+  await normalizedFormal(f,{successor:true,responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal((await inspectCurrentExecution(f.specPath)).deliveries[0].formalStatus,'PASS');
+});
+
+for(const fault of ['missing-work','unknown-obligation','no-inputs','external-blocker','wrong-owner','wrong-response','wrong-request','PASS','NEEDS_FIX','invalid-content'])test(`formal recovery refuses unsupported triage: ${fault}`,async()=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  const first=await normalizedFormal(f,{captureOnly:true,status:['PASS','NEEDS_FIX'].includes(fault)?fault:'BLOCKED',
+    blockers:'Review remains incomplete.',invalid:fault==='invalid-content',responseVariant:'stnl-current-native-judgment-v1',
+    reviewTriage:input=>{
+      const triage=incompleteReviewTriage(input);
+      if(fault==='missing-work')triage.missingWork=[];
+      if(fault==='unknown-obligation')triage.missingWork[0].obligationId='obligation-999';
+      if(fault==='no-inputs')triage.inputsAvailable=false;
+      if(fault==='external-blocker')triage.externalBlockers=['Access denied'];
+      if(fault==='wrong-owner')triage.owner={...triage.owner,operationAttemptId:'foreign'};
+      if(fault==='wrong-response')triage.responseSha256='sha256:'+'a'.repeat(64);
+      if(fault==='wrong-request')triage.requestSha256='sha256:'+'a'.repeat(64);
+      return triage;
+    }});
+  assert.equal(first.captureError?.code,'FORMAL_RECOVERY_NOT_ELIGIBLE');
+  await assert.rejects(publish(first.start.handle));
+});
+
+test('formal recovery preserves both incomplete refusals and exhausts one credit across new owners',async()=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  const options={status:'BLOCKED',blockers:'Inspection of the prepared AC-001 assertions remains incomplete.',reviewTriage:incompleteReviewTriage,responseVariant:'stnl-current-native-judgment-v1'};
+  const first=await normalizedFormal(f,options),second=await normalizedFormal(f,{...options,successor:true});
+  assert.notEqual(first.start.owner.operationAttemptId,second.start.owner.operationAttemptId);
+  const image=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
+  assert.equal(image.inspection.normalHandoff,null);assert.equal(current.normalization.status,'exhausted');assert.equal(current.normalization.consumedInvocations,2);
+  const bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path)));
+  assert.deepEqual(bundle.support.filter(x=>x.kind==='rejection').map(x=>x.diagnostic.startsWith('FORMAL_REVIEW_INCOMPLETE:')),[true,true]);
+  for(const response of [first.finalResponse,second.finalResponse])assert.ok(bundle.objects.some(x=>Buffer.from(x.bytesBase64,'base64').toString('utf8')===response));
+  await assert.rejects(normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:image.inspection.activationId}));
+});
+
+test('formal recovery cannot change terminal scope or reuse the predecessor identity',async()=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  const first=await normalizedFormal(f,{invalid:true,responseVariant:'stnl-current-native-judgment-v1'});
+  const image=await inspectCurrentExecution(f.specPath),next=await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:image.activationId});
+  await assert.rejects(reserveDispatch(next.handle,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'}),e=>e.code==='FORMAL_RECOVERY_NOT_ELIGIBLE');
+  await reserveDispatch(next.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const source=JSON.parse(await fs.readFile(first.dispatch.originFile));
+  const agent=JSON.parse(await fs.readFile(path.join(path.dirname(first.dispatch.originFile),'round-1.agent.json')));
+  assert.notEqual(source.owner.operationAttemptId,next.owner.operationAttemptId);
+  await assert.rejects(bindNative(next.handle,agent.agentId),e=>e.code==='OWNER_MISMATCH');
+  await bindNative(next.handle,'fresh-independent-successor');
+  const initialization=path.join(f.root,'successor-initialization.json');
+  await fs.writeFile(initialization,JSON.stringify({agentId:'fresh-independent-successor',status:'completed',finalResponse:'Initialization only'}));
+  assert.equal(await prepareNativeContinuation(next.handle,{toolResultFile:initialization,firstTurnId:'second-owner-initial-turn',binding:{}}),null,
+    'new owner cannot stack initialization continuation on the spent target credit');
 });
 
 for(const kind of ['standalone','lifecycle'])test(`Initial ${kind} pending cleanup excludes every fresh family until its own recovery finishes`,async()=>{

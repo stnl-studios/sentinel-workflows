@@ -149,7 +149,7 @@ test('EC-1 native judgment variant is selected before agent and binds measured H
     ['EVIDENCE_STALE','EVIDENCE_INCOMPLETE','INVALID_CURRENT_IMAGE'].includes(error.code));
 });
 
-test('EC-1 native judgment preserves a legacy bare validation response as uncertain, without a successor', async t=>{
+test('EC-1 native judgment preserves a legacy bare response as a rejected content result', async t=>{
   const fixture=await nativeOperationCase(t);
   const start=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
     expectedActivationId:fixture.activationId});
@@ -158,9 +158,8 @@ test('EC-1 native judgment preserves a legacy bare validation response as uncert
   const measured=await verifyNative(dispatch.originFile);
   const response=JSON.stringify(result('PASS',fixture.head,measured.commands));
   const file=await toolFile(fixture,'mechanical-legacy-bare-response',response);
-  await assert.rejects(()=>captureNative(start.handle,file),error=>
-    error.code==='RUNNER_RESULT_REJECTED' && error.message.includes('native judgment contains foreign metadata'));
-  assert.deepEqual(await resume(start.handle),{phase:'uncertain',nextAction:'stop-and-diagnose'});
+  assert.equal((await captureNative(start.handle,file)).captureClass,'formal-rejection');
+  assert.equal((await resume(start.handle)).nextAction,'publish');
   await assert.rejects(()=>reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'}),blocked('OWNER_UNCERTAIN'));
   const raw=await fs.readFile(path.join(path.dirname(dispatch.originFile),'round-1.response.json'),'utf8');
   assert.equal(raw,response,'the original refusal cannot be rewritten into a valid envelope');
@@ -194,10 +193,15 @@ test('EC-1 native judgment rejects foreign metadata, changed recipe and altered 
     if(kind==='wrong-format') response.format='stnl-current-validation-response-v1';
     const file=await toolFile(fixture,kind==='foreign-agent'?'mechanical-other':`mechanical-${kind}`,
       JSON.stringify(response));
+    if(['foreign-head','foreign-request','wrong-format'].includes(kind)) {
+      assert.equal((await captureNative(start.handle,file)).captureClass,'formal-rejection');
+      assert.equal((await resume(start.handle)).nextAction,'publish');
+    } else {
     await assert.rejects(()=>captureNative(start.handle,file),error=>
       ['RUNNER_RESULT_REJECTED','EVIDENCE_STALE','OWNER_UNCERTAIN','OWNER_MISMATCH',
         'INVALID_CURRENT_IMAGE'].includes(error.code));
     assert.notEqual((await resume(start.handle)).nextAction,'publish');
+    }
   });
 });
 
@@ -497,6 +501,22 @@ test('native pre-verification continuation preserves initialization, publishes o
   assert.ok(sources.some(b=>b.objects.some(o=>{try{return JSON.parse(Buffer.from(o.bytesBase64,'base64')).preVerificationContinuation?.firstToolResultUtf8===first.toString('utf8');}catch{return false;}})));
   assert.deepEqual(await fs.readFile(f.input.toolResultFile),first);
   assert.deepEqual(await fs.readFile(path.join(f.operationRoot,'round-1.verification.json')),producer);
+});
+test('formal continuation spends the same correction credit and cannot grant a successor after invalid judgment',async t=>{
+  const f=await unstartedContinuation(t);
+  const admission=await prepareNativeContinuation(f.start.handle,f.input);
+  await verifyNative(f.dispatch.originFile);
+  const file=await toolFile(f,f.agentId,'INVALID_AFTER_INITIALIZATION','failed-continuation.json');
+  const tool=JSON.parse(await fs.readFile(file));tool.preVerificationContinuation=admission.grant;
+  await fs.writeFile(file,JSON.stringify(tool)+'\n');
+  const raw=await fs.readFile(file),observation=await fs.readFile(path.join(f.operationRoot,'round-1.verification.json'));
+  assert.equal((await captureNative(f.start.handle,file)).captureClass,'formal-rejection');
+  assert.equal((await captureNative(f.start.handle,file)).replayed,true);
+  await publish(f.start.handle);
+  const image=await captureCurrentExecution(f.specPath),continuity=JSON.parse(Buffer.from(image.files.get('continuity.json'))),current=continuity.deliveries.find(x=>x.slice===f.delivery.slice);
+  assert.equal(current.normalization.consumedInvocations,2);assert.equal(current.normalization.status,'exhausted');
+  assert.equal(image.inspection.normalHandoff,null);
+  assert.deepEqual(await fs.readFile(file),raw);assert.deepEqual(await fs.readFile(path.join(f.operationRoot,'round-1.verification.json')),observation);
 });
 for(const fault of ['started','observed','foreign-control','changed-work','identity','first-bytes'])test(`native continuation refuses ${fault}`,async t=>{
   const f=await unstartedContinuation(t);let input=f.input;

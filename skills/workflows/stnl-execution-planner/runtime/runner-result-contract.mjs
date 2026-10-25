@@ -1,6 +1,16 @@
 // Pure semantic contract shared by canonical producers and rejection readback.
 function fail(message) { throw new Error(message); }
 
+// One correction belongs to the frozen formal target, not to a child/owner.
+// Initialization continuation and independent replacement spend the same slot.
+export function formalRecoveryBudget(producerTurns, inherited = null) {
+  if(![1,2].includes(producerTurns) || inherited && (inherited.operation!=='VALIDATE_SLICE'
+    ||inherited.status!=='settled'||inherited.round!==1||inherited.consumedInvocations!==1||producerTurns!==1))
+    throw Object.assign(new Error('formal corrective credit is exhausted or its lineage is invalid'),{code:'FORMAL_RECOVERY_NOT_ELIGIBLE'});
+  const consumedInvocations=(inherited?.consumedInvocations??0)+producerTurns;
+  return {consumedInvocations,resumable:consumedInvocations<2};
+}
+
 export class RunnerVerdictEvidenceError extends Error {
   constructor(operation, status, failedCommands, message = null) {
     super(message ?? `${operation} ${status} contradicts ${failedCommands.length} marked verification command(s) with non-zero exit`);

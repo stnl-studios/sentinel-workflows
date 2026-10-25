@@ -167,7 +167,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         await fs.writeFile(path.join(workspace, 'src/native-filter.test.mjs'), checkSource.replace("assert.equal(code,0);", "let pending='';assert.equal(await runCli(['--store',store,'list','--pending'],{stdout:{write:s=>{pending+=s;}},stderr:{write:()=>{}}}),0);assert.deepEqual(pending.trim().split('\\n').map(JSON.parse).map(x=>x.id),[2]);assert.equal(code,0);"));
       }
       const coverageRounds = operation === 'EXECUTE_SLICE' && fault === 'test-coverage-correction';
-      const formalRounds = coverageRounds ? 3 : operation === 'VALIDATE_SLICE' && ['formal-successor','formal-exhausted'].includes(fault) ? 2 : 1;
+      const formalRounds = coverageRounds ? 3 : operation === 'VALIDATE_SLICE' && ['formal-successor','formal-exhausted','formal-incomplete','formal-incomplete-exhausted'].includes(fault) ? 2 : 1;
       for(let formalRound=0;formalRound<formalRounds;formalRound++){
       if(coverageRounds) {
         const file=path.join(workspace,'src/native-filter.test.mjs');
@@ -187,7 +187,8 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       await bindNative(admitted.handle, agentPath);
       if (operation === 'EXECUTE_SLICE' && fault === 'aux-after-formal') auxiliary();
       if (operation === 'EXECUTE_SLICE' && fault === 'aux-followup-twelve') auxiliary(thread, turn, { turns: 12 });
-      const continuing=fault==='pre-verification-continuation'&&operation==='EXECUTE_SLICE';
+      const continuing=fault==='pre-verification-continuation'&&operation==='EXECUTE_SLICE'
+        ||fault==='formal-continuation-exhausted'&&operation==='VALIDATE_SLICE';
       const contractRead=()=>({id:randomUUID(),type:'commandExecution',command:`cat -- '${path.join(snapshot,'agents/codex/.codex/agents/stnl_validation_runner.toml')}'`,cwd:workspace,status:'completed',exitCode:0,aggregatedOutput:null});
       if(continuing) {
         const read=contractRead();read.aggregatedOutput=await fs.readFile(path.join(snapshot,'agents/codex/.codex/agents/stnl_validation_runner.toml'),'utf8');
@@ -224,7 +225,11 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       const findings = needsFix ? [{ id: 'finding-01', originAttempt: JSON.parse(await fs.readFile(dispatch.requestFile)).attemptId,
         severity: 'blocking', problem: 'Pending filter selects completed records.', evidence: 'The pending branch uses todo.completed.',
         impact: 'Case A pending list requirement is unmet.', relatedAuthority: 'AC-001; obligation-01', expectedCorrection: 'Select incomplete records and assert pending output.' }] : [];
-      const invalid = !coverageRounds && formalRounds===2 && (formalRound===0 || fault==='formal-exhausted');
+      const incomplete=operation==='VALIDATE_SLICE'&&['formal-incomplete','formal-incomplete-exhausted'].includes(fault)
+        &&(formalRound===0||fault==='formal-incomplete-exhausted');
+      if(incomplete){result.status='BLOCKED';result.blockers='Independent inspection of the prepared assertions against the canonical AC-001 obligation is incomplete.';}
+      const invalid = !coverageRounds && (fault==='formal-continuation-exhausted'&&operation==='VALIDATE_SLICE'
+        || ['formal-successor','formal-exhausted'].includes(fault)&&formalRounds===2 && (formalRound===0 || fault==='formal-exhausted'));
       const text = JSON.stringify({ format: 'stnl-current-native-judgment-v1', result,
         ...(operation === 'VALIDATE_SLICE' && !invalid ? { newFindings: findings } : {}) })
         +(invalid?'\nCanonical task identity: `'+agentPath+'`':'');
@@ -246,7 +251,13 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         const value=JSON.parse(await fs.readFile(file,'utf8'));
         if(value.agentId!==agentPath||value.finalResponse!==text)throw Error('automatic source differs; no repair');
       }else await fs.writeFile(file, JSON.stringify({ agentId: agentPath, status: 'completed', finalResponse: text }));
-      const captured=await captureNative(admitted.handle,file);command(turn.items,captured);
+      let reviewTriageFile=null;
+      if(incomplete){
+        const requestBytes=await fs.readFile(dispatch.requestFile),request=JSON.parse(requestBytes);
+        reviewTriageFile=path.join(caseRoot,`review-triage-${formalRound}.json`);
+        await fs.writeFile(reviewTriageFile,JSON.stringify({format:'stnl-formal-review-triage-v1',owner:request.owner,requestSha256:'sha256:'+createHash('sha256').update(requestBytes).digest('hex'),responseSha256:'sha256:'+createHash('sha256').update(text).digest('hex'),category:'incomplete-review',inputsAvailable:true,externalBlockers:[],missingWork:[{obligationId:request.authority.delivery.obligations[0].id,evidence:result.blockers,remainingWork:'Inspect the prepared assertions independently against the unchanged canonical obligation.'}]}));
+      }
+      const captured=await captureNative(admitted.handle,file,{reviewTriageFile});command(turn.items,captured);
       if(coverageRounds && formalRound<2) {
         if(captured.nextAction!=='reserve-dispatch')throw Error('coverage correction did not retain the existing correction handoff');
         if(formalRound===1)try {await publish(admitted.handle);throw Error('intermediate omission unexpectedly published');}catch(error){if(error.code!=='EVIDENCE_INCOMPLETE')throw error;}

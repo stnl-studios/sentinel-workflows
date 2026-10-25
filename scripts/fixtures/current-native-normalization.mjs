@@ -16,7 +16,8 @@ const run=promisify(execFile);
 export async function normalizedFormal(fixture,{successor=false,invalid=false,partial=false,
   candidateMutation=null,beforeCapture=null,beforePublish=null,captureOnly=false,
   invalidText='INVALID_FORMAL_RESPONSE',headOverride=null,terminalFault=false,
-  references='none',dispositions='none',responseVariant=null,terminal=false,
+  references='none',dispositions='none',responseVariant=null,terminal=false,reviewTriage=null,
+  status='PASS',blockers='none',
   evidence='The prepared AC-001 test passed under the official native verification helper.'}={}) {
   const number=++next;
   const activation=JSON.parse(await fs.readFile(path.join(fixture.image?.f?.execution??fixture.view.execution,'activation.json'),'utf8'));
@@ -30,9 +31,9 @@ export async function normalizedFormal(fixture,{successor=false,invalid=false,pa
   const request=await fs.readFile(dispatch.requestFile);
   let finalResponse=invalid?invalidText:JSON.stringify({
     format:'stnl-current-validation-response-v1',requestSha256:sha(request),
-    result:{status:'PASS',head:headOverride??fixture.head,commands:measured.commands,
+    result:{status,head:headOverride??fixture.head,commands:measured.commands,
       evidence,
-      findingReferences:references,findingDispositions:dispositions,blockers:'none',
+      findingReferences:references,findingDispositions:dispositions,blockers,
       unexpectedWorkspaceEffects:'none',persistenceSummary:'No product or task file changed.'},
     newFindings:[]});
   if(!invalid&&responseVariant) {
@@ -43,13 +44,18 @@ export async function normalizedFormal(fixture,{successor=false,invalid=false,pa
   await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
   if(beforeCapture) await beforeCapture({start,dispatch,tool,finalResponse});
   let captured;
-  try {captured=await captureNative(start.handle,tool);}
+  let reviewTriageFile=null;
+  if(reviewTriage) {
+    reviewTriageFile=path.join(fixture.root,`mechanical-triage-${number}.json`);
+    await fs.writeFile(reviewTriageFile,JSON.stringify(await reviewTriage({request:JSON.parse(request),requestBytes:request,finalResponse,measured,start,dispatch})));
+  }
+  try {captured=await captureNative(start.handle,tool,{reviewTriageFile});}
   catch(error) {
     if(captureOnly) return {start,dispatch,captureError:error,finalResponse};
     throw error;
   }
   if(captureOnly) return {start,dispatch,captured,finalResponse};
-  if(beforePublish) await beforePublish({start,dispatch,captured,tool,finalResponse});
+  if(beforePublish) await beforePublish({start,dispatch,captured,tool,reviewTriageFile,finalResponse});
   let repaired=null;
   if(partial) {
     try {await publish(start.handle,{checkpoint:async phase=>{

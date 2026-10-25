@@ -446,7 +446,8 @@ function nativeOrigin(cap, receipt, rawText, expectation, round, resolved) {
   } else if(observed?.binding?.continuationSha256!==undefined)incomplete('native continuation source absent');
   if (receipt.operation !== owner.operation || receipt.slice !== owner.slice || receipt.workspace !== origin.workspace) mismatch(`round ${round}: receipt owner differs`);
   if (receipt.error !== null) uncertain(`round ${round}: native receipt error`);
-  return { dispatchId:origin.dispatchId, runnerId:agent.agentId, receipt, root };
+  return { dispatchId:origin.dispatchId, runnerId:agent.agentId, receipt, root,
+    producerTurns:continued===undefined?1:2 };
 }
 
 // The projection is transient. It is never written as the concluded response or
@@ -466,13 +467,19 @@ export function projectNativeJudgment({origin,observation,requestBytes=null,agen
   let answer;
   try {answer=parseCurrentJson(rawText);}
   catch(error) {throw new RunnerSemanticResultError(operation,error);}
-  if(answer && typeof answer==='object' && (Object.hasOwn(answer,'head')||Object.hasOwn(answer,'requestSha256')
+  const foreignMetadata=answer && typeof answer==='object' && (Object.hasOwn(answer,'head')||Object.hasOwn(answer,'requestSha256')
     || answer.result&&typeof answer.result==='object'
-      && (Object.hasOwn(answer.result,'head')||Object.hasOwn(answer.result,'requestSha256'))))
+      && (Object.hasOwn(answer.result,'head')||Object.hasOwn(answer.result,'requestSha256')));
+  if(operation!=='VALIDATE_SLICE') {
+    if(foreignMetadata)invalid('native judgment contains foreign metadata');
+    if(answer?.format!==undefined&&answer.format!==NATIVE_JUDGMENT_VARIANT)
+      fail('UNSUPPORTED_FORMAT','native judgment response format');
+  }
+  try {
+  if(foreignMetadata)
     invalid('native judgment contains foreign metadata');
   if(answer?.format!==undefined&&answer.format!==NATIVE_JUDGMENT_VARIANT)
     fail('UNSUPPORTED_FORMAT','native judgment response format');
-  try {
     closed(answer,['format','result',...(operation==='VALIDATE_SLICE'?['newFindings']:[])],'native judgment response');
     if(answer.format!==NATIVE_JUDGMENT_VARIANT) fail('UNSUPPORTED_FORMAT','native judgment response format');
     plain(answer.result,'native judgment result');

@@ -13,7 +13,7 @@ import {
   RunnerSemanticResultError, assertRunnerVerdictConsistency, deriveCanonicalRunnerRejection,
   parseSemanticValidationPayload, parseSemanticExecutionPayload, parseCapturedResult,
   assertExecutionResultScope, recoverableRunnerResultDiagnostic, serializeCommand, serializeMarkdownScalar,
-  executionFields, isExplanatoryExecutionField,
+  executionFields, isExplanatoryExecutionField, formalRecoveryBudget,
 } from './runner-result-contract.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
@@ -227,7 +227,7 @@ function verifiedOperationalFormals(bundle,map,context,approvedAuthority,ceiling
           proof.request.base.openFindings,proof.request.base.auxiliary??null,proof.snapshotDigest)})
         :verifyRejection(record,map,context,approvedAuthority,priorFiles,proof.request.scope.filelessReason);
       if(!derived.rejection||record.diagnostic!==derived.rejection||!same(record.origin,derived.origin)
-        ||record.operationAttemptId!==proof.request.owner.operationAttemptId||record.round!==1||record.consumedInvocations!==1)
+        ||record.operationAttemptId!==proof.request.owner.operationAttemptId||record.round!==1||record.consumedInvocations!==derived.consumedInvocations)
         stale('operational formal refusal differs');
       boundedCounters(proof.request.base.counters,ceiling,'operational refusal counters');
     }
@@ -625,6 +625,9 @@ function deriveCapture({context,authority:approvedAuthority,capture,expectedOwne
     originActivationId:request.owner.originActivationId,transport:capture.transport,
     dispatchId:info.dispatchId,runnerId:info.runnerId};
   const nativeOrigin=capture.transport==='native'?jsonBytes(capture.origin,'validation origin').value:null;
+  // Revalidate the shared credit from authenticated sources for every outcome,
+  // including accepted successors and passive readback, not only refusals.
+  if(nativeOrigin)formalRecoveryBudget(info.producerTurns,nativeOrigin.admission?.binding?.normalization??null);
   let semanticText=rawText,projectionError=null;
   if(nativeOrigin?.responseVariant===NATIVE_JUDGMENT_VARIANT)try {
     semanticText=projectNativeJudgment({origin:nativeOrigin,observation:observed.observed,
@@ -664,10 +667,12 @@ function deriveCapture({context,authority:approvedAuthority,capture,expectedOwne
     verifyReceiptState(receipt,request.scope.paths,observed.observed.after,
       parsed.payload?.status ?? 'NEEDS_FIX',context,request.owner.slice,priorFiles);
   }
+  if (receipt.reviewTriage!==undefined && (rejection||parsed.payload?.status!=='BLOCKED'))
+    fail('FORMAL_RECOVERY_NOT_ELIGIBLE','incomplete-review triage requires a schema-valid concluded review');
   if (rejection) {
     const diagnostic=recoverableRunnerResultDiagnostic(rejection);
     if (!diagnostic) incomplete('validation rejection diagnostic');
-    return {request,origin,receipt,observed,rejection:diagnostic,parsed};
+    return {request,origin,receipt,observed,rejection:diagnostic,parsed,consumedInvocations:info.producerTurns};
   }
   try {
   const {payload,response}=parsed;
@@ -701,11 +706,40 @@ function deriveCapture({context,authority:approvedAuthority,capture,expectedOwne
   const recordDraft={kind:'validation',recordFormat:'stnl-task-record-v2',id:request.attemptId,origin,
     contract:{delivery:approvedAuthority.delivery,context:approvedAuthority.context,terminal,recipe:approvedAuthority.delivery.verificationRecipe},
     recordUtf8:renderRecord(rootRequest,payload,observed.commands),testedWork:observed.observed.after};
-  return {request,origin,receipt,observed,response,payload,recordDraft,open,all,dispositions};
+  if(receipt.reviewTriage!==undefined) {
+    const triage=receipt.reviewTriage;
+    const reject=reason=>fail('FORMAL_RECOVERY_NOT_ELIGIBLE',reason);
+    const keys=['format','owner','requestSha256','responseSha256','category','inputsAvailable','externalBlockers','missingWork'];
+    if(!triage||typeof triage!=='object'||Array.isArray(triage)
+      ||JSON.stringify(Object.keys(triage).sort())!==JSON.stringify(keys.sort())
+      ||triage.format!=='stnl-formal-review-triage-v1'||triage.category!=='incomplete-review'
+      ||!same(triage.owner,request.owner)||triage.requestSha256!==raw(copyBytes(capture.validationRequest,'triage request'))
+      ||triage.responseSha256!==raw(copyBytes(capture.rawResponse,'triage response')))
+      reject('incomplete-review triage is not bound to this owner, request and literal response');
+    if(payload.status!=='BLOCKED'||newly.length||observed.commands.some(item=>item.exit!==0)
+      ||triage.inputsAvailable!==true||!Array.isArray(triage.externalBlockers)||triage.externalBlockers.length
+      ||!Array.isArray(triage.missingWork)||!triage.missingWork.length)
+      reject('triage requires incomplete review with available inputs, no external blocker, findings or failed checks');
+    const obligations=new Set(approvedAuthority.delivery.obligations.map(item=>item.id)),seen=new Set();
+    for(const item of triage.missingWork) {
+      if(!item||typeof item!=='object'||Array.isArray(item)
+        ||JSON.stringify(Object.keys(item).sort())!==JSON.stringify(['evidence','obligationId','remainingWork'])
+        ||!obligations.has(item.obligationId)||seen.has(item.obligationId)
+        ||['evidence','remainingWork'].some(key=>typeof item[key]!=='string'||!item[key].trim()
+          ||/^(none|pending|n\/a|unknown)$/iu.test(item[key].trim())))
+        reject('triage must identify concrete missing canonical work and its evidence');
+      seen.add(item.obligationId);
+    }
+    return {request,origin,receipt,observed,response,payload,rejection:`FORMAL_REVIEW_INCOMPLETE: ${canonical(triage.missingWork)}`,
+      parsed,consumedInvocations:info.producerTurns};
+  }
+  return {request,origin,receipt,observed,response,payload,recordDraft,open,all,dispositions,consumedInvocations:info.producerTurns};
   } catch (error) {
+    if(receipt.reviewTriage!==undefined)
+      fail('FORMAL_RECOVERY_NOT_ELIGIBLE',`incomplete-review triage failed its concluded review proof: ${error.message}`);
     if (error.code !== 'INVALID_CURRENT_IMAGE' && !(error instanceof RunnerSemanticResultError)) throw error;
     const diagnostic=recoverableRunnerResultDiagnostic(error instanceof RunnerSemanticResultError ? error : semanticError(error.message));
-    return {request,origin,receipt,observed,rejection:diagnostic,parsed};
+    return {request,origin,receipt,observed,rejection:diagnostic,parsed,consumedInvocations:info.producerTurns};
   }
 }
 
@@ -987,7 +1021,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
       priorFiles:new Set(request.base.baseline.entries.filter(item=>item.kind==='absent').map(item=>item.path))});
     if(!derived.rejection || latest.operationAttemptId!==derived.origin.operationAttemptId
       || latest.diagnostic!==derived.rejection || !same(latest.origin,derived.origin)
-      || latest.round!==1 || latest.consumedInvocations!==1
+      || latest.round!==1 || latest.consumedInvocations!==derived.consumedInvocations
       || !same(current.counters,request.base.counters)
       || !same(current.baseline,derived.observed.observed.after))
       invalid('post-conversion rejection proof differs');
@@ -999,12 +1033,12 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     const normalization={episodeId:inherited?.episodeId??request.owner.operationAttemptId,
       operation:'VALIDATE_SLICE',causeSha256,
       sourceOperationAttemptId:inherited?.sourceOperationAttemptId??request.owner.operationAttemptId,
-      used:1,consumedInvocations:inherited?2:1,round:inherited?2:1,
-      status:inherited?'exhausted':'settled'};
+      used:1,consumedInvocations:formalRecoveryBudget(derived.consumedInvocations,inherited).consumedInvocations,round:inherited?2:1,
+      status:formalRecoveryBudget(derived.consumedInvocations,inherited).resumable?'settled':'exhausted'};
     if(!same(current.normalization,normalization)
       || !same(current.lastDiagnostic,{code:'RUNNER_RESULT_REJECTED',
         operationAttemptId:request.owner.operationAttemptId,reason:derived.rejection,
-        affectedPaths:request.scope.paths,nextAction:inherited?'stop':'normalize'}))
+        affectedPaths:request.scope.paths,nextAction:normalization.status==='exhausted'?'stop':'normalize'}))
       invalid('post-conversion normalization/diagnostic differs');
     let priorFacts;
     if(request.base.evidenceSha256===null) {
@@ -1039,6 +1073,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
         lastAttempt:baseActivation.lastAttempt,
         admissionRef:baseActivation.lastAttempt?.operationRef??null});
     }
+    if(inherited)assertFormalRecoveryTarget(derived,priorFacts.rejection);
     const approved=postAuthority(snapshot,current);
     const matches=same(observedWork,current.baseline);
     return {context,authority:approved,bundle,
@@ -1056,8 +1091,8 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
       origins:priorFacts.origins??null,
       consumption:{kind:'bounded-formal-rejection',lastOperationAttemptId:request.owner.operationAttemptId,
         operation:'VALIDATE_SLICE',consumedInvocations:normalization.consumedInvocations,
-        remainingInvocations:inherited?0:1,resumable:!inherited},diagnostics:[],
-      requiresFormalRevalidation:!inherited && matches};
+        remainingInvocations:normalization.status==='settled'?1:0,resumable:normalization.status==='settled'},diagnostics:[],
+      requiresFormalRevalidation:normalization.status==='settled' && matches};
   }
   if(auxiliaryRejections.length && current.normalization===null
     && bundle.validation?.recordFormat==='stnl-task-record-v2'
@@ -1115,7 +1150,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
       return {context,authority:approved,bundle,records:{implementation:[],
         findings:[...priorBundle.support.filter(item=>item.kind==='findings-check'),...bundle.findingsChecks],
         validation:[...bundle.support.filter(item=>item.kind==='validation'),bundle.validation]},
-        latest:{record,request:formalRequest,all:derived.all,dispositions:derived.dispositions},
+        latest:{record,request:formalRequest,all:derived.all,dispositions:derived.dispositions,consumedInvocations:derived.consumedInvocations},
         verifiedChanges,verifiedCorrections,rejection:null,auxiliaryStatus:predecessor.auxiliaryStatus,
         formalStatus:status,slice:current.slice,deliveryId:current.deliveryId,counters:current.counters,
         counterAuthority:'persisted-continuity',persistedValidation:current.validation,
@@ -1428,6 +1463,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     verifyHistoricalLocalReviewProof({context,snapshotBytes,current:priorCurrent,
       bundleBytes:priorBytes,reviewedAuthority:request.authority});
   }
+  let recoveryPredecessor=null;
   if(formalRejections.length) {
     const origin=jsonBytes(capture.origin,'formal successor origin').value;
     const inherited=origin.admission?.binding?.normalization;
@@ -1459,6 +1495,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
       admissionRef:origin.admission.baseActivation.lastAttempt?.operationRef??null});
     if(!predecessor.rejection || predecessor.consumption.remainingInvocations!==1)
       invalid('formal successor predecessor is not settled');
+    recoveryPredecessor=predecessor.rejection;
   }
   const predecessor={evidence:{sha256:request.base.evidenceSha256},counters:request.base.counters,
     baseline:request.base.baseline,validation:request.base.validation,lastDiagnostic:request.base.lastDiagnostic};
@@ -1466,6 +1503,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     historicalSibling?.snapshotDigest??null);
   const derived=verifyCapture({context,snapshotBytes,current,capture,expectedBase:expected,admissionRef,
     historicalProof:historicalSibling,priorFiles});
+  if(recoveryPredecessor)assertFormalRecoveryTarget(derived,recoveryPredecessor);
   if(!same(record,{...derived.recordDraft,sources:record.sources})
     || !same(bundle.openFindings,derived.open)
     || !same(current.counters,{...request.base.counters,
@@ -1484,7 +1522,7 @@ export async function inspectPostConversionEvidence({context,snapshotBytes,curre
     request.base.baseline,record.testedWork);
   return {context,authority:approved,bundle,
     records:{implementation:[],findings:[],validation:[...bundle.support.filter(item=>item.kind==='validation'&&item.recordFormat==='stnl-task-record-v2'),record]},
-    latest:{record,request,all:derived.all,dispositions:derived.dispositions},
+    latest:{record,request,all:derived.all,dispositions:derived.dispositions,consumedInvocations:derived.consumedInvocations},
     verifiedChanges,verifiedCorrections:[],rejection:null,auxiliaryStatus:null,
     slice:current.slice,deliveryId:current.deliveryId,counters:current.counters,
     counterAuthority:'persisted-continuity',persistedValidation:current.validation,
@@ -1872,11 +1910,11 @@ export async function composePostConversionValidation({context,requirementsAutho
     const retained=restoreCaptureSources('current-validation',previousRecord,
       sourceMap(jsonBytes(bundleBytes,'predecessor bundle').value));
     if(!exactCapture(retained,capture)) mismatch('same owner has different captured bytes');
-    await inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,observedWork:current.baseline,
+    const verified=await inspectPostConversionEvidence({context,snapshotBytes,current,bundleBytes,observedWork:current.baseline,
       lastAttempt:activation.lastAttempt,admissionRef:activation.lastAttempt?.operationRef??null});
     return {files,transition:{deliveryId,slice:current.slice,
       operationAttemptId:request.owner.operationAttemptId,originActivationId:request.owner.originActivationId,
-      outcome:'recorded',counters:structuredClone(current.counters)},consumedInvocations:1,replayed:true};
+      outcome:'recorded',counters:structuredClone(current.counters)},consumedInvocations:verified.latest.consumedInvocations,replayed:true};
   }
   if(request.owner.originActivationId!==activation.activationId)
     mismatch('post-conversion owner origin activation differs');
@@ -1934,6 +1972,8 @@ export async function composePostConversionValidation({context,requirementsAutho
   const derived=postCaptureProof({context,snapshotBytes,current,capture,expectedBase:base,
     allowRejection:true,priorFiles:new Set(previousFacts
       ?current.baseline.entries.filter(item=>item.kind==='absent').map(item=>item.path):[])});
+  if(current.normalization?.operation==='VALIDATE_SLICE')
+    assertFormalRecoveryTarget(derived,previousFacts.rejection);
   if(request.owner.preparationRevision!==snapshot.preparationRevision
     || request.owner.localRevision!==current.localRevision
     || request.owner.normativeSha256!==current.authoritySha256)
@@ -1954,10 +1994,10 @@ export async function composePostConversionValidation({context,requirementsAutho
     const normalization={episodeId:inherited?.episodeId??request.owner.operationAttemptId,
       operation:'VALIDATE_SLICE',causeSha256,
       sourceOperationAttemptId:inherited?.sourceOperationAttemptId??request.owner.operationAttemptId,
-      used:1,consumedInvocations:inherited?2:1,round:inherited?2:1,
-      status:inherited?'exhausted':'settled'};
+      used:1,consumedInvocations:formalRecoveryBudget(derived.consumedInvocations,inherited).consumedInvocations,round:inherited?2:1,
+      status:formalRecoveryBudget(derived.consumedInvocations,inherited).resumable?'settled':'exhausted'};
     const rejection={kind:'rejection',operationAttemptId:request.owner.operationAttemptId,
-      origin:derived.origin,diagnostic:derived.rejection,consumedInvocations:1,round:1,sources};
+      origin:derived.origin,diagnostic:derived.rejection,consumedInvocations:derived.consumedInvocations,round:1,sources};
     const retained=previousBundle?.support??[];
     if(retained.some(item=>item.kind==='rejection' && item.origin.operation==='VALIDATE_SLICE')
       && !inherited) mismatch('prior formal rejection requires inherited episode');
@@ -1975,13 +2015,13 @@ export async function composePostConversionValidation({context,requirementsAutho
     const next={...current,evidence:{path:`evidence/${deliveryId}.json`,sha256:nextDigest},
       baseline:derived.observed.observed.after,validation:'revalidation-required',normalization,
       lastDiagnostic:{code:'RUNNER_RESULT_REJECTED',operationAttemptId:request.owner.operationAttemptId,
-        reason:derived.rejection,affectedPaths:request.scope.paths,nextAction:inherited?'stop':'normalize'}};
+        reason:derived.rejection,affectedPaths:request.scope.paths,nextAction:normalization.status==='exhausted'?'stop':'normalize'}};
     const continuity={...checked.continuity,deliveries:checked.continuity.deliveries.map(item=>
       item.deliveryId===deliveryId?next:item)};
     files.set(next.evidence.path,nextBytes);
     files.set('continuity.json',encode(continuity));
     let task=Buffer.from(files.get(`tasks/${current.slice}.md`)).toString('utf8');
-    task=postSection(task,'Continuity',`- Current validation: revalidation-required\n- Current evidence: ${nextDigest}\n- Current action: ${inherited?'blocked':'normalize'}`);
+    task=postSection(task,'Continuity',`- Current validation: revalidation-required\n- Current evidence: ${nextDigest}\n- Current action: ${normalization.status==='exhausted'?'blocked':'normalize'}`);
     task=postSection(task,'Delegation Blocker','- Operation: VALIDATE_SLICE\n- State: active');
     task=postSection(task,'Effective Validation Base','- none');
     task=postSection(task,'Final Result','- pending');
@@ -1991,7 +2031,7 @@ export async function composePostConversionValidation({context,requirementsAutho
     return {files,transition:{deliveryId,slice:current.slice,
       operationAttemptId:request.owner.operationAttemptId,originActivationId:activation.activationId,
       outcome:'rejected',normalization,counters:structuredClone(current.counters)},
-      consumedInvocations:1,replayed:false};
+      consumedInvocations:derived.consumedInvocations,replayed:false};
   }
   const record={...derived.recordDraft,sources};
   const auxiliaryHistory=previousBundle?.support?.filter(item=>item.kind==='findings-check'
@@ -2066,7 +2106,7 @@ export async function composePostConversionValidation({context,requirementsAutho
     index:carrier.index,slice:current.slice,priorDeliveries});
   return {files,transition:{deliveryId,slice:current.slice,
     operationAttemptId:request.owner.operationAttemptId,originActivationId:activation.activationId,
-    outcome:'recorded',counters:nextCounters},consumedInvocations:1,replayed:false};
+    outcome:'recorded',counters:nextCounters},consumedInvocations:derived.consumedInvocations,replayed:false};
 }
 async function convertedFindingsCycle({context,snapshotBytes,current,bundleBytes,owner:expectedOwner,rounds,
   allowPrefix=false}) {
@@ -2480,6 +2520,15 @@ function projectedDelivery(value) {
   return raw(Buffer.concat([utf8('stnl-ec1/delivery/v1'),Buffer.from([0]),utf8(canonical(value))]));
 }
 function formalRecordNumber(record) { return Number(record.id.slice('attempt-'.length)); }
+function assertFormalRecoveryTarget(derived,predecessor) {
+  for(const key of ['authority','terminal','scope'])
+    equal(derived.request[key]??null,predecessor.request[key]??null,'EVIDENCE_STALE',`formal recovery frozen ${key}`);
+  equal(derived.observed.observed.before,predecessor.observed.observed.after,'EVIDENCE_STALE','formal recovery tested state');
+  equal(derived.observed.observed.binding?.head??null,predecessor.observed.observed.binding?.head??null,
+    'EVIDENCE_STALE','formal recovery verified HEAD');
+  if(derived.origin.runnerId===predecessor.origin.runnerId)
+    mismatch('formal recovery reused predecessor agent');
+}
 function verifyRecord(record,map,context,approvedAuthority,priorFiles,filelessReason) {
   if (record.recordFormat==='stnl-task-record-v1-imported') fail('UNSUPPORTED_FORMAT','imported formal record');
   if (record.kind!=='validation' || record.recordFormat!=='stnl-task-record-v2') invalid('formal record format');
@@ -2492,13 +2541,13 @@ function verifyRecord(record,map,context,approvedAuthority,priorFiles,filelessRe
   return {...verified,record,cap};
 }
 function verifyRejection(support,map,context,approvedAuthority,priorFiles,filelessReason) {
-  if (support.kind!=='rejection' || support.origin.operation!=='VALIDATE_SLICE' || support.round!==1 || support.consumedInvocations!==1) invalid('formal rejection shape');
+  if (support.kind!=='rejection' || support.origin.operation!=='VALIDATE_SLICE' || support.round!==1 || ![1,2].includes(support.consumedInvocations)) invalid('formal rejection shape');
   const cap=restoreCaptureSources('current-validation',support,map);
   const request=jsonBytes(cap.validationRequest,'formal rejection authority').value;
   const sourceAuthority=recordAuthority({origin:support.origin,contract:{delivery:request.authority.delivery,context:request.authority.context}},approvedAuthority);
   const derived=deriveCapture({context,authority:sourceAuthority,capture:cap,priorFiles,filelessReason});
   if (!derived.rejection) invalid('formal rejection contains accepted response');
-  if (support.operationAttemptId!==derived.origin.operationAttemptId || support.diagnostic!==derived.rejection) stale('formal rejection diagnostic/origin');
+  if (support.operationAttemptId!==derived.origin.operationAttemptId || support.diagnostic!==derived.rejection || support.consumedInvocations!==derived.consumedInvocations) stale('formal rejection diagnostic/origin');
   equal(support.origin,derived.origin,'EVIDENCE_STALE','formal rejection origin');
   return {...derived,cap};
 }
@@ -2906,7 +2955,7 @@ function inspectFindings(original,bundle,context,approvedAuthority,declaredCount
     if (!derived.rejection) invalid('later formal rejection has accepted response');
     equal(formalRejection.origin,derived.origin,'EVIDENCE_STALE','later formal rejection origin');
     if (formalRejection.operationAttemptId!==request.owner.operationAttemptId || formalRejection.diagnostic!==derived.rejection
-      || formalRejection.round!==1 || formalRejection.consumedInvocations!==1) stale('later formal rejection detail');
+      || formalRejection.round!==1 || formalRejection.consumedInvocations!==derived.consumedInvocations) stale('later formal rejection detail');
     rejected={...derived,cap};
   }
   const demandedFindings=[...admission.open,...(later?latest.all:[])];
@@ -2970,9 +3019,10 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
       const derived=deriveCapture({context,authority:proofAuthority,capture:cap,expectedOwner:request.owner,
         expectedBase,priorFiles:predecessor.priorFiles,
         filelessReason:predecessor.cycle?.filelessReason??predecessor.initial?.filelessReason});
+      assertFormalRecoveryTarget(derived,predecessor.rejected);
       if(latestCandidate.kind==='rejection') {
         if(!derived.rejection||latestCandidate.diagnostic!==derived.rejection
-          ||latestCandidate.consumedInvocations!==1||latestCandidate.round!==1
+          ||latestCandidate.consumedInvocations!==derived.consumedInvocations||latestCandidate.round!==1
           ||!same(latestCandidate.origin,derived.origin)||!same(declaredCounters,request.base.counters))
           invalid('second formal refusal differs from concluded proof');
         return {...predecessor,bundle,original:copyBytes(bundleBytes,'formal successor bytes'),map:objects,
@@ -3143,7 +3193,7 @@ export function composeCurrentValidationEvidence(input) {
     if (!exactCapture(last.cap,input.capture)) mismatch('same owner has different captured sources');
     const result=validateCurrentValidationEvidence({context:input.context,authority:input.authority,
       bundleBytes:previousBytes,counters:input.previous.counters,observedWork:passiveWork});
-    return {...result,replayed:true,consumedInvocations:1};
+    return {...result,replayed:true,consumedInvocations:last.consumedInvocations};
   }
   if ([...base.origins.values()].some(item => item.request.owner.operationAttemptId===input.owner.operationAttemptId)
     || request.base.counters.validationAttempts!==input.previous.counters.validationAttempts
@@ -3170,6 +3220,7 @@ export function composeCurrentValidationEvidence(input) {
   const derived=deriveCapture({context:input.context,authority:input.authority,capture:input.capture,
     expectedOwner:input.owner,expectedBase,priorFiles:base.priorFiles,
     filelessReason:base.cycle ? base.cycle.filelessReason : base.initial.filelessReason});
+  if(normalizing)assertFormalRecoveryTarget(derived,base.rejected);
   const store=closeEvidenceObjects();
   const sources=packCaptureSources('current-validation',input.capture,store);
   const map=mergeObjects(base.map,store);
@@ -3201,7 +3252,7 @@ export function composeCurrentValidationEvidence(input) {
       ? base.bundle.openFindings : base.latest?.all??[];
     bundle.support=[...initialRefusals,...supportCycles,...keepFormalOrigins(supporting,priorDispositions,base.bundle.validation?.id),
       {kind:'rejection',operationAttemptId:input.owner.operationAttemptId,origin:derived.origin,
-        diagnostic:derived.rejection,consumedInvocations:1,round:1,sources}];
+        diagnostic:derived.rejection,consumedInvocations:derived.consumedInvocations,round:1,sources}];
     bundle.openFindings=base.bundle.openFindings;
   } else {
     const record={...derived.recordDraft,sources};
@@ -3224,7 +3275,7 @@ export function composeCurrentValidationEvidence(input) {
       input.previous.counters.findingsChecks);
   const result=validateCurrentValidationEvidence({context:input.context,authority:input.authority,
     bundleBytes:outputBytes,counters:outputCounters,observedWork:derived.observed.observed?.after ?? passiveWork});
-  return {...result,replayed:false,consumedInvocations:1};
+  return {...result,replayed:false,consumedInvocations:derived.consumedInvocations};
 }
 function selectRemovalSupport(base,cycle,currentRounds,context,demandReceipt=null) {
   const manifest=cycle.lastWork??base.latest.record.testedWork;
@@ -3437,8 +3488,9 @@ export function inspectCurrentEvidence({context,authority,bundleBytes,counters:d
   if(rejected&&(result.rejected.origin.operation==='EXECUTE_SLICE'||currentRefusal&&result.rejected.origin.operation==='VALIDATE_SLICE')) {
     const refusal=refusalSupport,formal=refusal.origin.operation==='VALIDATE_SLICE',refusedCapture=restoreCaptureSources(formal?'current-validation':'initial-implementation',refusal,map);
     const inherited=refusalOrigin?.admission?.binding?.normalization;
-    const consumedInvocations=(inherited?.consumedInvocations??0)+refusal.consumedInvocations;
-    const resumable=currentRefusal&&!inherited&&(formal||consumedInvocations<3);
+    const budget=formal?formalRecoveryBudget(refusal.consumedInvocations,inherited):null;
+    const consumedInvocations=budget?.consumedInvocations??((inherited?.consumedInvocations??0)+refusal.consumedInvocations);
+    const resumable=currentRefusal&&!inherited&&(formal?budget.resumable:consumedInvocations<3);
     normalization={episodeId:inherited?.episodeId??refusal.operationAttemptId,operation:refusal.origin.operation,
       causeSha256:inherited?.causeSha256??raw(original),sourceOperationAttemptId:inherited?.sourceOperationAttemptId??refusal.operationAttemptId,
       used:1,consumedInvocations,round:inherited?2:1,status:resumable?'settled':'exhausted'};
@@ -3771,16 +3823,17 @@ export function composeInitialCurrentOperation({context,requirementsAuthority,pr
     fail('RUNNER_RESULT_REJECTED','Initial APPLY refusal is outside the first-invocation profile');
   if(rejected && (refusal?.kind!=='rejection' || refusal.origin.operation!==owner.operation
     || refusal.operationAttemptId!==owner.operationAttemptId
-    || refusal.consumedInvocations!==rounds.length))
+    || refusal.consumedInvocations!==(owner.operation==='VALIDATE_SLICE'?product.consumedInvocations:rounds.length)))
     invalid('Initial refusal does not belong to this concluded owner');
   if(rejected && owner.operation==='APPLY_FINDINGS' && jsonBytes(rounds.at(-1).receipt,'Initial refusal receipt').value.status
     !=='RUNNER_RESPONSE_CAPTURED')
     fail('RUNNER_RESULT_REJECTED','Initial schema refusal is outside the concluded semantic profile');
   const inherited=jsonBytes(rounds[0].origin,'Initial normalization origin').value.admission?.binding?.normalization??null;
-  const resumable=rejected&&!inherited&&(owner.operation==='VALIDATE_SLICE'||owner.operation==='EXECUTE_SLICE'&&product.consumedInvocations<3);
+  const formalBudget=owner.operation==='VALIDATE_SLICE'?formalRecoveryBudget(product.consumedInvocations,inherited):null;
+  const resumable=rejected&&!inherited&&(formalBudget?formalBudget.resumable:owner.operation==='EXECUTE_SLICE'&&product.consumedInvocations<3);
   const normalization=rejected?{episodeId:inherited?.episodeId??owner.operationAttemptId,operation:owner.operation,
     causeSha256:inherited?.causeSha256??product.sha256,sourceOperationAttemptId:inherited?.sourceOperationAttemptId??owner.operationAttemptId,
-    used:1,consumedInvocations:product.consumedInvocations+(owner.operation==='VALIDATE_SLICE'&&inherited?1:0),round:inherited?2:1,status:resumable?'settled':'exhausted'}:null;
+    used:1,consumedInvocations:formalBudget?.consumedInvocations??product.consumedInvocations,round:inherited?2:1,status:resumable?'settled':'exhausted'}:null;
   const nextBaseline=owner.operation==='APPLY_FINDINGS'
     ?jsonBytes(rounds[0].baselineCapture,'Initial findings baseline').value.manifest
     :current.baseline;
@@ -3864,5 +3917,5 @@ export function composeInitialCurrentOperation({context,requirementsAuthority,pr
   return {files,transition:{deliveryId,slice:current.slice,operationAttemptId:owner.operationAttemptId,
     originActivationId:a0.activationId,outcome:product.outcome,normalization,
     counters:next.counters},
-    consumedInvocations:rounds.length,replayed:false};
+    consumedInvocations:owner.operation==='VALIDATE_SLICE'?product.consumedInvocations:rounds.length,replayed:false};
 }

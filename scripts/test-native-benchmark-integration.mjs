@@ -140,7 +140,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','test-coverage-correction'],['fresh','formal-successor'],['fresh','formal-exhausted'], ['fresh','review-correction'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','test-coverage-correction'],['fresh','formal-successor'],['fresh','formal-exhausted'],['fresh','formal-incomplete'],['fresh','formal-incomplete-exhausted'],['fresh','formal-continuation-exhausted'], ['fresh','review-correction'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
   t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
@@ -229,12 +229,12 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     assert.ok((await fs.readFile(path.join(state.workspace,'src/cli.mjs'),'utf8')).includes('args.length === 0'));
     return;
   }
-  if(fault==='formal-exhausted'){
+  if(['formal-exhausted','formal-incomplete-exhausted','formal-continuation-exhausted'].includes(fault)){
     assert.equal(result.status,'BLOCKED');
     assert.equal(backend.operations.some(item=>item.operation==='SPEC_CLOSE'),false);
     const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json')));
     const formal=JSON.parse(await fs.readFile(state.operations.at(-1).evidencePath));
-    assert.equal(formal.captureProof.matched,2);assert.equal(formal.captureProof.rejectedResponses.length,2);
+    assert.equal(formal.captureProof.matched,fault==='formal-continuation-exhausted'?1:2);assert.equal(formal.captureProof.rejectedResponses.length,fault==='formal-continuation-exhausted'?1:2);
     const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
     assert.equal(ledger.total,8);assert.equal(ledger.reservations.length,0);
     return;
@@ -253,15 +253,15 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     if (fault === 'review-correction-twice') assert.deepEqual(state.terminal, { result: 'BLOCKED', blocker: 'PREPARATION_REVIEW_NOT_APPROVED' });
     return;
   }
-  if(fault==='formal-successor'){
+  if(['formal-successor','formal-incomplete'].includes(fault)){
     const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json')));
     const formal=JSON.parse(await fs.readFile(state.operations.find(o=>o.operation==='VALIDATE_SLICE').evidencePath));
     assert.equal(formal.captureProof.matched,2);assert.equal(formal.captureProof.rejectedResponses.length,1);
-    assert.equal(formal.turn.captures[0].toolResult.finalResponse.includes('Canonical task identity:'),true);
+    assert.equal(formal.turn.captures[0].toolResult.finalResponse.includes(fault==='formal-successor'?'Canonical task identity:':'Independent inspection of the prepared assertions'),true);
     const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
     assert.equal(ledger.total,9);assert.equal(ledger.reservations.length,0);
   }
-  assert.equal(result.status, 'PASS', JSON.stringify(result));
+  assert.equal(result.status, 'PASS', JSON.stringify({result,errors:[...backend.threads.values()].flatMap(thread=>thread.turns.filter(turn=>turn.error).map(turn=>turn.error))}));
   const starts = backend.calls.filter(call => call.method === 'turn/start');
   assert.ok(starts.length > 0);
   for (const { params } of starts) {
@@ -301,7 +301,7 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
   }
   const extra = fault === 'findings-cycle' ? 2 : 0;
   const preparationExtra = fault?.startsWith('review-correction') ? 2 : 0;
-  const refusalChild=fault==='formal-successor'?1:0;
+  const refusalChild=['formal-successor','formal-incomplete'].includes(fault)?1:0;
   const continuationChild=fault==='pre-verification-continuation'?1:0;
   const coverageChildren=fault==='test-coverage-correction'?2:0;
   const auxiliaryCalls = fault === 'review-correction-aux' ? 3 : fault === 'aux-run-eight' ? 8

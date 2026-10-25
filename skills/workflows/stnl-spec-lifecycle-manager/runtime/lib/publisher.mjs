@@ -2405,7 +2405,7 @@ async function captureCloseOperationalInventory(target,transactionId){
       ||record.runner.originFile!==path.join(file,`round-${record.runner.round}.origin.json`)
       ||record.runner.requestFile!==path.join(file,`round-${record.runner.round}.request.json`)
       ||record.runner.responseFile!==path.join(file,`round-${record.runner.round}.response.json`)
-      ||record.runner.captureClass!==(refusal?(binding.owner.operation==='EXECUTE_SLICE'?'initial-rejection':binding.owner.operation==='APPLY_FINDINGS'?'findings-rejection':'formal-rejection'):'formal-response')
+      ||record.runner.captureClass!==(refusal?(binding.owner.operation==='EXECUTE_SLICE'?'initial-rejection':binding.owner.operation==='APPLY_FINDINGS'?'findings-rejection':receipt.reviewTriage?'formal-review-incomplete':'formal-rejection'):'formal-response')
       ||(record.runner.resultStatus??null)!==receipt.semanticResponseStatus||(record.responseVariant??null)!==(last.origin.responseVariant??null))fail('CLOSE terminal runner is not replicated by official conclusion',file);
     if(refusal){
       const normalization=record.terminalTransition.normalization;
