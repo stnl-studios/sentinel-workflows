@@ -134,6 +134,31 @@ try {
   assert.equal(await fs.readFile(first, 'utf8'), await fs.readFile(second, 'utf8'), 'report bytes must be deterministic');
   const report = JSON.parse(await fs.readFile(first, 'utf8'));
   validateMeasurementReport(report);
+  const official=path.join(root,'benchmarks/sentinel-todo/measurements');
+  await fs.mkdir(official,{recursive:true});
+  const historyBefore=await fs.readdir(official);
+  await assert.rejects(publishMeasurement(report),/explicit temporary report destination/u);
+  for(const status of ['PASS','BLOCKED']) {
+    const candidate=structuredClone(report);candidate.run.status=status;
+    await assert.rejects(publishMeasurement(candidate,{root:official}),/qualified campaign promotion/u);
+    await assert.rejects(publishMeasurement(candidate,{root:path.join(official,'nested')}),/qualified campaign promotion/u);
+  }
+  const alias=path.join(temp,'history-alias');await fs.symlink(official,alias,'dir');
+  await assert.rejects(publishMeasurement(report,{root:alias}),/qualified campaign promotion/u);
+  for(const output of [path.join(official,'unqualified.json'),path.join(alias,'unqualified.json')]) {
+    const denied=spawnSync(process.execPath,[cli,'export','--run',runId,'--output',output],{cwd:root,encoding:'utf8'});
+    assert.notEqual(denied.status,0);assert.match(denied.stderr,/qualified campaign promotion/u);
+    const rawCli=path.join(root,'benchmarks/sentinel-todo/runtime/benchmark.mjs');
+    for(const args of [
+      ['journal-init','--output',output,'--case','A','--sentinel-sha','0'.repeat(40),'--run-mode','full','--production-profile','production-v3'],
+      ['finalize','--output',output,'--workspace',temp,'--case','A','--spec',first,'--journal',first],
+      ['compare','--output',output,'--before',first,'--after',first],
+    ]) {
+      const raw=spawnSync(process.execPath,[rawCli,...args],{cwd:root,encoding:'utf8'});
+      assert.notEqual(raw.status,0);assert.match(raw.stderr,/qualified campaign promotion/u);
+    }
+  }
+  assert.deepEqual(await fs.readdir(official),historyBefore);
   for (const [name, mutate] of [
     ['missing', value => { delete value.productAcceptance; }],
     ['null', value => { value.productAcceptance = null; }],

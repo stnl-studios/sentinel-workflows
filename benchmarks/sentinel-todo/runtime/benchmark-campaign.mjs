@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { compareMeasurements, validateMeasurementReport, exportMeasurement, publishMeasurement } from './benchmark-measurement.mjs';
+import { compareMeasurements, validateMeasurementReport, exportMeasurement } from './benchmark-measurement.mjs';
 import { currentFunctionalIdentity } from './benchmark-snapshot.mjs';
 import { privateHomeNeverCreated, settledNativeCase } from './benchmark-manager.mjs';
 
@@ -152,7 +152,6 @@ function adapters(root) {
     export: (runId, output, signal) => command(root, path.join(RUNTIME, 'benchmark-measurement.mjs'),
       ['export', '--run', runId, '--output', output], signal, true),
     exportMeasurement: (runId) => exportMeasurement(runId),
-    publishMeasurement: (report, options) => publishMeasurement(report, options),
     compare: (baseline, report) => compareMeasurements(baseline, report),
   };
 }
@@ -389,18 +388,9 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = u
   process.on('SIGINT', onSignal); process.on('SIGTERM', onSignal);
   let lock = null; let campaignRoot = null; let completed = 0;
   const reports = []; const comparisons = []; const startedAt = new Date().toISOString();
-  const reportRoot = path.join(root, 'benchmarks', 'sentinel-todo', 'measurements');
+  const files = {};
   const say = (line) => console.log(line);
   const checkCancel = () => { if (signal.signal.aborted) throw blocked('CANCELLED', 'benchmark interrupted'); };
-  async function preserveReport(report, updateLatest = false) {
-    if (report?.run?.id === undefined) throw new Error('report has no run identity');
-    if (!['full', 'case', 'focal'].includes(report.run.mode)) throw new Error('report has no supported run mode');
-    if (report.run.mode !== 'full') return true;
-    // The publisher validates byte-identical history collisions and refreshes
-    // latest when requested, so an existing ID cannot silently hide new data.
-    await api.publishMeasurement(report, { root: reportRoot, updateLatest });
-    return true;
-  }
   try {
     say('VERIFY');
     const verified = await api.verify(signal.signal);
@@ -520,12 +510,13 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = u
           || report.run.profile !== manifest.productionProfile.id
           || (reports.length && report.provenance.sourceFunctionalSha256 !== reports[0].provenance.sourceFunctionalSha256))
           throw blocked('BLOCKED_REPORT', 'functional report candidate identity differs');
-        await preserveReport(report, false);
-        await writeJson(path.join(campaignRoot, `run-${String(index).padStart(2, '0')}.json`), report);
+        const name = `run-${String(index).padStart(2, '0')}.json`;
+        files[name] = path.join(campaignRoot, name);
+        await writeJson(files[name], report);
         reports.push(report);
       } catch (error) {
-        console.error(`report for ${runId} was not published; raw evidence retained: ${error.message}`);
-        const failure = blocked(status === 'PASS' ? 'BLOCKED_REPORT' : status, `run ${runId} outcome ${status}; cases ${JSON.stringify(summary?.cases ?? null)}; manager exit ${result.code}; report publication failed: ${error.message}; raw evidence retained at ${runRoot}`);
+        console.error(`diagnostic report for ${runId} could not be staged; raw evidence retained: ${error.message}`);
+        const failure = blocked(status === 'PASS' ? 'BLOCKED_REPORT' : status, `run ${runId} outcome ${status}; cases ${JSON.stringify(summary?.cases ?? null)}; manager exit ${result.code}; diagnostic export/staging failed: ${error.message}; raw evidence retained at ${runRoot}`);
         failure.exitCode = result.code || 1;
         throw failure;
       }
@@ -542,14 +533,16 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = u
     const last = reports.at(-1);
     const summary = campaignSummary({ campaignId, head: 'unavailable', startedAt, endedAt: new Date().toISOString(),
       baselineRef: { status: 'unavailable', reason: 'functional campaign has no comparison baseline' }, reports, comparisons, plannedRuns });
-    await writeJson(path.join(campaignRoot, 'campaign-summary.json'), summary);
-    // Only N/N qualifying runs may advance latest. Individual reports and raw
-    // diagnostics have already been retained without promoting the campaign.
-    await preserveReport(last, true);
+    files['campaign-summary.json'] = path.join(campaignRoot, 'campaign-summary.json');
+    await writeJson(files['campaign-summary.json'], summary);
+    // Reuse the formal entrypoint's atomic promotion only after the same N/N
+    // summary qualification. Partial reports remain in ignored campaign scratch.
+    checkCancel();
+    const promoted = await promote(root, campaignId, files, signal.signal);
     await fs.writeFile(path.join(campaignRoot, 'state.json'), `${JSON.stringify({ campaignId,
-      status: 'CAMPAIGN_COMPLETE', plannedRuns, completedRuns: completed, endedAt: summary.endedAt })}\n`);
+      status: 'CAMPAIGN_COMPLETE', plannedRuns, completedRuns: completed, endedAt: summary.endedAt })}\n`).catch(error=>console.error(`qualified campaign promoted; scratch state update failed: ${error.message}`));
     say(`PASS ${campaignId}: ${completed}/${plannedRuns}; reports published`);
-    return { runId: last.run.id, status: 'PASS', plannedRuns, completedRuns: completed, runs: reports.map(row => row.run.id) };
+    return { runId: last.run.id, status: 'PASS', plannedRuns, completedRuns: completed, runs: reports.map(row => row.run.id), measurements: promoted };
   } catch (error) {
     if (campaignRoot) await fs.writeFile(path.join(campaignRoot, 'state.json'), `${JSON.stringify({
       status: signal.signal.aborted ? 'CANCELLED' : 'BLOCKED', plannedRuns, completedRuns: completed,

@@ -6,7 +6,6 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { campaignSummary, runCampaign, runFunctionalBenchmark, parseCampaignArgs } from '../benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs';
-import { publishMeasurement } from '../benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs';
 import { currentFunctionalIdentity } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 import { PRODUCT_CONTRACT, PRODUCT_CHECK_IDS, productInstrumentIdentity } from '../benchmarks/sentinel-todo/runtime/product-acceptance.mjs';
 
@@ -36,7 +35,7 @@ function currentFixtureReport(baseline, manifest, runId) {
 
 async function fixture(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-campaign-test-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  t.after(() => process.env.STNL_OFFLINE_KEEP_FIXTURES==='1'?undefined:fs.rm(root, { recursive: true, force: true }));
   for (const name of [BASELINE, MANIFEST]) {
     const target = path.join(root, name);
     await fs.mkdir(path.dirname(target), { recursive: true });
@@ -101,7 +100,7 @@ async function campaign(f, options = {}) {
 for (const runs of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '3']) {
   test(`invalid run count ${String(runs)} is rejected before hooks/files/dispatch`, async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-invalid-count-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    t.after(() => process.env.STNL_OFFLINE_KEEP_FIXTURES==='1'?undefined:fs.rm(root, { recursive: true, force: true }));
     let calls = 0;
     const forbidden = () => { calls += 1; throw new Error('unexpected campaign effect'); };
     await assert.rejects(runCampaign({ root, runs, hooks: { gitState: forbidden, processes: forbidden, verify: forbidden, runFull: forbidden } }), /positive integer/u);
@@ -285,7 +284,7 @@ test('npm benchmark and formal campaign expose default N without dispatch from h
 
 async function functionalFixture(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-functional-test-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  t.after(() => process.env.STNL_OFFLINE_KEEP_FIXTURES==='1'?undefined:fs.rm(root, { recursive: true, force: true }));
   const scratch = path.join(root, 'benchmark-temp');
   const measurements = path.join(root, 'benchmarks/sentinel-todo/measurements');
   const baseline = JSON.parse(await fs.readFile(path.join(ROOT, BASELINE), 'utf8'));
@@ -293,7 +292,7 @@ async function functionalFixture(t, options = {}) {
   manifest.campaign.fullRuns = options.plannedRuns ?? 1;
   await fs.mkdir(path.dirname(path.join(root, MANIFEST)), { recursive: true });
   await fs.writeFile(path.join(root, MANIFEST), JSON.stringify(manifest));
-  const calls = []; const saved = new Map(); let runs = 0;
+  const calls = []; let runs = 0;
   const hooks = {
     verify: async () => { calls.push('verify'); return { code: 0 }; },
     processes: () => [],
@@ -326,16 +325,46 @@ async function functionalFixture(t, options = {}) {
       }
       return report;
     },
-    publishMeasurement: async (report, args) => {
-      calls.push(`publish-${report.run.id}`);
-      if (options.publishFailure) throw new Error('fixture publish failure');
-      saved.set(report.run.id, args);
-      return publishMeasurement(report, args);
-    },
     cleanRun: async (id) => { calls.push(`clean-${id}`); await fs.rm(path.join(scratch, id), { recursive: true }); return { code: 0 }; },
   };
-  return { root, scratch, measurements, baseline, manifest, calls, saved, hooks, get runs() { return runs; } };
+  return { root, scratch, measurements, baseline, manifest, calls, hooks, get runs() { return runs; } };
 }
+
+test('functional unqualified campaign leaves official history unchanged, including earlier passing FULL',async t=>{
+  const f=await functionalFixture(t,{plannedRuns:3,blockRun:2});
+  await fs.mkdir(f.measurements,{recursive:true});await fs.writeFile(path.join(f.measurements,'historical.json'),'unchanged historical bytes\n');
+  await assert.rejects(runFunctionalBenchmark({root:f.root,hooks:f.hooks}));
+  assert.deepEqual(await fs.readdir(f.measurements),['historical.json']);
+  assert.equal(await fs.readFile(path.join(f.measurements,'historical.json'),'utf8'),'unchanged historical bytes\n');
+  const campaigns=(await fs.readdir(f.scratch)).filter(name=>name.startsWith('campaign-'));
+  assert.ok((await fs.stat(path.join(f.scratch,campaigns[0],'run-01.json'))).isFile());
+  assert.ok((await fs.stat(path.join(f.scratch,campaigns[0],'run-02.json'))).isFile());
+  assert.equal(f.runs,2);
+});
+
+test('functional qualified campaign promotes the complete existing summary only after all FULLs',async t=>{
+  const f=await functionalFixture(t,{plannedRuns:3}),run=f.hooks.runFull;
+  await fs.mkdir(f.measurements,{recursive:true});await fs.writeFile(path.join(f.measurements,'latest.json'),'legacy latest bytes\n');
+  f.hooks.runFull=async(...args)=>{
+    assert.deepEqual(await fs.readdir(f.measurements),['latest.json']);
+    return run(...args);
+  };
+  const result=await runFunctionalBenchmark({root:f.root,hooks:f.hooks});
+  assert.equal(await fs.readFile(path.join(f.measurements,'latest.json'),'utf8'),'legacy latest bytes\n');
+  const dirs=(await fs.readdir(f.measurements)).filter(name=>name!=='latest.json');assert.equal(dirs.length,1);
+  assert.equal(result.measurements,path.join(f.measurements,dirs[0]));
+  const summary=JSON.parse(await fs.readFile(path.join(result.measurements,'campaign-summary.json')));
+  assert.equal(summary.completedRuns,3);
+  for(const n of ['01','02','03'])assert.ok((await fs.stat(path.join(result.measurements,`run-${n}.json`))).isFile());
+});
+
+test('functional PASS without required qualification proof never reaches history',async t=>{
+ const f=await functionalFixture(t,{plannedRuns:3}),exported=f.hooks.exportMeasurement;
+ f.hooks.exportMeasurement=async(...args)=>{const report=await exported(...args);delete report.cases[2].productAcceptance;return report;};
+ await assert.rejects(runFunctionalBenchmark({root:f.root,hooks:f.hooks}),/productAcceptance/u);
+ assert.equal(f.runs,1);await assert.rejects(fs.lstat(f.measurements),{code:'ENOENT'});
+ assert.ok((await fs.stat(path.join(f.scratch,'run-functional-1'))).isDirectory());
+});
 
 test('functional mode handles absent scratch and retains terminal history across invocations', async (t) => {
   const f = await functionalFixture(t);
@@ -344,13 +373,10 @@ test('functional mode handles absent scratch and retains terminal history across
   await runFunctionalBenchmark({ root: f.root, hooks: f.hooks });
   assert.equal(f.runs, 2);
   assert.ok(!f.calls.some(call => call.startsWith('clean-')));
-  assert.ok(f.calls.includes('publish-run-functional-2'));
-  assert.equal(f.saved.get('run-functional-1').updateLatest, true);
-  assert.equal(f.saved.get('run-functional-2').updateLatest, true);
-  assert.equal(JSON.parse(await fs.readFile(path.join(f.measurements, 'run-functional-1.json'), 'utf8')).run.id, 'run-functional-1');
-  assert.equal(JSON.parse(await fs.readFile(path.join(f.measurements, 'run-functional-2.json'), 'utf8')).run.id, 'run-functional-2');
-  assert.equal(JSON.parse(await fs.readFile(path.join(f.measurements, 'latest.json'), 'utf8')).run.id, 'run-functional-2');
-  assert.match(await fs.readFile(path.join(f.measurements, 'latest.md'), 'utf8'), /run-functional-2\.json/u);
+  const directories=await fs.readdir(f.measurements);assert.equal(directories.length,2);
+  const summaries=await Promise.all(directories.map(name=>fs.readFile(path.join(f.measurements,name,'campaign-summary.json'),'utf8').then(JSON.parse)));
+  assert.deepEqual(summaries.flatMap(x=>x.runs.map(r=>r.runId)).sort(),['run-functional-1','run-functional-2']);
+  await assert.rejects(fs.lstat(path.join(f.measurements,'latest.json')),{code:'ENOENT'});
   assert.equal(await fs.stat(path.join(f.scratch, 'run-functional-1')).then(() => true, () => false), true);
   assert.equal(await fs.stat(path.join(f.scratch, 'run-functional-2')).then(() => true, () => false), true);
   assert.equal((await fs.readdir(f.scratch)).some((name) => name.startsWith('run-')), true);
@@ -390,7 +416,6 @@ for (const [name, mode, caseId, status, uncreated] of [
   assert.equal(await fs.stat(dir).then(() => true, () => false), true);
   assert.ok(!f.calls.includes(`clean-${id}`));
   assert.ok(!f.calls.includes(`export-${id}`));
-  assert.ok(!f.calls.includes(`publish-${id}`));
   await assert.rejects(fs.lstat(path.join(f.measurements, `${id}.json`)), { code: 'ENOENT' });
 });
 
@@ -398,7 +423,7 @@ test('functional cleanup rejects activity, identity ambiguity and unsafe home ev
   for (const variant of ['process', 'active-marker', 'ownership', 'run-id', 'summary-mode', 'case-id', 'active-case',
     'missing-case', 'missing-creation-record', 'partial-home', 'nonzero-turn', 'nonempty-journal']) {
     await t.test(variant, async (child) => {
-      const f = await functionalFixture(child, { publishFailure: variant === 'publish-failure' });
+      const f = await functionalFixture(child);
       const id = 'run-old-full-negative'; const dir = path.join(f.scratch, id); const caseRoot = path.join(dir, 'case-a');
       await fs.mkdir(caseRoot, { recursive: true });
       const run = { runId: id, mode: 'full', status: 'BLOCKED', cases: ['A'] };
@@ -415,14 +440,6 @@ test('functional cleanup rejects activity, identity ambiguity and unsafe home ev
       if (variant === 'partial-home') state.isolationHomePath = '/fixture/unresolved-home';
       if (variant === 'nonzero-turn') state.mainTurns = 1;
       if (variant === 'clean-failure') f.hooks.cleanRun = async () => ({ code: 1, stderr: 'fixture cleanup failure' });
-      if (variant === 'activity-after-publication') {
-        let active = false;
-        f.hooks.processes = () => active ? ['fixture benchmark-manager'] : [];
-        const publish = f.hooks.publishMeasurement;
-        f.hooks.publishMeasurement = async (...args) => {
-          const result = await publish(...args); active = true; return result;
-        };
-      }
       await fs.writeFile(path.join(dir, '.sentinel-benchmark-owned'), variant === 'ownership' ? 'unowned\n' : 'sentinel-todo-run-v2\n');
       await fs.writeFile(path.join(dir, 'run.json'), JSON.stringify(run));
       await fs.writeFile(path.join(dir, 'summary.json'), JSON.stringify(summary));
@@ -450,7 +467,6 @@ test('functional mode retains an old campaign without re-publishing or deleting 
   const oldReport = currentFixtureReport(f.baseline, f.manifest, 'run-old-12345678');
   await fs.writeFile(path.join(campaignRoot, 'run-01.json'), JSON.stringify(oldReport));
   await runFunctionalBenchmark({ root: f.root, hooks: f.hooks });
-  assert.ok(!f.calls.includes('publish-run-old-12345678'));
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(campaignRoot, 'run-01.json'), 'utf8')), oldReport);
   assert.equal(await fs.stat(campaignRoot).then(() => true, () => false), true);
 });
@@ -465,7 +481,6 @@ for (const mode of ['case', 'focal']) test(`old campaign ${mode} reports are not
   oldReport.run.id = `run-old-partial-${mode}`; oldReport.run.mode = mode;
   await fs.writeFile(path.join(campaignRoot, 'run-01.json'), JSON.stringify(oldReport));
   await runFunctionalBenchmark({ root: f.root, hooks: f.hooks });
-  assert.ok(!f.calls.includes(`publish-${oldReport.run.id}`));
   await assert.rejects(fs.lstat(path.join(f.measurements, `${oldReport.run.id}.json`)), { code: 'ENOENT' });
   assert.equal((await fs.stat(campaignRoot)).isDirectory(), true);
 });
@@ -475,7 +490,6 @@ test('current functional result cannot silently succeed with a case report', asy
   const exported = f.hooks.exportMeasurement;
   f.hooks.exportMeasurement = async id => ({ ...await exported(id), run: { ...f.baseline.run, id, mode: 'case' } });
   await assert.rejects(runFunctionalBenchmark({ root: f.root, hooks: f.hooks }), /current benchmark report must be full/);
-  assert.ok(!f.calls.includes('publish-run-functional-1'));
   assert.equal((await fs.stat(path.join(f.scratch, 'run-functional-1'))).isDirectory(), true);
 });
 
@@ -491,28 +505,22 @@ test('functional mode refuses active and unsafe scratch without deleting it', as
   assert.equal(await fs.readFile(path.join(f.scratch, 'unknown.txt'), 'utf8'), 'keep');
 });
 
-test('functional mode publishes blocked partial results and retains original outcome on publish failure', async (t) => {
-  const f = await functionalFixture(t, { status: 'BLOCKED' });
-  await assert.rejects(runFunctionalBenchmark({ root: f.root, hooks: f.hooks }), /outcome BLOCKED/u);
-  assert.ok(f.calls.includes('publish-run-functional-1'));
-  assert.equal(await fs.stat(path.join(f.scratch, 'run-functional-1')).then(() => true, () => false), true);
-  const g = await functionalFixture(t, { status: 'PAUSED_BUDGET_OR_QUOTA', publishFailure: true });
-  await assert.rejects(runFunctionalBenchmark({ root: g.root, hooks: g.hooks }), /outcome PAUSED_BUDGET_OR_QUOTA/u);
-  assert.equal(await fs.stat(path.join(g.scratch, 'run-functional-1')).then(() => true, () => false), true);
-  const h = await functionalFixture(t, { status: 'CANCELLED', cancelRun: true });
-  await assert.rejects(runFunctionalBenchmark({ root: h.root, hooks: h.hooks }), /outcome CANCELLED/u);
-  assert.equal(JSON.parse(await fs.readFile(path.join(h.measurements, 'run-functional-1.json'), 'utf8')).run.status, 'CANCELLED');
-  await assert.rejects(fs.lstat(path.join(h.measurements, 'latest.json')), { code: 'ENOENT' });
+for(const status of ['BLOCKED','PAUSED_BUDGET_OR_QUOTA','CANCELLED'])test(`functional ${status} is retained only as diagnosis`,async t=>{
+  const f=await functionalFixture(t,{status,cancelRun:status==='CANCELLED'});
+  await assert.rejects(runFunctionalBenchmark({root:f.root,hooks:f.hooks}),new RegExp(`outcome ${status}`));
+  await assert.rejects(fs.lstat(f.measurements),{code:'ENOENT'});
+  assert.ok((await fs.stat(path.join(f.scratch,'run-functional-1'))).isDirectory());
+  const dirs=(await fs.readdir(f.scratch)).filter(name=>name.startsWith('campaign-'));
+  assert.equal(JSON.parse(await fs.readFile(path.join(f.scratch,dirs[0],'run-01.json'))).run.status,status);
 });
 
-test('failure before run creation preserves latest without inventing a measurement', async (t) => {
-  const f = await functionalFixture(t);
-  await runFunctionalBenchmark({ root: f.root, hooks: f.hooks });
-  const latest = await fs.readFile(path.join(f.measurements, 'latest.json'));
-  f.hooks.runFull = async () => ({ code: 1 });
-  await assert.rejects(runFunctionalBenchmark({ root: f.root, hooks: f.hooks }), /created 0 run directories/u);
-  assert.deepEqual(await fs.readFile(path.join(f.measurements, 'latest.json')), latest);
-  assert.equal((await fs.readdir(f.measurements)).filter((name) => /^run-.*\.json$/u.test(name)).length, 1);
+test('failure before run creation preserves qualified history without inventing a measurement',async t=>{
+ const f=await functionalFixture(t),accepted=await runFunctionalBenchmark({root:f.root,hooks:f.hooks});
+ const files=await fs.readdir(accepted.measurements);const summary=await fs.readFile(path.join(accepted.measurements,'campaign-summary.json'));
+ f.hooks.runFull=async()=>({code:1});
+ await assert.rejects(runFunctionalBenchmark({root:f.root,hooks:f.hooks}),/created 0 run directories/u);
+ assert.deepEqual(await fs.readdir(accepted.measurements),files);assert.deepEqual(await fs.readFile(path.join(accepted.measurements,'campaign-summary.json')),summary);
+ assert.equal((await fs.readdir(f.measurements)).length,1);
 });
 
 for (const mode of ['formal', 'functional']) {
@@ -531,7 +539,8 @@ for (const mode of ['formal', 'functional']) {
       assert.equal(result.plannedRuns, override ?? 3);
       assert.equal(result.completedRuns, override ?? 3);
       if (mode === 'functional') {
-        assert.equal(JSON.parse(await fs.readFile(path.join(f.measurements, 'latest.json'))).run.id, `run-functional-${f.runs}`);
+        assert.equal((await fs.readdir(f.measurements)).length,1);
+        assert.ok(result.measurements.startsWith(f.measurements+path.sep));
         const dirs = (await fs.readdir(f.scratch)).filter(name => name.startsWith('campaign-'));
         const summary = JSON.parse(await fs.readFile(path.join(f.scratch, dirs[0], 'campaign-summary.json')));
         assert.equal(summary.completedRuns, override ?? 3);
@@ -553,7 +562,7 @@ for (const argv of [['--runs'], ['--runs', '0'], ['--runs', '-1'], ['--runs', '1
   ['--functional', '--functional'], ['--functional', '--runs', '2', '--runs', '1']]) {
   test(`invalid CLI ${argv.join(' ')} has no files or dispatch effects`, async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-campaign-cli-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    t.after(() => process.env.STNL_OFFLINE_KEEP_FIXTURES==='1'?undefined:fs.rm(root, { recursive: true, force: true }));
     assert.throws(() => parseCampaignArgs(argv), /usage:/u);
     const result = spawnSync(process.execPath, [path.join(ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs'), ...argv], {
       cwd: root, env: testEnvironment(), encoding: 'utf8', timeout: 10000,
@@ -569,7 +578,7 @@ function testEnvironment() { const env = { ...process.env }; delete env.NODE_TES
 for (const count of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '3']) {
   test(`functional invalid N=${String(count)} is rejected before any hook or file`, async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-functional-count-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    t.after(() => process.env.STNL_OFFLINE_KEEP_FIXTURES==='1'?undefined:fs.rm(root, { recursive: true, force: true }));
     let calls = 0;
     await assert.rejects(runFunctionalBenchmark({ root, runs: count, hooks: {
       verify: () => { calls++; throw new Error('unexpected dispatch'); }, runFull: () => { calls++; },
@@ -613,11 +622,15 @@ test('formal campaign rejects unqualified current case before comparison or the 
 
 for (const failure of ['second-run', 'publish', 'activity', 'identity']) {
   test(`functional ${failure} stops before remaining FULLs without promoting or deleting history`, async t => {
-    const f = await functionalFixture(t, { plannedRuns: 3, blockRun: failure === 'second-run' ? 2 : undefined,
-      publishFailure: failure === 'publish' });
+    const f = await functionalFixture(t, { plannedRuns: 3, blockRun: failure === 'second-run' ? 2 : undefined });
+    if(failure==='publish'){
+      const copy=fs.copyFile.bind(fs);t.mock.method(fs,'copyFile',async(from,to,...args)=>{
+        if(to.includes('-stage'+path.sep))throw new Error('fixture promotion failure');return copy(from,to,...args);
+      });
+    }
     if (failure === 'activity') {
-      let active = false; const publish = f.hooks.publishMeasurement;
-      f.hooks.publishMeasurement = async (...args) => { const value = await publish(...args); active = true; return value; };
+      let active = false; const exported = f.hooks.exportMeasurement;
+      f.hooks.exportMeasurement = async (...args) => { const value = await exported(...args); active = true; return value; };
       f.hooks.processes = () => active ? ['fixture active benchmark'] : [];
     }
     if (failure === 'identity') {
@@ -625,8 +638,9 @@ for (const failure of ['second-run', 'publish', 'activity', 'identity']) {
       f.hooks.exportMeasurement = async (...args) => { const report = await exportReport(...args); report.run.id = 'run-foreign'; return report; };
     }
     await assert.rejects(runFunctionalBenchmark({ root: f.root, hooks: f.hooks }));
-    assert.equal(f.runs, failure === 'second-run' ? 2 : 1);
+    assert.equal(f.runs, failure==='publish'?3:failure==='second-run'?2:1);
     await assert.rejects(fs.lstat(path.join(f.measurements, 'latest.json')), { code: 'ENOENT' });
+    assert.deepEqual(await fs.readdir(f.measurements).catch(error=>error.code==='ENOENT'?[]:Promise.reject(error)),[]);
     assert.equal((await fs.stat(path.join(f.scratch, 'run-functional-1'))).isDirectory(), true);
     assert.ok(!f.calls.some(call => call.startsWith('clean-')));
   });

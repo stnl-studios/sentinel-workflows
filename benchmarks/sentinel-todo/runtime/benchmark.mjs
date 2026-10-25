@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runDoctor, runProbeDoctor } from './benchmark-environment.mjs';
 import { checkProductAcceptance, validateProductAcceptance, productCandidateIdentity } from './product-acceptance.mjs';
 import { validateTerminalEvidence, contextPolicy } from './native-evidence.mjs';
+import { assertDiagnosticDestination } from './benchmark-measurement.mjs';
 
 const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const BENCHMARK_ROOT = path.resolve(RUNTIME_ROOT, '..');
@@ -114,6 +115,7 @@ async function readJson(file, label) {
 
 async function atomicJson(file, value, { exclusive = false } = {}) {
   const target = path.resolve(file);
+  await assertDiagnosticDestination(target);
   if (exclusive) {
     await fs.writeFile(target, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
       .catch((error) => { throw new CliError(`cannot create output: ${error.message}`); });
@@ -560,6 +562,7 @@ async function journalInit(options) {
   const configuration = await manifest();
   assertManifest(configuration);
   const output = requireAbsolute(options['--output'], '--output');
+  await assertDiagnosticDestination(output);
   const item = caseConfig(configuration, options['--case']);
   if (!/^[0-9a-f]{40}$/u.test(options['--sentinel-sha'])) throw new CliError('--sentinel-sha must be a lowercase 40-character SHA', 2);
   if (options['--sentinel-sha'] !== currentSentinelSha()) throw new CliError('--sentinel-sha does not match the benchmark checkout HEAD');
@@ -967,6 +970,7 @@ async function finalize(options) {
   const specPath = requireAbsolute(options['--spec'], '--spec');
   const journalPath = requireAbsolute(options['--journal'], '--journal');
   const output = requireAbsolute(options['--output'], '--output');
+  await assertDiagnosticDestination(output);
   await assertOutsideRepository(workspace, 'workspace');
   const realWorkspace = await fs.realpath(workspace).catch(() => { throw new CliError('workspace must exist'); });
   const expectedSpec = path.join(realWorkspace, ...item.specPath.split('/'));
@@ -1193,6 +1197,8 @@ function compareMarkdown(before, after) {
 }
 
 async function compare(options) {
+  const output = options['--output']===undefined?null:requireAbsolute(options['--output'],'--output');
+  if(output!==null)await assertDiagnosticDestination(output);
   const before = await readJson(requireAbsolute(options['--before'], '--before'), 'before result');
   const after = await readJson(requireAbsolute(options['--after'], '--after'), 'after result');
   const incompatible = [
@@ -1210,8 +1216,7 @@ async function compare(options) {
   validateResult(after);
   const markdown = compareMarkdown(before, after);
   process.stdout.write(markdown);
-  if (options['--output'] !== undefined) {
-    const output = requireAbsolute(options['--output'], '--output');
+  if (output !== null) {
     await fs.writeFile(output, markdown, { encoding: 'utf8', flag: 'wx' })
       .catch((error) => { throw new CliError(`cannot create comparison output: ${error.message}`); });
   }

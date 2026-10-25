@@ -483,7 +483,22 @@ async function writeAtomic(file, bytes, { exclusive = false } = {}) {
 
 function randomSuffix() { return createHash('sha256').update(`${Date.now()}-${Math.random()}`).digest('hex').slice(0, 10); }
 
-export async function publishMeasurement(report, { root = path.join(ROOT, 'benchmarks/sentinel-todo/measurements'), updateLatest = true } = {}) {
+// Standalone/DEV reports are diagnostic output. Only the campaign's existing N/N
+// promotion may enter official history, including through an aliased path.
+export async function assertDiagnosticDestination(destination) {
+  if(typeof destination!=='string'||!destination.trim())throw new Error('an explicit temporary report destination is required');
+  const absolute=path.resolve(destination);let ancestor=absolute,physical;
+  while(true) {
+    try {physical=await fs.realpath(ancestor);break;}
+    catch(error) {if(error.code!=='ENOENT'||path.dirname(ancestor)===ancestor)throw error;ancestor=path.dirname(ancestor);}
+  }
+  const resolved=path.join(physical,path.relative(ancestor,absolute));
+  if([absolute,resolved].some(name=>/\/benchmarks\/sentinel-todo\/measurements(?:\/|$)/u.test(name.split(path.sep).join('/').toLowerCase())))
+    throw new Error('official measurements require qualified campaign promotion; export diagnostics to temporary output');
+}
+
+export async function publishMeasurement(report, { root, updateLatest = true } = {}) {
+  await assertDiagnosticDestination(root);
   report = validateMeasurementReport(report, { qualify: true });
   if (report.run.mode !== 'full') throw new Error('measurements can only be published for full runs');
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(report.run.id)) throw new Error('invalid run id');
@@ -517,8 +532,9 @@ export async function publishMeasurement(report, { root = path.join(ROOT, 'bench
 async function main() {
   const { command, args } = parseArgs(process.argv.slice(2));
   if (command === 'export') {
-    const report = await exportMeasurement(required(args, 'run'));
     const output = path.resolve(ROOT, required(args, 'output'));
+    await assertDiagnosticDestination(output);
+    const report = await exportMeasurement(required(args, 'run'));
     await fs.mkdir(path.dirname(output), { recursive: true });
     await fs.writeFile(output, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
     console.log(`measurement exported: ${path.relative(ROOT, output)}`);

@@ -30,17 +30,18 @@ manager's A-first, then B/C policy. FULLs are sequential; the first failure,
 cancellation, unavailable evidence or publication error stops the sequence.
 The offline tests use controlled hooks, not real FULLs.
 
-The functional entrypoint preserves per-run terminal reports at
-`measurements/<run-id>.json` and its own campaign state/reports in ignored
-`benchmark-temp/campaign-functional-<id>/`. It advances `latest.json` and the
-Markdown view only after **N/N** qualifying PASS runs. A failed round preserves
-its own raw evidence and available diagnostic report; it does not replace a
-previous successful latest or start the next FULL. A failure before a run
-exists does not invent a measurement.
+Both entrypoints retain per-run reports and campaign state in ignored
+`benchmark-temp/campaign-<id>/` (functional campaigns use `campaign-functional-<id>`).
+Failed, interrupted or incomplete campaigns preserve their raw diagnostics and
+cost ledgers there; they do not publish individual reports into official history.
+Only after **N/N** coherent qualifying PASS FULLs does the existing atomic
+promotion create `measurements/<campaign-id>/` with all compact reports and its
+campaign summary. Existing history, including legacy `latest.json`/`latest.md`,
+is preserved; the returned measurement path identifies the new campaign.
+A failure before a run exists does not invent a measurement.
 
-The formal entrypoint additionally requires a clean local Git candidate and
-retains all run reports plus a campaign summary for review under
-`measurements/<campaign-id>/`. HEAD need not already be pushed; a cached
+The formal entrypoint additionally requires a clean local Git candidate.
+HEAD need not already be pushed; a cached
 upstream is informational and does not prove remote synchronization. A baseline
 is optional: absent, malformed or incompatible historical data leaves comparison
 and deltas `unavailable`, separately from current N/N quality. Unexpected errors
@@ -245,10 +246,12 @@ checks at export. The source checkout may have advanced since the run.
 `benchmark-temp/` is scratch space: runs, snapshots, candidate workspaces,
 prompts, event streams, focals, private runtime metadata, active-run markers,
 and turn ledgers all belong there. `benchmark.json`, this protocol, and promoted
-measurements belong in Git. Export a canonical report for any run used as a
-baseline, comparison reference, or gate evidence, then review and commit that
-small report. The default command publishes these compact reports automatically;
-the formal campaign retains its explicit promotion. Do not copy raw trees into
+measurements belong in Git only after campaign qualification. Export standalone
+reports for diagnosis or comparison into ignored temporary output, never directly
+into `measurements/`. The standalone report writer also requires an explicit
+diagnostic destination and refuses official history, including path aliases;
+only campaign promotion can write that history. Both entrypoints use this
+qualification boundary. Do not copy raw trees into
 Git. Campaign startup retains previous scratch and its ledgers. Explicit cleanup
 requires its own retention and safety gates. A fresh run recreates its runtime state from the versioned
 manifest; no old ledger, focal artifact, or handshake is required.
