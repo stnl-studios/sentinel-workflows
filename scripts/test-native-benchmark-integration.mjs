@@ -100,7 +100,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','formal-successor'],['fresh','formal-exhausted'], ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','formal-successor'],['fresh','formal-exhausted'], ['fresh','review-correction'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   t.after(async () => { await finishOfflineFixture(fixture); });
   const configurationPath = path.join(fixture.root, 'benchmarks/sentinel-todo/benchmark.json');
@@ -117,6 +117,23 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
   const sdk = await describeOfflineSdk(await fs.realpath(path.join(repo, 'agents/codex/node_modules')), fixture.root);
   const metadata = await snapshot.createSnapshot(runRoot, { executionMode: 'OFFLINE_TEST_ONLY', offlineSdk: sdk });
   const product = await manager.loadProduct(path.join(runRoot, 'snapshot'));
+  const serialize = product.serializePlanPathClaims;
+  let serialized = 0;
+  product.serializePlanPathClaims = async input => {
+    const value = await serialize(input);
+    if (++serialized === 1) {
+      if (fault === 'review-correction-drift') await fs.appendFile(path.join(input.candidateExecutionRoot, 'plans/slice-01.md'), '\nExtra unreviewed draft content.\n');
+      if (fault === 'review-correction-owner') {
+        const markerFile = `${input.candidateExecutionRoot}.owner.json`, marker = JSON.parse(await fs.readFile(markerFile));
+        marker.allocationId = '00000000-0000-4000-8000-000000000000'; await fs.writeFile(markerFile, JSON.stringify(marker));
+      }
+      if (fault === 'review-correction-cas') {
+        await fs.mkdir(path.join(input.specPath, 'execution'));
+        await fs.writeFile(path.join(input.specPath, 'execution/plan.md'), 'Foreign execution introduced after refusal.\n');
+      }
+    }
+    return value;
+  };
   let backend;
   const actualFactory = product.createNativeProvider;
   product.createNativeProvider = async args => {
@@ -130,7 +147,7 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     const args = { runRoot, caseId: 'A', configuration, snapshotMetadata: metadata,
       maxOperations: null, mode: 'case', product, signal: new AbortController().signal };
     result = await manager.runCase(args);
-    if (fault?.startsWith('interrupt-') || fault === 'aux-followup-interrupt') {
+    if (fault?.startsWith('interrupt-') || fault === 'aux-followup-interrupt' || fault === 'review-correction-interrupt') {
       assert.equal(result.status, 'BLOCKED');
       const before = backend.calls.filter(call => call.method === 'turn/start').length;
       const prior = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
@@ -144,9 +161,9 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
         'both auxiliary turns and the formal first turn consume their distinct credits before interruption');
       result = await manager.runCase({ ...args, resume: true });
       assert.ok(firstEvidence.equals(await fs.readFile(prior.operations.at(-1).evidencePath)), 'first failed observation stays byte-identical');
-      assert.equal(backend.calls.filter(call => call.method === 'turn/start').length, 6,
+      assert.equal(backend.calls.filter(call => call.method === 'turn/start').length, fault === 'review-correction-interrupt' ? 8 : 6,
         'observation resume must not start a replacement turn or rerun its recipe');
-      assert.ok(before <= 6);
+      assert.ok(before <= (fault === 'review-correction-interrupt' ? 8 : 6));
     }
   }
   finally { if (inherited !== undefined) process.env.NODE_TEST_CONTEXT = inherited; }
@@ -171,6 +188,20 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     assert.equal(formal.captureProof.matched,2);assert.equal(formal.captureProof.rejectedResponses.length,2);
     const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
     assert.equal(ledger.total,8);assert.equal(ledger.reservations.length,0);
+    return;
+  }
+  if (['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].includes(fault)) {
+    assert.equal(result.status, 'BLOCKED');
+    const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
+    const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
+    const count = fault === 'review-correction-twice' ? 5 : 3;
+    assert.equal(backend.calls.filter(call=>call.method==='turn/start').length, count,
+      'invalid source/ownership blocks before admitting author correction; a second refusal never starts a third review');
+    assert.equal(ledger.total, count); assert.equal(ledger.reservations.length, 0);
+    assert.equal(backend.operations.some(item=>['EXECUTE_SLICE','SPEC_CLOSE'].includes(item.operation)), false);
+    const refused = JSON.parse(await fs.readFile(state.operations[2].evidencePath));
+    assert.equal(refused.outcome.result, 'NEEDS_FIX');
+    if (fault === 'review-correction-twice') assert.deepEqual(state.terminal, { result: 'BLOCKED', blocker: 'PREPARATION_REVIEW_NOT_APPROVED' });
     return;
   }
   if(fault==='formal-successor'){
@@ -218,14 +249,32 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     }
   }
   const extra = fault === 'findings-cycle' ? 2 : 0;
+  const preparationExtra = fault?.startsWith('review-correction') ? 2 : 0;
   const refusalChild=fault==='formal-successor'?1:0;
-  const auxiliaryCalls = fault === 'aux-run-eight' ? 8
+  const auxiliaryCalls = fault === 'review-correction-aux' ? 3 : fault === 'aux-run-eight' ? 8
     : ['aux-followup', 'aux-followup-interrupt', 'aux-descendant'].includes(fault) ? 2 : fault?.startsWith('aux-') ? 1 : 0;
   assert.deepEqual(backend.operations.map(item => item.operation), ['SPEC_INIT', 'PLAN', 'REVIEW_PLAN',
+    ...(preparationExtra ? ['PLAN', 'REVIEW_PLAN'] : []),
     'EXECUTE_SLICE', 'VALIDATE_SLICE', ...(extra ? ['APPLY_FINDINGS', 'VALIDATE_SLICE'] : []), 'SPEC_CLOSE'],
   'the manager follows each public handoff once, retaining the separate independent review');
-  assert.equal(result.operations, 6 + extra); assert.equal(result.runnerTurns, 2 + extra + refusalChild + auxiliaryCalls); assert.equal(result.mainTurns, 6 + extra);
+  assert.equal(result.operations, 6 + extra + preparationExtra); assert.equal(result.runnerTurns, 2 + extra + refusalChild + auxiliaryCalls); assert.equal(result.mainTurns, 6 + extra + preparationExtra);
   const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
+  if (preparationExtra) {
+    const read = async index => JSON.parse(await fs.readFile(state.operations[index].evidencePath));
+    const first = await read(2), correction = await read(3), second = await read(4);
+    assert.deepEqual(first.outcome, { result: 'NEEDS_FIX', blocker: 'PREPARATION_REVIEW_NOT_APPROVED' });
+    assert.match(first.turn.response, /Offline preparation review declined/u);
+    assert.equal(first.officialReadback.execution.state, 'NO_EXECUTION');
+    assert.equal(first.preparation.candidateExecutionRoot, correction.preparation.candidateExecutionRoot);
+    assert.notEqual(first.preparation.authority.normativeSha256, correction.preparation.authority.normativeSha256);
+    assert.equal(second.outcome.result, 'PASS');
+    assert.notEqual(first.turn.threadId, second.turn.threadId);
+    assert.equal(second.context.inheritedAuthorHistory, false);
+    assert.notEqual(correction.turn.threadId, second.turn.threadId);
+    const reviewPrompt = await fs.readFile(second.promptFile, 'utf8');
+    assert.doesNotMatch(reviewPrompt, /Prior review feedback|Offline preparation review declined/u,
+      'new independent reviewer receives canonical corrected artifacts, not prior judgment');
+  }
   for (const operation of state.operations) {
     // The manager persists the exact launcher it sends, including the mention.
     const evidence = JSON.parse(await fs.readFile(operation.evidencePath));
@@ -258,12 +307,12 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
   await assert.rejects(fs.lstat(path.join(state.specPath, 'execution')), { code: 'ENOENT' });
   assert.equal(backend.calls.some(call => /account|login|config\/value/.test(call.method)), false);
   const authors = backend.operations.filter(item => ['SPEC_INIT', 'PLAN', 'EXECUTE_SLICE', 'SPEC_CLOSE'].includes(item.operation));
-  assert.equal(new Set(authors.map(item => item.threadId)).size, regime === 'fresh' ? 4 : 1);
+  assert.equal(new Set(authors.map(item => item.threadId)).size, regime === 'fresh' ? 4 + (preparationExtra ? 1 : 0) : 1);
   const reviews = backend.operations.filter(item => ['REVIEW_PLAN', 'VALIDATE_SLICE'].includes(item.operation));
-  assert.equal(new Set(reviews.map(item => item.threadId)).size, 2 + (extra ? 1 : 0));
+  assert.equal(new Set(reviews.map(item => item.threadId)).size, 2 + (extra ? 1 : 0) + (preparationExtra ? 1 : 0));
   assert.ok(reviews.every(item => !authors.some(author => author.threadId === item.threadId)));
   const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
-  assert.equal(ledger.total, 8 + 2 * extra + refusalChild + auxiliaryCalls); assert.equal(ledger.reservations.length, 0);
+  assert.equal(ledger.total, 8 + 2 * extra + preparationExtra + refusalChild + auxiliaryCalls); assert.equal(ledger.reservations.length, 0);
   assert.ok(ledger.turns.every(turn => turn.state === 'completed'));
   assert.equal(ledger.turns.filter(turn => turn.childKind === 'auxiliary').length, auxiliaryCalls);
   assert.equal(ledger.turns.filter(turn => turn.childKind === 'formal').length, 2 + extra + refusalChild);

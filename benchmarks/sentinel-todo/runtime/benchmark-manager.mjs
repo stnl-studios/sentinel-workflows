@@ -336,7 +336,10 @@ export function decideOutcome(operation, readback, completed, readinessResult = 
     return { result: 'PASS', blocker: null };
   }
   if (operation === 'REVIEW_PLAN' && readback.preparation?.authority?.preparationRevision === 1
-    && execution?.state !== 'MATERIALIZED_PRISTINE') return { result: 'BLOCKED', blocker: 'REVIEW_PLAN_ADVANCED_FLOW' };
+    && execution?.state !== 'MATERIALIZED_PRISTINE') return execution?.state === 'NO_EXECUTION'
+      && readback.preparation.status === 'AWAITING_REVIEW'
+      ? { result: 'NEEDS_FIX', blocker: 'PREPARATION_REVIEW_NOT_APPROVED' }
+      : { result: 'BLOCKED', blocker: 'REVIEW_PLAN_ADVANCED_FLOW' };
   if (operation === 'VALIDATE_SLICE' && execution?.state === 'VALIDATION_NEEDS_FIX') return { result: 'NEEDS_FIX', blocker: null };
   const accepted = {
     PLAN: ['PLANNED_DRAFT'], REVIEW_PLAN: ['MATERIALIZED_PRISTINE', 'EXECUTION_STARTED', 'IMPLEMENTED_AWAITING_VALIDATION', 'FINDINGS_CORRECTED'],
@@ -428,6 +431,7 @@ export async function loadProduct(snapshot) {
   const provider = await import(pathToFileURL(path.join(snapshot, 'agents/codex/runtime/native-provider.mjs')).href);
   const current = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs')).href);
   const preparation = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs')).href);
+  const serializer = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs')).href);
   const kernel = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/execution-current.mjs')).href);
   const projection = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs')).href);
   const evidence = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs')).href);
@@ -441,7 +445,8 @@ export async function loadProduct(snapshot) {
     executionWorkspaceFromContext: workspace.executionWorkspaceFromContext,
     validateWorkspace: lifecycle.validateWorkspace, workspaceSnapshot: lifecycle.workspaceSnapshot,
     deriveCloseExecutionDisposition: lifecycle.deriveCloseExecutionDisposition,
-    assertPreparationCandidate: preparation.assertPreparationCandidate };
+    assertPreparationCandidate: preparation.assertPreparationCandidate,
+    serializePlanPathClaims: serializer.serializePlanPathClaims };
 }
 function argsForJournal({ journal, operation, route, outcome, slice, readback, readinessResult, turn, durationMs, runnerCount }) {
   const args = ['journal-event', '--journal', journal, '--operation', operation, '--phase', route.phase,
@@ -553,6 +558,21 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       if (violation !== null) { terminal = { result: 'BLOCKED', blocker: 'BUDGET_EXCEEDED', diagnostic: violation.budget }; break; }
       await assertSnapshotIntegrity(runRoot);
       const before = await officialReadback(product, specPath);
+      const preceding = state.operations.slice(0, sequence - 1).at(-1);
+      const correctingPreparation = operation === 'PLAN' && preceding?.operation === 'REVIEW_PLAN'
+        && preceding.outcome?.result === 'NEEDS_FIX'
+        && preceding.outcome.blocker === 'PREPARATION_REVIEW_NOT_APPROVED';
+      let refusedReview = null;
+      if (correctingPreparation) {
+        refusedReview = await readJson(preceding.evidencePath);
+        if (!refusedReview.turn?.completed || typeof refusedReview.turn.response !== 'string'
+          || !refusedReview.turn.response.trim() || refusedReview.preparation?.candidateExecutionRoot !== preparation?.candidateExecutionRoot
+          || before.executionRaw?.state !== 'NO_EXECUTION'
+          || before.executionRaw.requirementsAuthority !== preparation?.authority?.requirementsAuthority) fail('preparation correction source differs');
+        await product.assertPreparationCandidate(preparation.candidateExecutionRoot, specPath);
+        const current = await product.serializePlanPathClaims({ specPath, candidateExecutionRoot: preparation.candidateExecutionRoot });
+        if (pending === null && hash(JSON.stringify(current.authority)) !== hash(JSON.stringify(refusedReview.preparation.authority))) fail('refused candidate changed before author correction');
+      }
       if (operation === 'PLAN' && before.lifecycle.status !== 'ready') fail('PLAN requires ready SPEC');
       if (pending === null && operation === 'REVIEW_PLAN') {
         if (!preparation) fail('REVIEW_PLAN requires the exact returned candidate root');
@@ -578,7 +598,9 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         NEW_INFORMATION: operation === 'SPEC_PROMOTE' ? `GLOBAL READY ${readiness.snapshotSha256}; promote status only.`
           : readiness?.verdict === 'FINDINGS' ? JSON.stringify(readiness.findings) : '',
         REPLAN_REASON: 'Follow the exact current public requirements and handoff.' })
-        + (operation === 'REVIEW_PLAN' ? `\nCANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}\n` : '')
+        + (operation === 'REVIEW_PLAN' || correctingPreparation ? `\nCANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}\n` : '')
+        + (correctingPreparation ? '\nThis is the single author correction of the existing unapproved Initial candidate, whose ownership and source were checked by the caller. Reuse that allocation; do not allocate another PLAN root or use REPLAN. Inspect the canonical authority and justify corrections from the prior review feedback below. Run the existing prepare-plan-candidate.mjs and serialize-plan-paths.mjs producers, then publish without a review decision to return AWAITING_REVIEW. No approval is inherited; return control for a new independent REVIEW_PLAN.\nPrior review feedback (not an approval or a replacement authority):\n'
+          + refusedReview.turn.response + '\n' : '')
         + (operation === 'VALIDATE_SLICE' ? '\nSolicito validação integral terminal do estado atual quando admissível pelo contrato normal; se não for admissível, reporte o bloqueio. Não certifique COMPLETE com julgamento apenas local.\n' : '')
         + invocation
         + `\nProject working directory: ${workspace}\nOriginal requirements input: ${requirementsPath}\n`
@@ -696,7 +718,16 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         ...(turn.stderrSample ? { stderrSample: turn.stderrSample } : {}) };
       let captureProof = null, closeEvidence = null;
       if (turn.completed) try {
-        if (operation === 'PLAN' || operation === 'REPLAN') preparation = await preparationHandoff(product, specPath, turn.commandResults);
+        if (operation === 'PLAN' || operation === 'REPLAN') {
+          const revised = await preparationHandoff(product, specPath, turn.commandResults);
+          if (correctingPreparation) {
+            if (revised.candidateExecutionRoot !== preparation.candidateExecutionRoot
+              || revised.authority?.requirementsAuthority !== preparation.authority.requirementsAuthority) fail('author correction replaced the refused candidate/authority');
+            const current = await product.serializePlanPathClaims({ specPath, candidateExecutionRoot: revised.candidateExecutionRoot });
+            if (hash(JSON.stringify(current.authority)) !== hash(JSON.stringify(revised.authority))) fail('author correction handoff differs from current serialization');
+          }
+          preparation = revised;
+        }
         if (operation === 'SPEC_READINESS') {
           if (product.readinessSnapshot(specPath).snapshotSha256 !== beforeReadiness.snapshotSha256) fail('READINESS mutated its snapshot');
           readiness = product.validateReadinessResult(specPath, JSON.parse(turn.response), { scope: 'GLOBAL' });
@@ -708,6 +739,17 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           await atomicJson(path.join(caseRoot, 'terminal-evidence.json'), closeEvidence);
         }
         outcome = decideOutcome(operation, { ...readback, preparation }, true, readiness);
+        if (operation === 'REVIEW_PLAN' && outcome.blocker === 'PREPARATION_REVIEW_NOT_APPROVED') {
+          const priorReviews = state.operations.slice(0, sequence - 1).filter(item => item.operation === 'REVIEW_PLAN');
+          if (priorReviews.length !== 0 || typeof turn.response !== 'string' || !turn.response.trim()) {
+            outcome = { result: 'BLOCKED', blocker: 'PREPARATION_REVIEW_NOT_APPROVED' };
+          } else {
+            await product.assertPreparationCandidate(preparation.candidateExecutionRoot, specPath);
+            const current = await product.serializePlanPathClaims({ specPath, candidateExecutionRoot: preparation.candidateExecutionRoot });
+            if (current.authority.requirementsAuthority !== preparation.authority.requirementsAuthority) fail('requirements changed during preparation review');
+            preparation = { ...preparation, authority: current.authority };
+          }
+        }
         if (operation === 'SPEC_RESUME' && product.readinessSnapshot(specPath).snapshotSha256 === beforeReadiness.snapshotSha256) {
           outcome = { result: 'BLOCKED', blocker: 'RESUME_NO_MATERIAL_PROGRESS' };
         }
@@ -742,7 +784,10 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       if (outcome.result === 'BLOCKED' || outcome.result === 'FAIL') break;
       pending = null;
-      target = nextHandoff(operation, { ...readback, preparation, product }, readiness);
+      target = operation === 'REVIEW_PLAN' && outcome.result === 'NEEDS_FIX'
+        && outcome.blocker === 'PREPARATION_REVIEW_NOT_APPROVED'
+        ? { operation: 'PLAN', slice: null }
+        : nextHandoff(operation, { ...readback, preparation, product }, readiness);
       if (!target && operation !== 'SPEC_CLOSE') { terminal = { result: 'BLOCKED', blocker: 'NO_OFFICIAL_HANDOFF' }; break; }
     }
   } catch (error) {

@@ -400,6 +400,28 @@ test('B11 — v2 rejects premature PLAN, LOCAL approval, promotion, terminal rea
   assert.notEqual(event(journal, 'SPEC_CLOSE', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_CLOSED']).status, 0);
 });
 
+test('v2 journal admits only one contiguous refused Initial review correction', async t => {
+  const root = await temporaryRoot(t, 'sentinel-review-correction-journal'), journal = path.join(root, 'journal.json');
+  await initV2Journal(journal);
+  requireSuccess(event(journal, 'SPEC_INIT', 'SPEC', 'GPT-6.1-Sol', 'medium', 'PASS', ['--resulting-state', 'SPEC_READY']), 'init');
+  requireSuccess(event(journal, 'PLAN', 'PLAN', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'NO_EXECUTION']), 'initial plan');
+  assert.notEqual(event(journal, 'PLAN', 'PLAN', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'NO_EXECUTION']).status, 0,
+    'a repeated PLAN without a refused review remains illegal');
+  requireSuccess(event(journal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high', 'NEEDS_FIX', ['--resulting-state', 'NO_EXECUTION']), 'first refusal');
+  const refusedBytes = await fs.readFile(journal);
+  assert.notEqual(event(journal, 'EXECUTE_SLICE', 'EXECUTE', 'GPT-6-Luna', 'high', 'PASS', ['--slice', 'slice-01']).status, 0);
+  assert.notEqual(event(journal, 'PLAN', 'PLAN', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'EXECUTION_STARTED']).status, 0);
+  assert.ok(refusedBytes.equals(await fs.readFile(journal)), 'invalid transitions preserve prior refusal bytes');
+  requireSuccess(event(journal, 'PLAN', 'PLAN', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'NO_EXECUTION']), 'author correction');
+  const correctedBytes = await fs.readFile(journal);
+  assert.notEqual(event(journal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high', 'NEEDS_FIX', ['--resulting-state', 'NO_EXECUTION']).status, 0,
+    'a second refusal cannot request another author correction');
+  assert.ok(correctedBytes.equals(await fs.readFile(journal)));
+  requireSuccess(event(journal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'MATERIALIZED_PRISTINE']), 'new review');
+  assert.notEqual(event(journal, 'PLAN', 'PLAN', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'NO_EXECUTION']).status, 0);
+  assert.equal((await readJson(journal)).events[2].result, 'NEEDS_FIX');
+});
+
 test('B12 — v2 finalization requires immediate close and reports maturation cycles', async (t) => {
   const root = await temporaryRoot(t, 'sentinel-benchmark-v2-finalize');
   const workspace = path.join(root, 'workspace');

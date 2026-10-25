@@ -9,6 +9,8 @@ import { payload } from './current-initial-evidence.mjs';
 import { applyPayload } from './current-findings-evidence.mjs';
 import { publishCandidate } from '../../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs';
 import { preparePreparationCandidate } from '../../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
+import { assertPreparationCandidate, preparePlanCandidate } from '../../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs';
+import { serializePlanPathClaims } from '../../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs';
 import { publishPreparationCandidate } from '../../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
 import { inspectCurrentExecution } from '../../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import { begin, normalizeSuccessor, reserveDispatch, bindNative, verifyNative, captureNative, publish } from
@@ -55,6 +57,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       for (let i = 0; i < count; i++) auxiliary();
     }
     if (fault === 'aux-run-eleven' && operation === 'PLAN') for (let i = 0; i < 11; i++) auxiliary();
+    if (fault === 'review-correction-aux' && (operation === 'REVIEW_PLAN' || operation === 'PLAN' && preparation)) auxiliary();
     if (operation === 'EXECUTE_SLICE' && ['aux-before-reservation', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant'].includes(fault))
       auxiliary(thread, turn, { followup: ['aux-followup', 'aux-followup-interrupt'].includes(fault), nested: fault === 'aux-descendant' });
     if (!specPath) throw new Error('fixture requires the real launcher SPEC_PATH');
@@ -73,6 +76,23 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       await author(path.join(snapshot, 'skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready'), candidate);
       command(turn.items, await publishCandidate('INIT', specPath, candidate));
     } else if (operation === 'PLAN') {
+      if (preparation && fault?.startsWith('review-correction')) {
+        if (!prompt.includes(`CANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}`)
+          || !prompt.includes('single author correction') || !prompt.includes('Offline preparation review declined')) throw new Error('author correction lacks exact candidate/feedback');
+        await assertPreparationCandidate(preparation.candidateExecutionRoot, specPath);
+        for (const name of ['plans/slice-01.md', 'tasks/slice-01.md']) {
+          const file = path.join(preparation.candidateExecutionRoot, name), text = await fs.readFile(file, 'utf8');
+          await fs.writeFile(file, text.replace(/^- Recipe: (.+)$/mu, (_, json) => {
+            const recipe = JSON.parse(json); recipe.dependencyReview += ' Offline author reviewed the omitted indirect dependency.';
+            return `- Recipe: ${JSON.stringify(recipe)}`;
+          }));
+        }
+        command(turn.items, await preparePlanCandidate({ candidateExecutionRoot: preparation.candidateExecutionRoot }));
+        command(turn.items, await serializePlanPathClaims({ specPath, candidateExecutionRoot: preparation.candidateExecutionRoot }));
+        preparation = await publishPreparationCandidate({ specPath, candidateExecutionRoot: preparation.candidateExecutionRoot });
+        command(turn.items, preparation);
+        return;
+      }
       const allocated = await preparePreparationCandidate({ specPath, operation: 'PLAN' });
       const current = await inspectCurrentExecution(specPath);
       for (const [name, bytes] of initialArtifacts({ form: 'lifecycle' })) {
@@ -97,6 +117,12 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       }
     } else if (operation === 'REVIEW_PLAN') {
       if (!prompt.includes(`CANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}`)) throw new Error('fixture root was not passed to the independent review');
+      if (fault?.startsWith('review-correction') && (operations.filter(item => item.operation === 'REVIEW_PLAN').length === 1
+        || fault === 'review-correction-twice')) {
+        turn.items.push({ id: randomUUID(), type: 'agentMessage', phase: 'final_answer',
+          text: 'Offline preparation review declined: author must correct the recipe dependency review; no approval or publication.' });
+        return;
+      }
       const { projectInitialPreparation } = await import('../../skills/workflows/stnl-execution-planner/runtime/execution-preparation-current.mjs');
       const { resolveCurrentExecutionContext } = await import('../../skills/workflows/stnl-execution-planner/runtime/execution-workspace.mjs');
       const artifacts = new Map();
@@ -221,7 +247,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         const operation = /^(?:OPERATION|MODE)=(.*)$/mu.exec(prompt)?.[1];
         const normalized = { INIT: 'SPEC_INIT', CLOSE: 'SPEC_CLOSE', READINESS: 'SPEC_READINESS' }[operation] ?? operation;
         const finish=async()=>{await authored(normalized,prompt,thread,turn);
-          turn.status='completed';turn.items.push({id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Offline authored operation completed.'});
+          turn.status='completed';if(!turn.items.some(item=>item.type==='agentMessage'&&item.phase==='final_answer'))turn.items.push({id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Offline authored operation completed.'});
         };
         if(automatic)void finish().catch(error=>{turn.status='failed';turn.error={message:error.message};});else await finish();
         return { turn: structuredClone(turn) };
@@ -229,8 +255,9 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       const thread = threads.get(params.threadId);
       if (!thread) throw new Error('foreign public thread query');
       if (method === 'thread/turns/list') {
-        const target = fault === 'interrupt-close' ? 'SPEC_CLOSE' : 'EXECUTE_SLICE';
-        if (['interrupt-execute', 'interrupt-close', 'aux-followup-interrupt'].includes(fault) && !interrupted
+        const target = fault === 'interrupt-close' ? 'SPEC_CLOSE' : fault === 'review-correction-interrupt' ? 'PLAN' : 'EXECUTE_SLICE';
+        if (['interrupt-execute', 'interrupt-close', 'aux-followup-interrupt', 'review-correction-interrupt'].includes(fault) && !interrupted
+          && (fault !== 'review-correction-interrupt' || operations.filter(item=>item.operation==='PLAN').length === 2)
           && operations.at(-1)?.operation === target && thread.parentThreadId === null
           && thread.turns.at(-1)?.status === 'completed') {
           interrupted = true; throw Object.assign(new Error('OFFLINE injected observation I/O failure after normal publication'), { code: 'EIO' });

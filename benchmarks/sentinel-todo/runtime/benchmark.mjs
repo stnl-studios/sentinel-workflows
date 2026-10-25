@@ -517,6 +517,30 @@ function assertV2Sequence(events) {
       phase = 'EXECUTION';
       continue;
     }
+    if (phase === 'EXPECT_PREPARATION_CORRECTION') {
+      if (event.operation !== 'PLAN' || event.result !== 'PASS' || event.resultingState !== 'NO_EXECUTION') {
+        throw new CliError('v2 refused Initial review requires one author correction without execution');
+      }
+      phase = 'EXPECT_PREPARATION_REVIEW';
+      continue;
+    }
+    if (phase === 'EXPECT_PREPARATION_REVIEW') {
+      if (event.operation !== 'REVIEW_PLAN' || event.result !== 'PASS' || event.resultingState !== 'MATERIALIZED_PRISTINE') {
+        throw new CliError('v2 author correction requires a fresh approved Initial review');
+      }
+      phase = 'EXECUTION';
+      continue;
+    }
+    if (phase === 'EXECUTION' && event.operation === 'REVIEW_PLAN' && event.result === 'NEEDS_FIX'
+      && event.resultingState === 'NO_EXECUTION') {
+      const previous = events[index - 1];
+      if (previous.operation !== 'PLAN' || previous.result !== 'PASS' || previous.resultingState !== 'NO_EXECUTION'
+        || events.slice(0, index).some(item => item.operation === 'REVIEW_PLAN')) {
+        throw new CliError('v2 only the first Initial review may return to authorship');
+      }
+      phase = 'EXPECT_PREPARATION_CORRECTION';
+      continue;
+    }
     if (phase === 'COMPLETE') {
       if (event.operation !== 'SPEC_CLOSE' || event.result !== 'PASS' || index !== events.length - 1) {
         throw new CliError('v2 SPEC_CLOSE must immediately follow COMPLETE');
