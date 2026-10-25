@@ -180,6 +180,22 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       await bindNative(admitted.handle, agentPath);
       if (operation === 'EXECUTE_SLICE' && fault === 'aux-after-formal') auxiliary();
       if (operation === 'EXECUTE_SLICE' && fault === 'aux-followup-twelve') auxiliary(thread, turn, { turns: 12 });
+      const continuing=fault==='pre-verification-continuation'&&operation==='EXECUTE_SLICE';
+      const contractRead=()=>({id:randomUUID(),type:'commandExecution',command:`cat -- '${path.join(snapshot,'agents/codex/.codex/agents/stnl_validation_runner.toml')}'`,cwd:workspace,status:'completed',exitCode:0,aggregatedOutput:null});
+      if(continuing) {
+        const read=contractRead();read.aggregatedOutput=await fs.readFile(path.join(snapshot,'agents/codex/.codex/agents/stnl_validation_runner.toml'),'utf8');
+        child.turns.push({id:randomUUID(),status:'completed',error:null,itemsView:'full',items:[read,{id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Arbitrary initialization; no verification yet.'}]});
+        turn.items.push({id:randomUUID(),type:'subAgentActivity',kind:'completed',agentPath,agentThreadId:childId});
+        const eventPath=/record in (.+?); match binding\.agentPath/u.exec(prompt)?.[1];
+        const deadline=Date.now()+10000;let admittedContinuation;
+        while(!admittedContinuation&&Date.now()<deadline) {
+          const raw=await fs.readFile(eventPath,'utf8');admittedContinuation=raw.split('\n').slice(0,-1).map(JSON.parse).find(e=>e.type==='native.child.continuation.admitted'&&e.binding.agentPath===agentPath);
+          if(!admittedContinuation)await new Promise(resolve=>setTimeout(resolve,1));
+        }
+        if(!admittedContinuation)throw Error('public continuation admission unavailable');
+        const second={id:randomUUID(),status:'inProgress',error:null,itemsView:'full',items:[]};child.turns.push(second);
+        turn.items.push({id:randomUUID(),type:'subAgentActivity',kind:'interacted',agentPath,agentThreadId:childId});
+      }
       const measured = await verifyNative(dispatch.originFile);
       const needsFix = fault === 'findings-cycle' && operation === 'VALIDATE_SLICE'
         && operations.filter(item => item.operation === 'VALIDATE_SLICE').length === 1;
@@ -198,7 +214,8 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       const text = JSON.stringify({ format: 'stnl-current-native-judgment-v1', result,
         ...(operation === 'VALIDATE_SLICE' && !invalid ? { newFindings: findings } : {}) })
         +(invalid?'\nCanonical task identity: `'+agentPath+'`':'');
-      child.turns.push({ id: randomUUID(), status: 'completed', error: null, itemsView: 'full',
+      if(continuing)Object.assign(child.turns.at(-1),{status:'completed',items:[{id:randomUUID(),type:'commandExecution',command:'node verificationHelper verify-native --origin-file originFile',cwd:workspace,status:'completed',exitCode:0,aggregatedOutput:JSON.stringify(measured)},{id:randomUUID(),type:'agentMessage',phase:'final_answer',text}]});
+      else child.turns.push({ id: randomUUID(), status: 'completed', error: null, itemsView: 'full',
         items: [{ id: randomUUID(), type: 'commandExecution', command: `cat -- '${path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml').replaceAll("'", "'\\''")}'`, cwd: workspace, status: 'completed', exitCode: 0, aggregatedOutput: await fs.readFile(path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml'), 'utf8') }, { id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text }] });
       if (fault === 'grandchildren' && operation === 'EXECUTE_SLICE') child.turns[0].items.push(...[1, 2].map(index => ({
         id: randomUUID(), type: 'subAgentActivity', kind: 'started', agentPath: `${agentPath}/extra-${index}`, agentThreadId: randomUUID() })));

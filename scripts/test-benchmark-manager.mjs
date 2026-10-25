@@ -451,6 +451,45 @@ test('manager status creates an absent benchmark-temp in an isolated checkout fi
   assert.equal((await fs.stat(isolatedRuns)).isDirectory(), true);
 });
 
+for (const limit of [0, 1]) test(`continuation reserves one charged turn only with available budget (${limit})`, async t => {
+  const root = await fs.mkdtemp(path.join(process.env.TMPDIR, 'sentinel-continuation-budget-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await initializeTurnBudget(root, 1);
+  if (limit === 0) {
+    const admission = await admitOperation({ runRoot: root, runId: 'run-offline', caseId: 'A',
+      operation: 'PLAN', runnerRequired: false, limit: 1 });
+    const number = await startReservedTurn(root, admission.main, 1);
+    await settleTurn(root, number, { turnStarted: true, completed: true, threadId: 'author' }, 1);
+  }
+  const file = path.join(root, '.turn-ledger.json'), before = await fs.readFile(file);
+  const args = { runRoot: root, runId: 'run-offline', caseId: 'A', operation: 'EXECUTE_SLICE', limit: 1,
+    continuationBinding: { agentThreadId: 'same-child' } };
+  if (limit === 0) {
+    await assert.rejects(manager.reserveExtraRunner(args), error => error.code === 'PAUSED_BUDGET_OR_QUOTA');
+    assert.deepEqual(await fs.readFile(file), before, 'failed reservation cannot grant or reset budget');
+    return;
+  }
+  const reservation = await manager.reserveExtraRunner(args);
+  assert.equal(JSON.parse(await fs.readFile(file)).preVerificationContinuation.reservation, reservation);
+  const number = await startReservedTurn(root, reservation, limit);
+  await settleTurn(root, number, { turnStarted: true, completed: false, threadId: 'same-child' }, limit);
+  assert.equal((await budgetSnapshot(root)).turnBudget.consumed, 1, 'uncertain continuation remains charged');
+  await assert.rejects(manager.reserveExtraRunner(args));
+  assert.equal((await budgetSnapshot(root)).turnBudget.consumed, 1);
+});
+
+test('concurrent continuation reservations admit only one per run across different children', async t => {
+  const root = await fs.mkdtemp(path.join(process.env.TMPDIR, 'sentinel-continuation-once-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await initializeTurnBudget(root, 4);
+  const results = await Promise.allSettled(['child-a', 'child-b'].map(agentThreadId => manager.reserveExtraRunner({
+    runRoot: root, runId: 'run-offline', caseId: 'A', operation: 'EXECUTE_SLICE', limit: 4,
+    continuationBinding: { agentThreadId } })));
+  assert.equal(results.filter(value => value.status === 'fulfilled').length, 1);
+  assert.match(results.find(value => value.status === 'rejected').reason.message, /already reserved/u);
+  assert.equal(JSON.parse(await fs.readFile(path.join(root, '.turn-ledger.json'))).reservations.length, 1);
+});
+
 test('T21/T22: B/C competing for the last admission and contradictory no-start settlement conserve budget', async (t) => {
   const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-last-admission-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

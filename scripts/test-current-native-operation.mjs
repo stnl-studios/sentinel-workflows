@@ -10,7 +10,7 @@ import {nativeOperationCase,reservedOperation} from './fixtures/current-native-o
 import {captureCurrentExecution,captureCurrentActiveExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {captureCurrentExecution as captureQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
 import {inspectPostConversionEvidence} from '../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs';
-import {begin,bindNative,verifyNative,captureNative,publish,cleanup,resume,reserveDispatch} from
+import {begin,bindNative,verifyNative,captureNative,publish,cleanup,resume,reserveDispatch,prepareNativeContinuation} from
   '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 
 const sha=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -454,4 +454,86 @@ test('EC-1 mechanical: A1 verifies prior lastAttempt before candidate supersessi
   await assert.rejects(()=>captureCurrentActiveExecution(fixture.specPath,activation.activeAttempt),
     blocked('EVIDENCE_INCOMPLETE'));
   assert.equal(start.activationA1,activation.activationId);
+});
+
+
+async function unstartedContinuation(test) {
+  const f=await nativeOperationCase(test),start=await begin({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:f.activationId});
+  const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const agentId='/root/mechanical-continuation';await bindNative(start.handle,agentId);
+  const toolResultFile=await toolFile(f,agentId,'  arbitrary pre-verification response\r\nπ\n','initialization.json');
+  const binding={parentThreadId:'parent',parentTurnId:'parent-turn',agentPath:agentId,agentThreadId:'child',model:'gpt-6-luna',effort:'medium'};
+  return {...f,start,dispatch,agentId,input:{toolResultFile,binding,firstTurnId:'initial-turn'},operationRoot:path.dirname(dispatch.originFile)};
+}
+test('native pre-verification continuation preserves initialization, publishes one judgment and replays without work',async t=>{
+  const f=await unstartedContinuation(t),first=await fs.readFile(f.input.toolResultFile);
+  assert.deepEqual(await prepareNativeContinuation(f.start.handle,{...f.input,commit:false}),{eligible:true});
+  const admitted=await prepareNativeContinuation(f.start.handle,f.input);assert.equal(admitted.replayed,false);
+  assert.equal((await prepareNativeContinuation(f.start.handle,f.input)).replayed,true);
+  await assert.rejects(prepareNativeContinuation(f.start.handle,{...f.input,firstTurnId:'other'}));
+  const measured=await verifyNative(f.dispatch.originFile),producer=await fs.readFile(path.join(f.operationRoot,'round-1.verification.json'));
+  const text=JSON.stringify({format:'stnl-current-native-judgment-v1',result:(({head,...rest})=>rest)(result('PASS',f.head,measured.commands)),newFindings:[]});
+  const file=await toolFile(f,f.agentId,text,'continued.json');const envelope=JSON.parse(await fs.readFile(file));
+  envelope.preVerificationContinuation=admitted.grant;await fs.writeFile(file,JSON.stringify(envelope)+'\n');
+  const ownerBefore=await fs.readFile(path.join(f.operationRoot,'owner.json'));
+  for(const fault of ['missing','changed-first','changed-binding','changed-round']) {
+    const forged=structuredClone(envelope);
+    if(fault==='missing')delete forged.preVerificationContinuation;
+    if(fault==='changed-first')forged.preVerificationContinuation.firstToolResultUtf8+='changed';
+    if(fault==='changed-binding')forged.preVerificationContinuation.binding.agentThreadId='foreign';
+    if(fault==='changed-round')forged.preVerificationContinuation.round++;
+    await fs.writeFile(file,JSON.stringify(forged)+'\n');
+    await assert.rejects(captureNative(f.start.handle,file));
+    assert.deepEqual(await fs.readFile(path.join(f.operationRoot,'owner.json')),ownerBefore);
+  }
+  await fs.writeFile(file,JSON.stringify(envelope)+'\n');
+  assert.equal((await captureNative(f.start.handle,file)).status,'PASS');
+  assert.equal((await captureNative(f.start.handle,file)).replayed,true);
+  assert.equal((await prepareNativeContinuation(f.start.handle,f.input)).replayed,true,
+    'captured but unpublished evidence may confirm its existing grant without admitting work');
+  assert.equal((await publish(f.start.handle)).publication,'confirmed');
+  const image=await captureCurrentExecution(f.specPath);assert.equal(image.inspection.deliveries.find(x=>x.deliveryId===f.delivery.deliveryId).formalStatus,'PASS');
+  const sources=[...image.files].filter(([n])=>n.startsWith('evidence/')).map(([,b])=>JSON.parse(Buffer.from(b)));
+  assert.ok(sources.some(b=>b.objects.some(o=>{try{return JSON.parse(Buffer.from(o.bytesBase64,'base64')).preVerificationContinuation?.firstToolResultUtf8===first.toString('utf8');}catch{return false;}})));
+  assert.deepEqual(await fs.readFile(f.input.toolResultFile),first);
+  assert.deepEqual(await fs.readFile(path.join(f.operationRoot,'round-1.verification.json')),producer);
+});
+for(const fault of ['started','observed','foreign-control','changed-work','identity','first-bytes'])test(`native continuation refuses ${fault}`,async t=>{
+  const f=await unstartedContinuation(t);let input=f.input;
+  if(fault==='started')await fs.writeFile(path.join(f.operationRoot,'round-1.verification.json'),JSON.stringify({status:'started'}));
+  if(fault==='observed')await verifyNative(f.dispatch.originFile);
+  if(fault==='foreign-control')await fs.writeFile(path.join(f.operationRoot,'unknown.json'),'{}');
+  if(fault==='changed-work')await fs.appendFile(path.join(f.root,'src/greeting.mjs'),'// drift\n');
+  if(fault==='identity')input={...input,binding:{...input.binding,agentPath:'/root/foreign'}};
+  if(fault==='first-bytes')await fs.writeFile(input.toolResultFile,JSON.stringify({agentId:f.agentId,status:'inProgress',finalResponse:'waiting'}));
+  const before=await fs.readFile(path.join(f.operationRoot,'owner.json'));
+  if(['started','observed'].includes(fault))assert.equal(await prepareNativeContinuation(f.start.handle,input),null);
+  else await assert.rejects(prepareNativeContinuation(f.start.handle,input));
+  assert.deepEqual(await fs.readFile(path.join(f.operationRoot,'owner.json')),before);
+});
+test('native continuation admission wins against a verifier not yet holding the shared start lease',async t=>{
+  const f=await unstartedContinuation(t),lstat=fs.lstat,entered=Promise.withResolvers(),gate=Promise.withResolvers();
+  const output=path.join(f.operationRoot,'round-1.verification.json');let paused=false;
+  fs.lstat=async(file,...args)=>{if(file===output&&!paused){paused=true;entered.resolve();await gate.promise;}return lstat(file,...args);};
+  const old=verifyNative(f.dispatch.originFile);const rejected=assert.rejects(old,/predates continuation/);
+  try {await entered.promise;await prepareNativeContinuation(f.start.handle,f.input);}
+  finally {gate.resolve();fs.lstat=lstat;}
+  await rejected;await assert.rejects(fs.lstat(output),{code:'ENOENT'});
+  assert.equal((await verifyNative(f.dispatch.originFile)).status,'completed');
+});
+test('native verification start wins the shared lease before continuation admission',async t=>{
+  const f=await unstartedContinuation(t),open=fs.open,entered=Promise.withResolvers(),gate=Promise.withResolvers();
+  const output=path.join(f.operationRoot,'round-1.verification.json');
+  fs.open=async(file,...args)=>{if(file===output&&args[0]==='wx'){entered.resolve();await gate.promise;}return open(file,...args);};
+  const verifying=verifyNative(f.dispatch.originFile);
+  try {await entered.promise;await assert.rejects(prepareNativeContinuation(f.start.handle,f.input));}
+  finally {gate.resolve();fs.open=open;}
+  await verifying;assert.equal(await prepareNativeContinuation(f.start.handle,f.input),null);
+});
+test('continuation refuses work drift after admission before replay or verification start',async t=>{
+  const f=await unstartedContinuation(t);await prepareNativeContinuation(f.start.handle,f.input);
+  await fs.appendFile(path.join(f.root,'src/greeting.mjs'),'// authorized output, different bound work\n');
+  await assert.rejects(prepareNativeContinuation(f.start.handle,f.input),/bound work changed/);
+  await assert.rejects(verifyNative(f.dispatch.originFile),/bound work changed/);
+  await assert.rejects(fs.lstat(path.join(f.operationRoot,'round-1.verification.json')),{code:'ENOENT'});
 });

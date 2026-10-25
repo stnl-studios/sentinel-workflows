@@ -9,7 +9,7 @@ const equal = isDeepStrictEqual;
 
 // Read-only designation, not inference from a child's name, output or birth
 // order. The active product owner authenticates the invocation and its binding.
-export async function observeFormalRunner({ product, specPath, operation, slice }) {
+async function formalRunnerState({ product, specPath, operation, slice }) {
   if (!['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE'].includes(operation)) return null;
   const { workspace, context } = await product.resolveCurrentExecutionContext(specPath);
   const read = async file => product.parseCurrentJson((await product.readOwnedFile(file)).bytes.toString('utf8'));
@@ -52,8 +52,19 @@ export async function observeFormalRunner({ product, specPath, operation, slice 
     || origin.specPath !== context.logicalAuthorityPath || origin.workspace !== context.productRoot
     || agent.agentId !== runner.agentId || agent.originFile !== originFile) fail('formal origin/agent/round differs');
   if (!equal(await read(activationFile), activation) || !equal(await read(marker), record)) fail('formal designation changed during observation');
-  return { agentPath: runner.agentId, operationAttemptId: owner.operationAttemptId,
-    operationId: binding.operationId, dispatchId: runner.dispatchId, round: runner.round };
+  return { designation:{ agentPath: runner.agentId, operationAttemptId: owner.operationAttemptId,
+    operationId: binding.operationId, dispatchId: runner.dispatchId, round: runner.round },
+    handle:{format:'stnl-current-operation-handle-v1',specPath:context.logicalAuthorityPath,
+      operationId:binding.operationId,ownershipToken:owner.ownershipToken,filesystemContext:binding.filesystemContext} };
+}
+export async function observeFormalRunner(input) {
+  return (await formalRunnerState(input))?.designation??null;
+}
+export async function prepareFormalContinuation({ product,specPath,operation,slice,binding,toolResultFile,firstTurnId,commit }) {
+  const current=await formalRunnerState({product,specPath,operation,slice});
+  if(!current)return null;
+  if(current.designation.agentPath!==binding.agentPath)fail('continuation is not the designated runner');
+  return product.prepareNativeContinuation(current.handle,{toolResultFile,binding,firstTurnId,commit});
 }
 
 export function validateNativeLedger(ledger, state, runId, { settled = false } = {}) {
@@ -139,6 +150,10 @@ export function assertNativeCaptures(image, captures, { restoreCaptureSources } 
   for (const capture of captures) {
     if (official.filter(({ value }) => value.agentId === capture.binding.agentPath
       && value.finalResponse === capture.toolResult.finalResponse).length !== 1) fail('official retained capture differs from the public child');
+    const retained=official.find(({value})=>value.agentId===capture.binding.agentPath
+      &&value.finalResponse===capture.toolResult.finalResponse).value;
+    if(!equal(retained.preVerificationContinuation??null,capture.toolResult.preVerificationContinuation??null))
+      fail('retained continuation source differs from public capture');
     if (capture.designation) {
       const matched = official.find(({ value }) => value.agentId === capture.binding.agentPath
         && value.finalResponse === capture.toolResult.finalResponse);

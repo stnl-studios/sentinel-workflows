@@ -100,6 +100,141 @@ function server({ bundle, cwd, response = '  resultado íntegro\r\n𝛑\n', muta
   } };
 }
 
+// Public history only: these fixtures certify transport behavior, not controller eligibility.
+async function continuedHistory(t) {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root,
+    response: 'Arbitrary initialization text; no ACK classifier.\n𝛑' });
+  const binding = await bindAppServerChild(s.rpc, identity);
+  const first = await readAppServerChild(s.rpc, { binding, bundle: f.bundle, cwd: f.root, initialization: true });
+  const firstToolResultUtf8 = JSON.stringify(first) + '\n';
+  const continuation = { format: 'stnl-native-pre-verification-continuation-v1', binding,
+    firstTurnId: 'child-turn', firstToolResultUtf8, firstToolResultSha256: sha(firstToolResultUtf8) };
+  s.state.turns.push({ id: 'continued-turn', rootTurnId: 'parent-turn', itemsView: 'full',
+    status: 'completed', error: null, items: [{ id: 'formal-answer', type: 'agentMessage',
+      phase: 'final_answer', text: 'First and only formal response\r\n' }] });
+  const rpc = { request(method, params) {
+    if (method === 'thread/items/list' && params.threadId === child) {
+      const turn = s.state.turns.find(value => value.id === params.turnId);
+      return { data: structuredClone(turn.items).map(item => ({ turnId: turn.id, item })), nextCursor: null };
+    }
+    return s.rpc.request(method, params);
+  } };
+  return { ...f, s, rpc, binding, continuation };
+}
+
+test('one admitted continuation preserves initialization and reads the first formal response without a new turn', async t => {
+  const f = await continuedHistory(t);
+  const options = { binding: f.binding, bundle: f.bundle, cwd: f.root, continuation: f.continuation };
+  const before = JSON.stringify(f.s.state);
+  const first = await readAppServerChild(f.rpc, options), replay = await readAppServerChild(f.rpc, options);
+  assert.deepEqual(first, replay);
+  assert.equal(first.finalResponse, 'First and only formal response\r\n');
+  assert.equal(first.preVerificationContinuation.firstToolResultUtf8, f.continuation.firstToolResultUtf8);
+  assert.equal(JSON.stringify(f.s.state), before, 'reobservation cannot alter either turn');
+  assert.ok(f.s.calls.every(call => call.method.startsWith('thread/')), 'no verification, new turn or recipe during replay');
+  await assert.rejects(readAppServerChild(f.rpc, { ...options, continuation: null }), blocked,
+    'a second turn without controller admission cannot become a formal response');
+});
+
+for (const [name, mutate] of [
+  ['third judgment', f => { f.s.state.turns.push({ ...f.s.state.turns[1], id: 'third-turn' }); }],
+  ['uncertain continuation', f => { f.s.state.turns[1].status = 'interrupted'; }],
+  ['foreign binding', f => { f.continuation.binding = { ...f.binding, parentTurnId: 'foreign' }; }],
+  ['first bytes changed', f => { f.continuation.firstToolResultUtf8 += ' '; }],
+  ['first API response changed', f => { f.s.state.turns[0].items.at(-1).text += 'changed'; }],
+  ['first contract truncated', f => { f.s.state.turns[0].items[0].aggregatedOutput = 'partial'; }],
+  ['first effect unknown', f => { f.s.state.turns[0].items.splice(1, 0, { id: 'write', type: 'commandExecution',
+    command: 'touch file', cwd: f.root, status: 'completed', exitCode: 0, aggregatedOutput: '' }); }],
+  ['first command denied', f => { f.s.state.turns[0].items[0].exitCode = 1; }],
+  ['profile changed', f => { f.s.state.thread.reasoningEffort = 'high'; }],
+  ['formal response projection drift', f => { f.s.state.turns[1].itemsView = 'full'; }],
+]) test(`admitted continuation rejects ${name}`, async t => {
+  const f = await continuedHistory(t); mutate(f);
+  let rpc = f.rpc;
+  if (name === 'formal response projection drift') rpc = { request(method, params) {
+    if (method === 'thread/items/list' && params.turnId === 'continued-turn') return { data: [{ turnId: params.turnId,
+      item: { ...f.s.state.turns[1].items[0], text: 'different public projection' } }], nextCursor: null };
+    return f.rpc.request(method, params);
+  } };
+  await assert.rejects(readAppServerChild(rpc, { binding: f.binding, bundle: f.bundle, cwd: f.root,
+    continuation: f.continuation }), blocked);
+});
+
+for (const fault of [null, 'first-file-removed', 'first-alias', 'simultaneous-drift', 'duplicate-admission', 'expired',
+  'parent-closed-during-admission', 'expired-during-admission'])
+test(`continued provider preserves both sources and reobserves without another turn (${fault ?? 'valid'})`, async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true, response: 'Initialization is not a verdict.\n' });
+  s.state.parentItems.push({ ...s.state.parentItems[0], id: 'first-completion', kind: 'completed' });
+  const request = s.rpc.request.bind(s.rpc); let parentDone = false, admissionCount = 0, firstFile;
+  const now=Date.now;t.after(()=>{Date.now=now;});
+  s.rpc.request = async (method, params) => {
+    if (method === 'thread/items/list' && params.threadId === child) {
+      const turn = s.state.turns.find(value => value.id === params.turnId);
+      return { data: structuredClone(turn.items).map(item => ({ turnId: turn.id, item })), nextCursor: null };
+    }
+    const value = await request(method, params);
+    if (method === 'thread/turns/list' && params.threadId === parent) value.data[0].status = parentDone ? 'completed' : 'inProgress';
+    return value;
+  };
+  const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  const charged = new Set();
+  const args = { prompt: 'OFFLINE only', workflowSkill: 'stnl-slice-executor', model: 'gpt-6-luna', effort: 'high',
+    operationId: 'continued-provider', role: 'review', timeoutMs: 1000,
+    observeFormalBinding: async () => ({ agentPath: identity.agentPath }),
+    onChildTurns: (binding, turns) => { for (const turn of turns) charged.add(turn.id); },
+    onPrepareContinuation: async ({ binding, toolResultFile, firstTurnId, validateInitialization }) => {
+      admissionCount++; await validateInitialization(); firstFile = toolResultFile;
+      const firstToolResultUtf8 = await fs.readFile(toolResultFile, 'utf8');
+      if(fault==='parent-closed-during-admission')parentDone=true;
+      if(fault==='expired-during-admission')Date.now=()=>now()+2000;
+      return { format: 'stnl-native-pre-verification-continuation-v1', binding, firstTurnId,
+        firstToolResultUtf8, firstToolResultSha256: sha(firstToolResultUtf8) };
+    },
+    onChildCompleted: ({ initialization }) => {
+      if (initialization) {
+        s.state.turns.push({ id: 'formal-turn', rootTurnId: 'parent-turn', itemsView: 'full', status: 'completed',
+          error: null, items: [{ id: 'judgment', type: 'agentMessage', phase: 'final_answer', text: 'Literal formal judgment\r\n' }] });
+        s.state.parentItems.push({ ...s.state.parentItems[0], id: 'second-completion', kind: 'completed' });
+      } else parentDone = true;
+    } };
+  const result = await provider.runTurn(args);
+  Date.now=now;
+  if(['parent-closed-during-admission','expired-during-admission'].includes(fault)) {
+    assert.equal(result.completed,false);assert.match(result.error,/principal/);
+    assert.equal(s.state.turns.length,1);assert.equal(charged.size,1);
+    assert.equal((await fs.readFile(result.eventsPath,'utf8')).includes('native.child.continuation.admitted'),false);
+    assert.equal(JSON.parse(await fs.readFile(firstFile)).finalResponse,'Initialization is not a verdict.\n');
+    return;
+  }
+  assert.equal(result.completed, true, result.error); assert.equal(admissionCount, 1); assert.equal(charged.size, 2);
+  assert.equal(result.captures.length, 1); const saved = await fs.readFile(firstFile);
+  const finalBytes = await fs.readFile(result.captures[0].file);
+  if (fault === 'first-file-removed') await fs.unlink(firstFile);
+  if (fault === 'first-alias') { await fs.rename(firstFile, firstFile + '.original'); await fs.symlink(firstFile + '.original', firstFile); }
+  if (fault === 'simultaneous-drift') {
+    s.state.turns[0].items.at(-1).text += 'changed';
+    const changed = JSON.parse(saved); changed.finalResponse += 'changed'; await fs.writeFile(firstFile, JSON.stringify(changed) + '\n');
+  }
+  if (fault === 'duplicate-admission') {
+    const events = (await fs.readFile(result.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
+    await fs.appendFile(result.eventsPath, JSON.stringify(events.find(event => event.type === 'native.child.continuation.admitted')) + '\n');
+  }
+  const replayArgs = { ...args, observation: { ...result, ...(fault === 'expired' ? { deadlineAt: Date.now() - 1 } : {}) },
+    observeFormalBinding: async () => null,
+    validateRetainedCaptures: async captures => assert.deepEqual(captures[0].toolResult, result.captures[0].toolResult),
+    onPrepareContinuation: () => assert.fail('reobservation cannot admit another continuation'),
+    onChildCompleted: () => {} };
+  if (fault === 'duplicate-admission') await assert.rejects(provider.runTurn(replayArgs), blocked);
+  else {
+    const replay = await provider.runTurn(replayArgs);
+    assert.equal(replay.completed, fault === null, replay.error);
+    if (fault === null) assert.deepEqual(replay.captures[0].toolResult, result.captures[0].toolResult);
+  }
+  assert.deepEqual(await fs.readFile(result.captures[0].file), finalBytes, 'later observation cannot replace the formal result');
+  if (fault === null) assert.deepEqual(await fs.readFile(firstFile), saved);
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1, 'only the original principal is dispatched');
+});
+
 test('auxiliary observation authenticates lineage and cost without granting formal capture', async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root,
     mutate(state) { state.thread.forkedFromId = parent; state.thread.model = 'gpt-6.1-sol'; state.items = []; } });
@@ -854,7 +989,7 @@ test('initial metadata absence cannot bypass the deadline or permit a resumed tu
   assert.equal(result.completed,false);assert.ok(h.reads()>=1);
   assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
   await fs.writeFile(path.join(h.f.root,'history-bootstrap.events.jsonl'),'');
-  const before=h.reads();const resumed=await h.provider.runTurn({...h.args,observation:{threadId:parent,turnId:'parent-turn'}});
+  const before=h.reads();const resumed=await h.provider.runTurn({...h.args,observation:{threadId:parent,turnId:'parent-turn',deadlineAt:Date.now()+1000}});
   assert.equal(resumed.completed,false);assert.equal(h.reads(),before+1);
   assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
 });
@@ -907,7 +1042,7 @@ test('unsupported paginated index is fatal after a valid observation',async t=>{
 test('unsupported paginated index cannot refresh resumed observation',async t=>{
   const h=await historyBootstrapFixture(t,()=>({error:{code:-32601,message:'list_turns is not supported yet'}}));
   await fs.writeFile(path.join(h.f.root,'history-bootstrap.events.jsonl'),'');
-  const result=await h.provider.runTurn({...h.args,observation:{threadId:parent,turnId:'parent-turn'}});
+  const result=await h.provider.runTurn({...h.args,observation:{threadId:parent,turnId:'parent-turn',deadlineAt:Date.now()+1000}});
   assert.equal(result.completed,false);assert.equal(h.reads(),1);
   assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,0);
 });
@@ -947,9 +1082,17 @@ test('initial public history never refreshes the deadline for persisted observat
   const h = await historyBootstrapFixture(t, () => ({ error: { code: -32603,
     message: 'failed to read thread: No such file or directory (os error 2)' } }));
   await fs.writeFile(path.join(h.f.root, 'history-bootstrap.events.jsonl'), '');
-  const result = await h.provider.runTurn({ ...h.args, observation: { threadId: parent, turnId: 'parent-turn' } });
+  const result = await h.provider.runTurn({ ...h.args, observation: { threadId: parent, turnId: 'parent-turn', deadlineAt: Date.now()+1000 } });
   assert.equal(result.completed, false); assert.equal(h.reads(), 1);
   assert.equal(h.s.calls.filter(c => c.method === 'turn/start').length, 0);
+});
+
+for(const deadlineAt of [undefined,null,'tomorrow',NaN,Infinity,-1])test(`persisted observation rejects unproven deadline ${deadlineAt}`,async t=>{
+  const h=await historyBootstrapFixture(t,()=>assert.fail('invalid deadline must block before history RPC'));
+  await fs.writeFile(path.join(h.f.root,'history-bootstrap.events.jsonl'),'');
+  const result=await h.provider.runTurn({...h.args,observation:{threadId:parent,turnId:'parent-turn',deadlineAt}});
+  assert.equal(result.completed,false);assert.match(result.error,/original deadline/);
+  assert.equal(h.reads(),0);assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,0);
 });
 
 test('initial public history pending cannot certify completion and respects cancellation', async t => {
@@ -1291,7 +1434,7 @@ for(const fault of ['absent','both-drift','duplicate-ready','orphan-ready'])test
   else{s.state.items.at(-1).text+='changed';s.state.turns[0].items.at(-1).text+='changed';
     if(fault==='absent')await fs.unlink(file);
     else await fs.writeFile(file,JSON.stringify({agentId:identity.agentPath,status:'completed',finalResponse:s.state.items.at(-1).text})+'\n');}
-  const next=await p.runTurn({...input,observation:{threadId:parent,turnId:'parent-turn'}});
+  const next=await p.runTurn({...input,observation:{threadId:parent,turnId:'parent-turn',deadlineAt:first.deadlineAt}});
   assert.equal(next.completed,false);
   if(fault==='absent')await assert.rejects(fs.lstat(file),{code:'ENOENT'});
   if(['duplicate-ready','orphan-ready'].includes(fault))assert.deepEqual(await fs.readFile(file),bytes);

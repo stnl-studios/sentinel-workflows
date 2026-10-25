@@ -322,7 +322,9 @@ function observation(value, owner, round, recipeInfo, baseline, context, label) 
   closed(value, ['format', 'status', 'owner', 'round', 'recipe', 'resolved', 'before', 'after', 'checks',
     ...(value.format==='stnl-runner-verification-v3'?['binding']:[])], label);
   if(value.format==='stnl-runner-verification-v3') {
-    closed(value.binding,['head','requestSha256','dispatchId','agentId'],`${label}.binding`);
+    closed(value.binding,['head','requestSha256','dispatchId','agentId',
+      ...(Object.hasOwn(value.binding,'continuationSha256')?['continuationSha256']:[])],`${label}.binding`);
+    if(value.binding.continuationSha256!==undefined)token(value.binding.continuationSha256,HASH,`${label}.continuationSha256`);
     token(value.binding.head,/^[a-f0-9]{40}$/u,`${label}.binding.head`);
     token(value.binding.requestSha256,HASH,`${label}.binding.requestSha256`);
     str(value.binding.dispatchId,`${label}.binding.dispatchId`);
@@ -382,6 +384,30 @@ function body(value, key, label) {
   if (!value || typeof value !== 'object' || !Object.hasOwn(value, key)) incomplete(`${label}: missing ${key}`);
   return value[key];
 }
+// A controller-issued pre-verification concession is evidence, never a verdict.
+// Both the live producer and historical reader use this one binding validator.
+export const nativeContinuationSha256=value=>raw(serialized(value));
+export function validateNativeContinuation(value,{origin,originBytes,agentId,claim}) {
+  closed(value,['format','id','owner','operationId','dispatchId','round','binding','firstTurnId',
+    'firstToolResultUtf8','firstToolResultSha256','originSha256','workStateSha256'],'native continuation');
+  if(value.format!=='stnl-native-pre-verification-continuation-v1')invalid('native continuation format');
+  str(value.id,'continuation id');str(value.firstTurnId,'continuation turn');
+  closed(value.binding,['parentThreadId','parentTurnId','agentPath','agentThreadId','model','effort'],'continuation public binding');
+  for(const v of Object.values(value.binding))str(v,'continuation public identity');
+  ownerMatches(value.owner,origin.owner,'continuation owner');
+  if(value.operationId!==origin.admission.binding.operationId||value.dispatchId!==origin.dispatchId
+    ||value.round!==origin.attempt||value.binding.agentPath!==agentId
+    ||value.originSha256!==raw(originBytes)||value.workStateSha256!==claim.boundWorkSha256)
+    mismatch('native continuation source binding differs');
+  token(value.workStateSha256,HASH,'continuation work state');
+  const original=utf8(value.firstToolResultUtf8);
+  if(value.firstToolResultSha256!==raw(original))incomplete('native continuation original bytes differ');
+  const tool=jsonBytes(original,'continuation first result').value;
+  closed(tool,['agentId','status','finalResponse'],'continuation first result');
+  if(tool.agentId!==agentId||tool.status!=='completed'||typeof tool.finalResponse!=='string'||!tool.finalResponse.length)
+    uncertain('native continuation first result did not conclude');
+  return value;
+}
 function nativeOrigin(cap, receipt, rawText, expectation, round, resolved) {
   const origin = jsonBytes(cap.origin, `round ${round} origin`).value;
   const dispatch = jsonBytes(cap.dispatch, `round ${round} dispatch`).value;
@@ -412,6 +438,12 @@ function nativeOrigin(cap, receipt, rawText, expectation, round, resolved) {
   if (agent.agentId !== agentClaim.agentId || agent.agentId !== result.agentId || agent.agentId !== receipt.threadId) mismatch(`round ${round}: agent binding differs`);
   if (result.status !== 'completed' || typeof result.finalResponse !== 'string') uncertain(`round ${round}: native tool did not conclude`);
   if (result.finalResponse !== rawText || receipt.semanticResponseSha256 !== hex(utf8(rawText))) incomplete(`round ${round}: raw native result differs`);
+  const continued=result.preVerificationContinuation;
+  const observed=cap.verificationObservation===null?null:jsonBytes(cap.verificationObservation,'native continuation observation').value;
+  if(continued!==undefined) {
+    validateNativeContinuation(continued,{origin,originBytes:cap.origin,agentId:agent.agentId,claim:agentClaim});
+    if(observed?.binding?.continuationSha256!==nativeContinuationSha256(continued))mismatch('native continuation observation differs');
+  } else if(observed?.binding?.continuationSha256!==undefined)incomplete('native continuation source absent');
   if (receipt.operation !== owner.operation || receipt.slice !== owner.slice || receipt.workspace !== origin.workspace) mismatch(`round ${round}: receipt owner differs`);
   if (receipt.error !== null) uncertain(`round ${round}: native receipt error`);
   return { dispatchId:origin.dispatchId, runnerId:agent.agentId, receipt, root };
@@ -631,6 +663,20 @@ function auxiliaryDeltas(before, after, info, round) {
   }
   return leaves;
 }
+export function validateRemovalPreimage(blob,{owner,round,prior}) {
+  const proof=jsonBytes(blob,'removal preimage').value;
+    closed(proof, ['format','owner','round','path','sha256','mode','bytesBase64'], `round ${round} removal proof`);
+    if (proof.format !== 'stnl-current-removal-proof-v1') fail('CURRENT_FORMAT_REQUIRED', 'removal proof format');
+    ownerMatches(proof.owner, owner, `round ${round} removal owner`);
+    if (proof.round !== round) mismatch(`round ${round}: removal round`);
+    relative(proof.path, `round ${round} removal path`);
+    if (proof.round !== round || !prior || prior.kind !== 'file' || proof.path !== prior.path
+      || prior.sha256 !== proof.sha256 || prior.mode !== proof.mode) incomplete(`round ${round}: removal preimage differs`);
+    if (typeof proof.bytesBase64 !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(proof.bytesBase64)) incomplete(`round ${round}: removal base64`);
+    const product = Buffer.from(proof.bytesBase64, 'base64');
+    if (product.toString('base64') !== proof.bytesBase64 || raw(product) !== prior.sha256) incomplete(`round ${round}: removal bytes differ`);
+  return proof;
+}
 function auxiliaryRemovalProofs(blobs, owner, round, before, after) {
   dense(blobs, `round ${round} removal proofs`);
   const old = new Map(before.entries.map(entry => [entry.path, entry]));
@@ -640,17 +686,8 @@ function auxiliaryRemovalProofs(blobs, owner, round, before, after) {
   const seen = new Set();
   for (const [index, blob] of blobs.entries()) {
     const proof = jsonBytes(blob, `round ${round} removal proof ${index + 1}`).value;
-    closed(proof, ['format','owner','round','path','sha256','mode','bytesBase64'], `round ${round} removal proof`);
-    if (proof.format !== 'stnl-current-removal-proof-v1') fail('CURRENT_FORMAT_REQUIRED', 'removal proof format');
-    ownerMatches(proof.owner, owner, `round ${round} removal owner`);
-    if (proof.round !== round) mismatch(`round ${round}: removal round`);
-    relative(proof.path, `round ${round} removal path`);
-    const prior = old.get(proof.path);
-    if (proof.round !== round || !prior || prior.kind !== 'file' || next.get(proof.path)?.kind !== 'absent'
-      || prior.sha256 !== proof.sha256 || prior.mode !== proof.mode) incomplete(`round ${round}: removal preimage differs`);
-    if (typeof proof.bytesBase64 !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(proof.bytesBase64)) incomplete(`round ${round}: removal base64`);
-    const product = Buffer.from(proof.bytesBase64, 'base64');
-    if (product.toString('base64') !== proof.bytesBase64 || raw(product) !== prior.sha256) incomplete(`round ${round}: removal bytes differ`);
+    validateRemovalPreimage(blob,{owner,round,prior:old.get(proof.path)});
+    if(next.get(proof.path)?.kind!=='absent')incomplete(`round ${round}: removal output differs`);
     if (seen.has(proof.path)) invalid(`round ${round}: duplicate removal proof`);
     seen.add(proof.path);
   }

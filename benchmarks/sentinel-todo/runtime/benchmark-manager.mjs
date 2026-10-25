@@ -10,7 +10,7 @@ import { assertSnapshotIntegrity, createSnapshot } from './benchmark-snapshot.mj
 import { createReporter } from './benchmark-ui.mjs';
 import { budgetViolation, artifactMetrics } from './benchmark.mjs';
 import { contextPolicy, preparationHandoff, assertNativeCaptures,
-  retainBeforeClose, finishCloseEvidence, validateNativeLedger, observeFormalRunner } from './native-evidence.mjs';
+  retainBeforeClose, finishCloseEvidence, validateNativeLedger, observeFormalRunner,prepareFormalContinuation } from './native-evidence.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
@@ -168,12 +168,14 @@ export async function admitOperation({ runRoot, runId, caseId, operation, runner
     return { main, runner: runners[0] ?? null, runners };
   }, limit);
 }
-export async function reserveExtraRunner({ runRoot, runId, caseId, operation, limit }) {
+export async function reserveExtraRunner({ runRoot, runId, caseId, operation, limit,continuationBinding=null }) {
   return updateLedger(runRoot, (ledger) => {
     if (availableTurns(ledger) < 1) throw budgetPause();
+    if(continuationBinding&&ledger.preVerificationContinuation)fail('pre-verification continuation already reserved for this run');
     const id = randomUUID();
     ledger.reservations.push({ id, runId, caseId, role: 'runner', operation,
       reservedAt: new Date().toISOString() });
+    if(continuationBinding)ledger.preVerificationContinuation={binding:continuationBinding,reservation:id};
     return id;
   }, limit);
 }
@@ -262,6 +264,7 @@ export function nativeRunnerContext(operation, bundle, eventsFile) {
   return `\nIndependent checks use a fresh generic native agent (fork_turns=none), not a registered runner type. Select model=${runner.model} and reasoning_effort=${runner.effort} explicitly when spawning; if unavailable, block before spawn.\n`
     + `Load the complete contract at ${runner.path} (SHA-256 ${runner.sha256}) before scope actions. Use an ordinary full-file cat read with sufficient output to avoid truncation; preserve the complete official command output. Reading the file supplies task instructions, not a registered agent role.\n`
     + `Transport captures the complete public child response without interpreting it. After the child completes, wait within the existing operation deadline for its complete native.child.completed record in ${eventsFile}; match binding.agentPath to that child and pass toolResultFile unchanged to the official capture-native command. Do not author an envelope or copy/strip mailbox text. A missing record is not permission to synthesize evidence or start another turn. Bind before verification and perform capture/publication yourself through the existing controller.\n`
+    + 'If the controller issues native.child.continuation.admitted in that same event file, the first result is retained initialization, not a judgment. While this principal is still active, follow up once with the same agent to complete the unchanged request through its verificationHelper/originFile; do not spawn a replacement, repeat a started recipe, or capture the initialization. Wait for the later native.child.completed and use its distinct toolResultFile. No admission event means no continuation permission.\n'
     + (['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation)
       ? 'The selected operation includes the approved implementation/corrections and preparation of reusable tests. The controller nextAction names its next command; it does not replace that work. Complete the approved work and test preparation before delegating read-only verification. The child must not implement.\n' : 'The independent child judges the complete canonical criteria; tests alone are not the authority. For the explicitly requested integral judgment reserve-dispatch --terminal before spawn. A concluded formal refusal may use only the single successor admitted by the public normalization after publication/readback/cleanup; preserve the first refusal. NEEDS_FIX follows its separate findings handoff; BLOCKED or uncertainty grants no successor.\n');
 }
@@ -425,6 +428,7 @@ export async function prepareOfficialRecovery({ product, specPath, ...input }) {
   return { ...recovery, ...(admission ? { admission } : {}) };
 }
 export async function loadProduct(snapshot) {
+  const operationController = await import(pathToFileURL(path.join(snapshot,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs')).href);
   const execution = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-execution-planner/runtime/execution-state.mjs')).href);
   const lifecycle = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs')).href);
   const readiness = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/readiness-result.mjs')).href);
@@ -439,6 +443,7 @@ export async function loadProduct(snapshot) {
   const publication = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs')).href);
   const workspace = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/execution-workspace.mjs')).href);
   return { ...execution, ...readiness, ...provider, ...current, ...kernel, ...projection, ...evidence, ...proof,
+    prepareNativeContinuation:operationController.prepareNativeContinuation,
     readOwnedFile: publication.readOwnedFile, resolveExecutionFilesystemRoots: publication.resolveExecutionFilesystemRoots,
     validateCurrentOperationAllocationBinding: publication.validateCurrentOperationAllocationBinding,
     resolveCurrentExecutionContext: workspace.resolveCurrentExecutionContext,
@@ -631,6 +636,32 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           onDispatched: checkpoint,
           observeFormalBinding: () => observeFormalRunner({ product, specPath, operation, slice }),
           validateRetainedCaptures: async captures => assertNativeCaptures(await product.captureCurrentExecution(specPath), captures, product),
+          onPrepareContinuation: async ({binding,toolResultFile,firstTurnId,validateInitialization}) => {
+            const prior=state.preVerificationContinuation;
+            if(prior&&prior.binding.agentThreadId!==binding.agentThreadId)return null;
+            const input={product,specPath,operation,slice,binding,toolResultFile,firstTurnId};
+            const eligibility=await prepareFormalContinuation({...input,commit:false});
+            if(!eligibility)return null;
+            if(prior) {
+              if(!prior.grant||!eligibility.replayed||JSON.stringify(prior.grant)!==JSON.stringify(eligibility.grant))
+                fail('continuation admission remains uncertain; do not repeat');
+              return prior.grant;
+            }
+            await validateInitialization();
+            const reservation=await reserveExtraRunner({runRoot,runId:path.basename(runRoot),caseId,operation,limit:turnLimit,continuationBinding:binding});
+            reserved.push(reservation);
+            state.preVerificationContinuation={binding,firstTurnId,reservation,grant:null};
+            await checkpoint(state.pendingObservation.dispatch);
+            const admitted=await prepareFormalContinuation({...input,commit:true});
+            if(!admitted){
+              reserved.splice(reserved.indexOf(reservation),1);await releaseReservation(runRoot,reservation,turnLimit);
+              await updateLedger(runRoot,ledger=>{ledger.preVerificationContinuation=null;});
+              state.preVerificationContinuation=null;await checkpoint(state.pendingObservation.dispatch);return null;
+            }
+            state.preVerificationContinuation.grant=admitted.grant;
+            await updateLedger(runRoot,ledger=>{ledger.preVerificationContinuation.grantId=admitted.grant.id;});
+            await checkpoint(state.pendingObservation.dispatch);return admitted.grant;
+          },
           onUnadmittedChildren: async bindings => {
             for (const binding of bindings) if (await recordUnadmittedChild(runRoot, { caseId, operation, binding })) state.runnerTurns++;
           },
@@ -662,7 +693,10 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
               if (entries.some(item => item.turnId === childTurn.id)) continue;
               let number = entries.find(item => item.turnId === undefined)?.number;
               if (number === undefined) {
-                const reservation = reserved.shift();
+                const permitted=state.preVerificationContinuation;
+                const continuation=permitted?.grant&&permitted.binding.agentThreadId===binding.agentThreadId;
+                const index=continuation?reserved.indexOf(permitted.reservation):0;
+                const reservation=index<0?null:reserved.splice(index,1)[0];
                 if (!reservation) {
                   await recordUnadmittedChild(runRoot, { caseId, operation, binding, turnId: childTurn.id });
                   exceeded = true; continue;
@@ -671,8 +705,10 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
               }
               await updateLedger(runRoot, value => {
                 const entry = value.turns.find(item => item.number === number);
+                const original=entries.find(item=>item.childKind==='formal');
                 Object.assign(entry, { threadId: binding.agentThreadId, agentPath: binding.agentPath,
-                  turnId: childTurn.id, childKind: entry.childKind ?? 'pending' });
+                  turnId: childTurn.id, childKind: original?.childKind??entry.childKind??'pending',
+                  ...(original?{designation:original.designation}:{}) });
               });
               await checkpoint(state.pendingObservation.dispatch);
             }
@@ -690,13 +726,21 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           },
           onFormalObserved: async (binding, designation) => updateLedger(runRoot, ledger => {
             const entries = ledger.turns.filter(item => item.threadId === binding.agentThreadId);
-            if (entries.length !== 1) fail('formal child has multiple admitted turns');
-            Object.assign(entries[0], { childKind: 'formal', designation });
-            if (ledger.turns.filter(item => item.operation === operation && item.childKind === 'formal'
-              && startedChildren.has(item.threadId)).length > runnerSlots) fail('formal call limit exceeded');
+            const continued=state.preVerificationContinuation?.grant?.binding.agentThreadId===binding.agentThreadId;
+            if(entries.length!==1&&!(continued&&entries.length===2))fail('formal child has multiple admitted turns');
+            for(const entry of entries) {
+              if(entry.designation&&JSON.stringify(entry.designation)!==JSON.stringify(designation))fail('formal ledger designation changed');
+              Object.assign(entry,{childKind:'formal',designation});
+            }
+            if(new Set(ledger.turns.filter(item=>item.operation===operation&&item.childKind==='formal'
+              &&startedChildren.has(item.threadId)).map(item=>item.threadId)).size>runnerSlots)fail('formal call limit exceeded');
           }),
-          onChildCompleted: async ({ binding }) => settleTurn(runRoot,
-            startedChildren.get(binding.agentThreadId), { completed: true, turnStarted: true, threadId: binding.agentThreadId }, turnLimit),
+          onChildCompleted: async ({ binding,initialization=false }) => {
+            const ledger=await readJson(ledgerPath(runRoot));
+            for(const entry of ledger.turns.filter(item=>item.threadId===binding.agentThreadId
+              &&(!initialization||item.turnId===state.preVerificationContinuation?.firstTurnId)))
+              await settleTurn(runRoot,entry.number,{completed:true,turnStarted:true,threadId:binding.agentThreadId},turnLimit);
+          },
         });
       } catch (error) {
         turn = { completed: false, turnStarted: mainNumber === null ? false : null, threadId: null,

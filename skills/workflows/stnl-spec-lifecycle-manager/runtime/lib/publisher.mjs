@@ -2338,6 +2338,9 @@ async function captureCloseOperationalInventory(target,transactionId){
       const proof=proofs.find(item=>same(item.origin.admission.binding,binding)&&item.origin.attempt===round);
       if(!proof)fail('CLOSE retirement preserves an operation capture without an official faithful replica',file);
       first??=proof;
+      const continued=parseStrictJson(Buffer.from(proof.capture.concludedToolResult).toString('utf8')).preVerificationContinuation??null;
+      if(!same(continued,record.preVerificationContinuation?.round===round?record.preVerificationContinuation:null))
+        fail('CLOSE retirement continuation differs from its faithful replica',file);
       for(const [suffix,key] of [['origin','origin'],['baseline','baselineCapture'],['request',binding.owner.operation==='APPLY_FINDINGS'?'applyRequest':'validationRequest'],['agent','agentBinding'],['claim','agentClaim'],['observation','verificationObservation'],['response','rawResponse'],['tool-result','concludedToolResult'],['receipt','receipt']]){
         const leaf=`round-${round}.${suffix}.json`;allowed.add(leaf);
         if(key==='validationRequest'&&binding.owner.operation==='EXECUTE_SLICE'){

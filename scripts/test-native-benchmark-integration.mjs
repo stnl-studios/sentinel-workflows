@@ -140,7 +140,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','formal-successor'],['fresh','formal-exhausted'], ['fresh','review-correction'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','formal-successor'],['fresh','formal-exhausted'], ['fresh','review-correction'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
   t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
@@ -293,14 +293,29 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
   const extra = fault === 'findings-cycle' ? 2 : 0;
   const preparationExtra = fault?.startsWith('review-correction') ? 2 : 0;
   const refusalChild=fault==='formal-successor'?1:0;
+  const continuationChild=fault==='pre-verification-continuation'?1:0;
   const auxiliaryCalls = fault === 'review-correction-aux' ? 3 : fault === 'aux-run-eight' ? 8
     : ['aux-followup', 'aux-followup-interrupt', 'aux-descendant'].includes(fault) ? 2 : fault?.startsWith('aux-') ? 1 : 0;
   assert.deepEqual(backend.operations.map(item => item.operation), ['SPEC_INIT', 'PLAN', 'REVIEW_PLAN',
     ...(preparationExtra ? ['PLAN', 'REVIEW_PLAN'] : []),
     'EXECUTE_SLICE', 'VALIDATE_SLICE', ...(extra ? ['APPLY_FINDINGS', 'VALIDATE_SLICE'] : []), 'SPEC_CLOSE'],
   'the manager follows each public handoff once, retaining the separate independent review');
-  assert.equal(result.operations, 6 + extra + preparationExtra); assert.equal(result.runnerTurns, 2 + extra + refusalChild + auxiliaryCalls); assert.equal(result.mainTurns, 6 + extra + preparationExtra);
+  assert.equal(result.operations, 6 + extra + preparationExtra); assert.equal(result.runnerTurns, 2 + extra + refusalChild + auxiliaryCalls + continuationChild); assert.equal(result.mainTurns, 6 + extra + preparationExtra);
   const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
+  if(continuationChild) {
+    const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
+    assert.equal(ledger.total,9);assert.equal(ledger.preVerificationContinuation.grantId,state.preVerificationContinuation.grant.id);
+    const op=JSON.parse(await fs.readFile(state.operations.find(x=>x.operation==='EXECUTE_SLICE').evidencePath));
+    assert.equal(op.turn.captures.length,1);
+    const cap=op.turn.captures[0],grant=cap.toolResult.preVerificationContinuation;
+    assert.equal(grant.firstTurnId,state.preVerificationContinuation.firstTurnId);
+    assert.notEqual(JSON.parse(grant.firstToolResultUtf8).finalResponse,cap.toolResult.finalResponse);
+    const events=(await fs.readFile(op.turn.eventsPath,'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(events.filter(e=>e.type==='native.child.continuation.admitted').length,1);
+    const continued=events.find(e=>e.type==='native.child.completed');
+    assert.ok(continued.toolResultFile.endsWith('.continued.json'));
+    assert.equal((await fs.readFile(continued.toolResultFile.replace('.continued.json','.json'),'utf8')),grant.firstToolResultUtf8);
+  }
   if (preparationExtra) {
     const read = async index => JSON.parse(await fs.readFile(state.operations[index].evidencePath));
     const first = await read(2), correction = await read(3), second = await read(4);
@@ -359,12 +374,12 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
   assert.equal(new Set(reviews.map(item => item.threadId)).size, 2 + (extra ? 1 : 0) + (preparationExtra ? 1 : 0));
   assert.ok(reviews.every(item => !authors.some(author => author.threadId === item.threadId)));
   const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
-  assert.equal(ledger.total, 8 + 2 * extra + preparationExtra + refusalChild + auxiliaryCalls); assert.equal(ledger.reservations.length, 0);
+  assert.equal(ledger.total, 8 + 2 * extra + preparationExtra + refusalChild + auxiliaryCalls + continuationChild); assert.equal(ledger.reservations.length, 0);
   assert.ok(ledger.turns.every(turn => turn.state === 'completed'));
   assert.equal(ledger.turns.filter(turn => turn.childKind === 'auxiliary').length, auxiliaryCalls);
-  assert.equal(ledger.turns.filter(turn => turn.childKind === 'formal').length, 2 + extra + refusalChild);
+  assert.equal(ledger.turns.filter(turn => turn.childKind === 'formal').length, 2 + extra + refusalChild + continuationChild);
   assert.equal(new Set(ledger.turns.filter(turn => turn.role === 'runner').map(turn => `${turn.threadId}:${turn.turnId}`)).size,
-    2 + extra + refusalChild + auxiliaryCalls, 'each public child turn is charged once, including follow-ups');
+    2 + extra + refusalChild + auxiliaryCalls + continuationChild, 'each public child turn is charged once, including follow-ups');
   const terminal = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/terminal-evidence.json')));
   assert.equal(terminal.source.inspection.state, 'COMPLETE'); assert.equal(terminal.state, 'SPEC_CLOSED');
   const consumer = await import(url('benchmarks/sentinel-todo/runtime/native-evidence.mjs'));

@@ -13,7 +13,7 @@ import {resolveCurrentExecutionContext,executionWorkspaceFromContext} from './ex
 import {captureCurrentExecution,captureCurrentActiveExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
 import {parseCurrentJson,validateCurrentCandidate,currentOperationBindingSha256,currentTerminalProjection,validateCurrentAbortDisposition} from './execution-current.mjs';
 import {verifyWorkObservation,findingsRoundCaptureSha256,NATIVE_JUDGMENT_VARIANT,restoreCaptureSources,
-  projectNativeJudgment,currentOutputPaths} from './execution-evidence-proof.mjs';
+  projectNativeJudgment,currentOutputPaths,validateNativeContinuation,nativeContinuationSha256,validateRemovalPreimage} from './execution-evidence-proof.mjs';
 import {composePostConversionValidation,composePostConversionFindings,
   inspectPostConversionEvidence,inspectPostConversionFindingsPrefix,
   parseCurrentValidationResponse,currentEvidenceValueSha256,inspectCurrentEvidence,verifyCurrentTerminalRequest,
@@ -591,6 +591,11 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
   });
 }
 
+function boundNativeWorkSha256(work) {
+  if(!work)fail('EVIDENCE_INCOMPLETE','native bound work is absent');
+  return sha(json({manifest:work.manifest,identities:[...work.identities]}));
+}
+
 export async function bindNative(handle,agentId) {
   if(typeof agentId!=='string' || !agentId.trim()) fail('OWNER_MISMATCH','official agent identity required');
   const op=await load(handle);
@@ -603,12 +608,71 @@ export async function bindNative(handle,agentId) {
     for(let index=1;index<round;index+=1)
       if((await readJson(path.join(now.root,`round-${index}.agent.json`))).agentId===agentId)
         fail('OWNER_MISMATCH','a fresh native agent is required for each findings round');
-    await requireA1(now);
+    const image=await requireA1(now);
     await put(path.join(now.root,`round-${round}.agent.json`),{agentId,originFile:now.record.runner.originFile});
-    await put(path.join(now.root,`round-${round}.claim.json`),{agentId,originFile:now.record.runner.originFile,owner:now.owner});
+    const work=image.observedByDelivery.get(now.owner.deliveryId);
+    await put(path.join(now.root,`round-${round}.claim.json`),{agentId,originFile:now.record.runner.originFile,owner:now.owner,
+      boundWorkSha256:boundNativeWorkSha256(work)});
     now.record.runner.agentId=agentId;now.record.runner.status='running';
     await persistAllocation(now.marker,now.record);
     return {phase:'running',agentId,originFile:now.record.runner.originFile,nextAction:'await-same-agent'};
+  });
+}
+
+// Only this producer decides local eligibility. The native collector supplies
+// the authenticated concluded turn; the caller reserves cost before admission.
+export async function prepareNativeContinuation(handle,{toolResultFile,binding,firstTurnId,commit=true}) {
+  const op=await load(handle),toolBytes=(await readOwnedFile(toolResultFile)).bytes;
+  return withExecutionPublicationLock(op.workspace,async()=>{
+    const now=await load(handle),runner=now.record.runner,round=runner?.round;
+    const existing=now.record.preVerificationContinuation;
+    if(!runner||now.record.phase!=='working'||!(existing?['running','captured']:['running']).includes(runner.status)
+      ||now.record.responseVariant!==NATIVE_JUDGMENT_VARIANT)return null;
+    const originBytes=(await readOwnedFile(runner.originFile)).bytes,origin=parseCurrentJson(originBytes.toString('utf8'));
+    const claim=await readJson(path.join(now.root,`round-${round}.claim.json`));
+    const image=await requireA1(now),work=image.observedByDelivery.get(now.owner.deliveryId);
+    if(!same(image.activation,origin.admission.reservedActivation)
+      ||!same(origin.owner,now.owner)||!same(origin.admission.binding,now.binding)
+      ||origin.dispatchId!==runner.dispatchId||claim.agentId!==runner.agentId
+      ||claim.originFile!==runner.originFile||claim.boundWorkSha256!==boundNativeWorkSha256(work))
+      fail('EVIDENCE_STALE','native continuation authority or bound work changed');
+    const registry=await registryAt(now.location,now.context.logicalExecutionRoot);
+    if(registry.operations.length!==1||registry.operations[0].marker!==now.marker)
+      fail('OWNER_UNCERTAIN','native continuation registry differs');
+    if(existing) {
+      validateNativeContinuation(existing,{origin,originBytes,agentId:runner.agentId,claim});
+      if(existing.firstToolResultUtf8!==toolBytes.toString('utf8')||existing.firstTurnId!==firstTurnId
+        ||!same(existing.binding,binding))fail('OWNER_UNCERTAIN','native continuation already used');
+      return {grant:existing,replayed:true};
+    }
+    if(await maybe(path.join(now.root,`round-${round}.verification.json`)))return null;
+    const names=['base.activation.json','owner.json',...(now.owner.operation==='VALIDATE_SLICE'?[]:['base.work.json'])];
+    for(let i=1;i<=round;i++)names.push(...(i===round?['request','baseline','origin','agent','claim']
+      :['request','baseline','origin','agent','claim','verification','observation','response','tool-result','receipt'])
+      .map(name=>`round-${i}.${name}.json`));
+    const present=await fs.readdir(now.root);
+    for(let i=1;i<=round;i++) {
+      const baseline=await readJson(path.join(now.root,`round-${i}.baseline.json`));
+      for(const entry of baseline.manifest.entries.filter(x=>x.kind==='file')) {
+        const file=removalPath(now.root,i,entry.path);
+        if(present.includes(path.basename(file))) {
+          validateRemovalPreimage((await readOwnedFile(file)).bytes,{owner:now.owner,round:i,prior:entry});
+          names.push(path.basename(file));
+        }
+      }
+    }
+    if(present.length!==names.length||present.some(name=>!names.includes(name)))
+      fail('OWNER_UNCERTAIN','verification, capture, publication or foreign controls prevent continuation');
+    for(const name of names)await readOwnedFile(path.join(now.root,name));
+    const grant={format:'stnl-native-pre-verification-continuation-v1',id:randomUUID(),owner:now.owner,
+      operationId:now.binding.operationId,dispatchId:runner.dispatchId,round,binding,firstTurnId,
+      firstToolResultUtf8:toolBytes.toString('utf8'),firstToolResultSha256:sha(toolBytes),
+      originSha256:sha(originBytes),workStateSha256:claim.boundWorkSha256};
+    if(!Buffer.from(grant.firstToolResultUtf8,'utf8').equals(toolBytes))fail('OWNER_MISMATCH','continuation source is not faithful UTF-8');
+    validateNativeContinuation(grant,{origin,originBytes,agentId:runner.agentId,claim});
+    if(!commit)return {eligible:true};
+    now.record.preVerificationContinuation=grant;await persistAllocation(now.marker,now.record);
+    return {grant,replayed:false};
   });
 }
 
@@ -752,6 +816,8 @@ async function checkedProductDrift(op,image,observation) {
 }
 export async function verifyNative(originFile) {
   const {op,origin,round}=await opFromOrigin(originFile);
+  const continuation=op.record.preVerificationContinuation?.round===round?op.record.preVerificationContinuation:null;
+  const generation=op.record.preVerificationContinuation?.id??null;
   const agentId=await boundAgent(op,originFile,round);
   const image=await requireA1(op);
   if(!same(image.activation,origin.admission.reservedActivation))
@@ -767,6 +833,8 @@ export async function verifyNative(originFile) {
   const baseline=await readJson(path.join(op.root,`round-${round}.baseline.json`));
   const before=image.observedByDelivery.get(op.owner.deliveryId);
   if(!before) fail('EVIDENCE_INCOMPLETE','product observation is absent');
+  if(continuation&&boundNativeWorkSha256(before)!==continuation.workStateSha256)
+    fail('EVIDENCE_STALE','native continuation bound work changed');
   const leaf=parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8'))
     .normativeProjection.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
   const recipe=verifyWorkObservation('initial-implementation',{
@@ -801,7 +869,11 @@ export async function verifyNative(originFile) {
       const current=await load(op.handle);
       if(current.record.phase!=='working'||current.record.terminalTransition?.outcome==='aborted')
         fail('OWNER_UNCERTAIN','verification producer is closed or aborting');
-      await requireA1(current);
+      if((current.record.preVerificationContinuation?.id??null)!==generation)
+        fail('OWNER_UNCERTAIN','verification producer predates continuation admission');
+      const currentImage=await requireA1(current);
+      if(continuation&&boundNativeWorkSha256(currentImage.observedByDelivery.get(op.owner.deliveryId))!==continuation.workStateSha256)
+        fail('EVIDENCE_STALE','native continuation bound work changed before start');
       return action();
     })});
   const after=await requireA1(op);
@@ -822,6 +894,7 @@ export async function verifyNative(originFile) {
   if(origin.responseVariant===NATIVE_JUDGMENT_VARIANT) {
     observation.format='stnl-runner-verification-v3';
     observation.binding={head,requestSha256:origin.requestSha256,dispatchId:origin.dispatchId,agentId};
+    if(continuation)observation.binding.continuationSha256=nativeContinuationSha256(continuation);
   }
   const observationFile=path.join(op.root,`round-${round}.observation.json`);
   if(await maybe(observationFile)) {
@@ -881,6 +954,10 @@ export async function captureNative(handle,toolResultFile) {
     assertOtherInitialWork(image,origin);
     const observation=await readJson(path.join(now.root,`round-${round}.observation.json`));
     if(observation.status!=='completed') fail('OWNER_UNCERTAIN','native recipe did not complete');
+    const continuation=now.record.preVerificationContinuation?.round===round?now.record.preVerificationContinuation:null;
+    if(!same(tool.preVerificationContinuation??null,continuation)
+      ||(continuation&&observation.binding?.continuationSha256!==nativeContinuationSha256(continuation)))
+      fail('OWNER_MISMATCH','native continuation capture differs');
     const observed=image.observedByDelivery.get(now.owner.deliveryId);
     if(!observed || !same(observed.manifest,observation.after))
       fail('EVIDENCE_STALE','product changed before native conclusion');
@@ -1134,7 +1211,7 @@ export async function abort(handle,toolResultFile=null,{checkpoint=null}={}) {
     const now=await load(handle,{requireRegistry:false}),runner=now.record.runner;
     if(now.owner.operation!=='VALIDATE_SLICE'
       ||runner?.round!==1||runner.consumedInvocations!==1||!['running','aborted'].includes(runner.status)
-      ||now.binding.normalization||now.record.normalization)
+      ||now.binding.normalization||now.record.normalization||now.record.preVerificationContinuation)
       fail('UNSUPPORTED_FORMAT','abort supports only one concluded unstarted Initial or private-review validation');
     const names=['base.activation.json','owner.json',...['request','baseline','origin','agent','claim'].map(name=>`round-1.${name}.json`)];
     const present=await fs.readdir(now.root);

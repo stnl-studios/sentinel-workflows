@@ -507,10 +507,11 @@ const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const shellDoubleQuote = value => `"${value.replace(/[\\$`"]/gu, '\\$&')}"`;
 function contractReadForms(file) {
   const operands = [shellQuote(file), shellDoubleQuote(file), ...(/^[a-zA-Z0-9_./-]+$/u.test(file) ? [file] : [])];
-  const plain = new Set(), hashFirst = new Set(), readFirst = new Set();
+  const plain = new Set(), hashFirst = new Set(), readFirst = new Set(), hashOnly = new Set();
   for (const operand of operands) for (const cat of ['cat', '/bin/cat']) for (const flags of ['', '-- ']) {
     const read = `${cat} ${flags}${operand}`; plain.add(read);
     for (const hash of ['sha256sum', 'shasum -a 256']) {
+      hashOnly.add(`${hash} ${operand}`);
       hashFirst.add(`${hash} ${operand} && ${read}`);
       readFirst.add(`${read} && ${hash} ${operand}`);
     }
@@ -518,7 +519,17 @@ function contractReadForms(file) {
   const wrap = forms => new Set([...forms].flatMap(form => [form,
     ...['/bin/zsh -lc', '/bin/sh -c', '/bin/bash -lc'].flatMap(shell =>
       [shellQuote(form), shellDoubleQuote(form)].map(script => `${shell} ${script}`))]));
-  return { plain: wrap(plain), hashFirst: wrap(hashFirst), readFirst: wrap(readFirst) };
+  return { plain: wrap(plain), hashFirst: wrap(hashFirst), readFirst: wrap(readFirst), hashOnly: wrap(hashOnly) };
+}
+function assertInitializationEffects(items,bundle,cwd) {
+  for(const item of items) {
+    if(['userMessage','agentMessage','reasoning'].includes(item.type))continue;
+    requireThat(item.type==='commandExecution'&&item.cwd===cwd&&item.status==='completed'&&item.exitCode===0,
+      'continuation initialization has denied, uncertain or unexpected effects');
+    const paths=[bundle.runner.path,...(item.commandActions??[]).filter(x=>x.type==='read'&&typeof x.path==='string').map(x=>x.path)];
+    requireThat(paths.some(file=>Object.values(contractReadForms(file)).some(forms=>forms.has(item.command))),
+      'continuation initialization command effects are unproven');
+  }
 }
 async function assertGenericContractLoad(items, bundle, cwd) {
   const firstAction = items.find(item => !['userMessage', 'agentMessage', 'reasoning'].includes(item.type));
@@ -537,7 +548,7 @@ async function assertGenericContractLoad(items, bundle, cwd) {
 
 // Only scoped read APIs. A completed wait/mailbox or parent agent message never
 // certifies the child. No resume/start/followup, recipe, private path or synthesis.
-export async function readAppServerChild(rpc, { binding, bundle, cwd }) {
+export async function readAppServerChild(rpc, { binding, bundle, cwd, continuation = null, initialization = false }) {
   await assertAppServerBundle(bundle); await physical(cwd, true);
   const { binding: current, items: parentItems } = await parentBinding(rpc, binding);
   requireThat(Object.keys(current).every(key => current[key] === binding[key]), 'child binding changed');
@@ -550,14 +561,34 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd }) {
     && thread.reasoningEffort === bundle.runner.effort,
   'child metadata foreign, forked or version differs');
   const turns = await pages(rpc, 'thread/turns/list', { threadId: binding.agentThreadId, itemsView: 'full' });
-  requireThat(turns.length === 1 && id(turns[0].id) && turns[0].status === 'completed'
-    && turns[0].error == null, 'fresh child has no single completed successful turn');
-  const turn = turns[0];
+  requireThat(turns.length === (continuation === null ? 1 : 2)
+    && turns.every(turn => id(turn.id) && turn.status === 'completed' && turn.error == null),
+  'fresh child has no admitted completed successful turn sequence');
+  let original = null;
+  if (continuation !== null) {
+    requireThat(continuation.format === 'stnl-native-pre-verification-continuation-v1'
+      && Object.keys(binding).every(key => continuation.binding?.[key] === binding[key])
+      && turns[0].id === continuation.firstTurnId
+      && sha(Buffer.from(continuation.firstToolResultUtf8, 'utf8')) === continuation.firstToolResultSha256,
+    'continuation public identity/source differs');
+    original = JSON.parse(continuation.firstToolResultUtf8);
+    const firstItems = await pages(rpc, 'thread/items/list', { threadId: binding.agentThreadId, turnId: turns[0].id });
+    const firstFinal = firstItems.filter(item => item.type === 'agentMessage').at(-1);
+    requireThat(original.agentId === binding.agentPath && original.status === 'completed'
+      && firstFinal?.text === original.finalResponse
+      && firstFinal?.phase === 'final_answer'
+      && turns[0].items?.filter(item => item.type === 'agentMessage').at(-1)?.text === firstFinal.text,
+    'continuation first public response changed');
+    assertInitializationEffects(firstItems,bundle,cwd);
+    await assertGenericContractLoad(firstItems, bundle, cwd);
+  }
+  const turn = turns.at(-1);
   const items = await pages(rpc, 'thread/items/list', { threadId: binding.agentThreadId, turnId: turn.id });
+  if(initialization)assertInitializationEffects(items,bundle,cwd);
   if (items.some(deniedShellTemporaryFile)) throw fail('SANDBOX_COMMAND_DENIED: runner implicit temporary file denial');
   const descendants = items.filter(item => item.type === 'subAgentActivity' && item.kind === 'started');
   if (descendants.length) throw Object.assign(fail('runner delegated outside the admitted operation'), { descendants });
-  await assertGenericContractLoad(items, bundle, cwd);
+  if (continuation === null) await assertGenericContractLoad(items, bundle, cwd);
   requireThat(new Set(items.map(item => item.id)).size === items.length, 'duplicate child history items');
   const messages = items.filter(item => item.type === 'agentMessage');
   const final = messages.at(-1);
@@ -574,12 +605,14 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd }) {
   for (const item of parentItems) {
     const state = item.type === 'collabAgentToolCall' ? item.agentsStates?.[binding.agentThreadId] : null;
     if (state?.status === 'completed' && state.message != null) {
-      requireThat(state.message === final.text, 'completed parent tool report disagrees with child text');
+      requireThat(state.message === final.text || original !== null
+        && state.message === original.finalResponse, 'completed parent tool report disagrees with child text');
     }
   }
   requireThat(Buffer.from(final.text, 'utf8').toString('utf8') === final.text, 'invalid UTF-8 response');
   await assertAppServerBundle(bundle);
-  return { agentId: binding.agentPath, status: 'completed', finalResponse: final.text };
+  return { agentId: binding.agentPath, status: 'completed', finalResponse: final.text,
+    ...(continuation === null ? {} : { preVerificationContinuation: continuation }) };
 }
 
 // Existing capture-native accepts this envelope. Never overwrite an earlier

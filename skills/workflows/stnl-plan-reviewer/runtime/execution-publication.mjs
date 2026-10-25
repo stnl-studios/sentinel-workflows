@@ -64,9 +64,11 @@ export function validateCurrentOperationAllocationBinding(record,expected) {
 }
 export function validateCurrentOperationRetirementRecord(record){
   closed(record,['format','binding','phase','candidate','previous','expectedInstalledActivation','preparation','runner','normalization','commonLease','confirmation','cleanup',
-    ...(Object.hasOwn(record,'responseVariant')?['responseVariant']:[]),'terminalTransition'],'terminal operation owner');
+    ...(Object.hasOwn(record,'responseVariant')?['responseVariant']:[]),
+    ...(Object.hasOwn(record,'preVerificationContinuation')?['preVerificationContinuation']:[]),'terminalTransition'],'terminal operation owner');
   const binding=record.binding,owner=binding?.owner;
   if(record.phase==='aborted') {
+    if(record.preVerificationContinuation)fail('aborted operation cannot discard a continuation');
     // No verification capture exists in this bounded disposition. Its sources
     // must instead be replicated in the verified successor's native admission.
     closed(record.preparation,['abortSourceActivation'],'aborted operation preparation');
