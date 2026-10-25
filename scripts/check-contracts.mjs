@@ -271,7 +271,7 @@ function checkRunnerContract(contract, readmeFile, platform) {
       'R029_NATIVE_BINDING','native judgment variant must omit copied HEAD and request digest');
     requirePattern(contract, /nunca deduza a variante por campos ausentes/u,
       'R029_NATIVE_BINDING','native judgment variant requires explicit dispatch selection');
-    requirePattern(contract, /Quando a entrada oficial incluir `stnl-current-validation-request-v3`[^\n]*stnl-current-validation-response-v1[^\n]*newFindings/u,
+    requirePattern(contract, /^Se `origin\.responseVariant` estiver ausente e a entrada oficial incluir `stnl-current-validation-request-v3`[^\n]*stnl-current-validation-response-v1[^\n]*newFindings/mu,
       'R028_NATIVE_V3','native v3 response envelope/finding variant is missing');
     requirePattern(contract, /`severity` aceita somente `blocking` ou `advisory`; NEEDS_FIX exige pelo menos um finding `blocking` ativo/u,
       'R028_NATIVE_V3','native v3 finding severity is not bounded');

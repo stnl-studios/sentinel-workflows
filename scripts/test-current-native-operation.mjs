@@ -149,6 +149,23 @@ test('EC-1 native judgment variant is selected before agent and binds measured H
     ['EVIDENCE_STALE','EVIDENCE_INCOMPLETE','INVALID_CURRENT_IMAGE'].includes(error.code));
 });
 
+test('EC-1 native judgment preserves a legacy bare validation response as uncertain, without a successor', async t=>{
+  const fixture=await nativeOperationCase(t);
+  const start=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
+    expectedActivationId:fixture.activationId});
+  const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(start.handle,'mechanical-legacy-bare-response');
+  const measured=await verifyNative(dispatch.originFile);
+  const response=JSON.stringify(result('PASS',fixture.head,measured.commands));
+  const file=await toolFile(fixture,'mechanical-legacy-bare-response',response);
+  await assert.rejects(()=>captureNative(start.handle,file),error=>
+    error.code==='RUNNER_RESULT_REJECTED' && error.message.includes('native judgment contains foreign metadata'));
+  assert.deepEqual(await resume(start.handle),{phase:'uncertain',nextAction:'stop-and-diagnose'});
+  await assert.rejects(()=>reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'}),blocked('OWNER_UNCERTAIN'));
+  const raw=await fs.readFile(path.join(path.dirname(dispatch.originFile),'round-1.response.json'),'utf8');
+  assert.equal(raw,response,'the original refusal cannot be rewritten into a valid envelope');
+});
+
 test('EC-1 native judgment rejects foreign metadata, changed recipe and altered binding',async t=>{
   for(const kind of ['foreign-head','foreign-request','foreign-agent','wrong-round',
     'changed-request','wrong-format','changed-recipe','changed-observation']) await t.test(kind,async sub=>{

@@ -45,10 +45,13 @@ test('Codex native v3 instructions are a checked conditional variant',async t=>{
   const root=await fixture(t);
   const file=path.join(root,'codex/.codex/agents/stnl_validation_runner.toml');
   const before=await fs.readFile(file,'utf8');
-  const after=before.replace(/^Quando a entrada oficial incluir `stnl-current-validation-request-v3`[^\n]*\n/mu,'');
+  const after=before.replace(/^Se `origin\.responseVariant` estiver ausente e a entrada oficial incluir `stnl-current-validation-request-v3`[^\n]*\n/mu,'');
   assert.notEqual(after,before);
   await fs.writeFile(file,after);
   expectCategory(check(root),'R028_NATIVE_V3');
+  const unscoped=await fixture(t);
+  await replaceSelected(unscoped,'Se `origin.responseVariant` estiver ausente e a entrada oficial incluir `stnl-current-validation-request-v3`','Quando a entrada oficial incluir `stnl-current-validation-request-v3`');
+  expectCategory(check(unscoped),'R028_NATIVE_V3');
 });
 
 test('Codex native judgment variant requires explicit selection and excludes copied metadata',async t=>{
@@ -58,6 +61,20 @@ test('Codex native judgment variant requires explicit selection and excludes cop
   const fresh=await fixture(t);
   await replaceSelected(fresh,'**omita** `head` e `requestSha256`','**inclua** `head` e `requestSha256`');
   expectCategory(check(fresh),'R029_NATIVE_BINDING');
+});
+
+test('Codex operation instructions preserve the selected native envelope over legacy schema examples', async () => {
+  const contract = await fs.readFile(path.join(canonical, 'codex/.codex/agents/stnl_validation_runner.toml'), 'utf8');
+  const legacyValidation = contract.split('\n').find(line => line.includes('a entrada oficial incluir `stnl-current-validation-request-v3`'));
+  assert.match(legacyValidation, /^Se `origin\.responseVariant` estiver ausente e a entrada oficial incluir/u,
+    'legacy validation cannot also select a response for an explicitly reserved native variant');
+  for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']) {
+    const section = contract.split(`# ${operation}\n\n`)[1]?.split('\n\n# ')[0];
+    assert.ok(section, `${operation} instructions exist`);
+    assert.match(section, /envelope selecionado por `origin\.responseVariant`/u,
+      `${operation} must not replace the selected wire envelope with its semantic reference schema`);
+  }
+  assert.match(contract, /exemplos semânticos de referência[^\n]*não são o envelope final/u);
 });
 
 test('aggregate runner gate preserves real R003 pending Claude equalization', () => {
