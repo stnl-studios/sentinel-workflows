@@ -511,6 +511,31 @@ test('S2 excludes only frozen workflow homonyms and preserves distinct domain/le
   ]);
 });
 
+const genericRoleMetadata = {
+  default: () => {},
+  null: state => { state.thread.agentRole = null; },
+  omitted: state => { delete state.thread.agentRole; },
+};
+
+for (const [role, mutate] of Object.entries(genericRoleMetadata))
+test(`S2 optional generic role ${role} preserves metadata and literal response across reobservation`, async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, mutate });
+  const binding = await bindAppServerChild(s.rpc, identity);
+  const metadataBefore = structuredClone(s.state.thread);
+  const options = { binding, bundle: f.bundle, cwd: f.root };
+  const first = await readAppServerChild(s.rpc, options);
+  assert.equal(first.finalResponse, s.state.items.at(-1).text);
+  assert.deepEqual(await readAppServerChild(s.rpc, options), first);
+  assert.deepEqual(s.state.thread, metadataBefore, 'optional metadata is never filled or normalized');
+  assert.equal(Object.hasOwn(s.state.thread, 'agentRole'), role !== 'omitted');
+  const file = path.join(f.root, 'literal-result.json');
+  await writeNativeToolResult(file, first);
+  const bytes = await fs.readFile(file);
+  await writeNativeToolResult(file, await readAppServerChild(s.rpc, options));
+  assert.ok(bytes.equals(await fs.readFile(file)));
+  assert.ok(s.calls.every(call => ['thread/read', 'thread/items/list', 'thread/turns/list'].includes(call.method)));
+});
+
 for (const [name, change] of Object.entries({
   absent: s => s.listing.data[0].skills.shift(),
   disabled: s => { s.listing.data[0].skills[0].enabled = false; },
@@ -622,6 +647,7 @@ test('S2 official child mapping and completed full text survive observer restart
   assert.ok(bytes.equals(await fs.readFile(file)));
 });
 
+for (const [role, roleMetadata] of Object.entries(genericRoleMetadata))
 for (const [name, change] of Object.entries({
   absent: s => { s.parentItems = []; },
   onlyCompletedWait: s => { s.parentItems.shift(); },
@@ -630,9 +656,14 @@ for (const [name, change] of Object.entries({
   ambiguousThreadPath: s => s.parentItems.push({ ...s.parentItems[0], id: 'spawn-two', agentPath: '/root/other-path' }),
   foreignMetadata: s => { s.thread.id = 'foreign'; },
   foreignParent: s => { s.thread.parentThreadId = 'foreign'; },
+  missingParent: s => { s.thread.parentThreadId = null; },
   forkedHistory: s => { s.thread.forkedFromId = parent; },
+  foreignWorkspace: s => { s.thread.cwd = '/foreign'; },
   oldCli: s => { s.thread.cliVersion = '0.160.0'; },
   wrongRole: s => { s.thread.agentRole = 'stnl_validation_runner'; },
+  otherRole: s => { s.thread.agentRole = 'worker'; },
+  emptyRole: s => { s.thread.agentRole = ''; },
+  malformedRole: s => { s.thread.agentRole = false; },
   wrongMetadataModel: s => { s.thread.model = 'other'; },
   wrongMetadataEffort: s => { s.thread.reasoningEffort = 'high'; },
   missingMetadataEffort: s => { s.thread.reasoningEffort = null; },
@@ -650,10 +681,11 @@ for (const [name, change] of Object.entries({
   divergentParentReport: s => { s.parentItems[1].agentsStates[child] = { status: 'completed', message: 'other bytes' }; },
   duplicateItems: s => s.items.push({ ...s.items[0] }),
   invalidUtf8: s => { s.items.at(-1).text = '\ud800'; s.turns[0].items.at(-1).text = '\ud800'; },
-})) test(`S2 no envelope for ${name}; no new turn/retry`, async t => {
+  truncatedContract: s => { s.items[0].aggregatedOutput = s.items[0].aggregatedOutput.slice(0, -1); },
+})) test(`S2 no envelope for ${name}; no new turn/retry${role === 'default' ? '' : `; role ${role}`}`, async t => {
   const f = await fixture(t), good = server({ bundle: f.bundle, cwd: f.root });
   const binding = await bindAppServerChild(good.rpc, identity);
-  const bad = server({ bundle: f.bundle, cwd: f.root, mutate: change });
+  const bad = server({ bundle: f.bundle, cwd: f.root, mutate: state => { roleMetadata(state); change(state); } });
   await assert.rejects(() => readAppServerChild(bad.rpc, { binding, bundle: f.bundle, cwd: f.root }), blocked);
   assert.ok(bad.calls.every(call => ['thread/read', 'thread/items/list', 'thread/turns/list'].includes(call.method)));
 });

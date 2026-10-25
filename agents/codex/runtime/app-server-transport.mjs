@@ -555,9 +555,11 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd, continuati
   requireThat(current.model === bundle.runner.model && current.effort === bundle.runner.effort,
     'runner model/effort not proven by official spawn activity');
   const { thread } = await rpc.request('thread/read', { threadId: binding.agentThreadId, includeTurns: false });
+  // 0.163 exposes agentRole as optional string|null metadata. Its absence is
+  // not a role assignment; the origin binding and checks below prove the runner.
   requireThat(thread?.id === binding.agentThreadId && thread.parentThreadId === binding.parentThreadId
     && thread.forkedFromId == null && thread.cliVersion === APP_SERVER_VERSION && thread.cwd === cwd
-    && thread.agentRole === 'default' && thread.model === bundle.runner.model
+    && (thread.agentRole == null || thread.agentRole === 'default') && thread.model === bundle.runner.model
     && thread.reasoningEffort === bundle.runner.effort,
   'child metadata foreign, forked or version differs');
   const turns = await pages(rpc, 'thread/turns/list', { threadId: binding.agentThreadId, itemsView: 'full' });

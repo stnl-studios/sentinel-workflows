@@ -140,7 +140,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','formal-successor'],['fresh','formal-exhausted'], ['fresh','review-correction'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','formal-successor'],['fresh','formal-exhausted'], ['fresh','review-correction'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
   t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
@@ -175,10 +175,19 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
     }
     return value;
   };
-  const actualFactory = product.createNativeProvider;
+  const actualFactory = product.createNativeProvider, roleReadbacks = [];
   product.createNativeProvider = async args => {
     backend ??= offlineNativeWorkflow({ ...args, caseRoot: args.evidenceRoot, fault });
-    return actualFactory({ ...args, rpc: backend.rpc, pollMs: 1 });
+    const rpc = role === 'default' ? backend.rpc : { ...backend.rpc, async request(method, params) {
+      const value = await backend.rpc.request(method, params);
+      if (method === 'thread/read' && value.thread?.parentThreadId != null) {
+        if (role === 'null') value.thread.agentRole = null;
+        else delete value.thread.agentRole;
+        roleReadbacks.push(structuredClone(value.thread));
+      }
+      return value;
+    } };
+    return actualFactory({ ...args, rpc, pollMs: 1 });
   };
   await manager.initializeTurnBudget(runRoot, configuration.turnBudget.maxTurnsPerRun);
   const inherited = process.env.NODE_TEST_CONTEXT; delete process.env.NODE_TEST_CONTEXT;
@@ -364,6 +373,11 @@ for (const [regime, fault] of [['fresh', null], ['author-continuity', null], ['f
   const validator = ajv.compile(JSON.parse(await fs.readFile(path.join(repo, 'benchmarks/sentinel-todo/schemas/result-v2.schema.json'))));
   assert.equal(validator(raw), true, JSON.stringify(validator.errors));
   assert.equal(raw.finalExecutionState, 'SPEC_CLOSED'); assert.equal(raw.specClosed, true);
+  if (role !== 'default') {
+    assert.equal(new Set(roleReadbacks.map(thread => thread.id)).size, 2, 'both formal children use optional role metadata');
+    assert.ok(roleReadbacks.every(thread => role === 'null'
+      ? Object.hasOwn(thread, 'agentRole') && thread.agentRole === null : !Object.hasOwn(thread, 'agentRole')));
+  }
   assert.equal(raw.productAcceptance.passed, true); assert.equal(raw.nativeTerminal.sourceActivationId.length, 36);
   assert.deepEqual(raw.contextPolicy, configuration.contextPolicy);
   await assert.rejects(fs.lstat(path.join(state.specPath, 'execution')), { code: 'ENOENT' });
