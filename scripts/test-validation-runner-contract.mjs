@@ -530,3 +530,29 @@ test('Codex native findings explicitly separate envelope and canonical attempt t
     'all selected response variants define the canonical finding-attempt token');
   assert.match(common, /não[^\n]*owner\.operationAttemptId/u, 'the owner UUID is not the finding attempt token');
 });
+
+
+test('post-first EXECUTE history distinguishes author correction from the read-only runner', async () => {
+  const contract=await fs.readFile(path.join(canonical,'codex/.codex/agents/stnl_validation_runner.toml'),'utf8');
+  assert.match(contract,/EXECUTE_SLICE[^\n]*`2\/3`[^\n]*`3\/3`[^\n]*`priorRoundFailure`[^\n]*`correctionApplied`[^\n]*`inSliceRationale`/u);
+  assert.match(contract,/`correctionApplied`[^\n]*contexto principal[^\n]*runner permanece read-only/u);
+  for(const skill of ['stnl-slice-executor','stnl-slice-quality-manager']) {
+    const guide=await fs.readFile(path.join(repository,'skills/workflows',skill,'references/runner-invocation.md'),'utf8');
+    assert.match(guide,/whose admitted global check round is `2\/3` or `3\/3`/u);
+    assert.match(guide,/previous literal response[^\n]*actual author correction/u);
+    assert.match(guide,/`previousCheck: null`[^\n]*does not mean[^\n]*no previous invocation/u);
+  }
+  const {parseSemanticExecutionPayload}=await import('../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs');
+  const {payload}=await import('./fixtures/current-initial-evidence.mjs');
+  for(const round of [2,3]) {
+    assert.equal(parseSemanticExecutionPayload(JSON.stringify(payload(round)),'EXECUTE_SLICE').automaticCheckRound,`${round}/3`);
+    for(const field of ['priorRoundFailure','correctionApplied','inSliceRationale'])for(const value of ['none','pending','n/a']) {
+      const raw=payload(round);raw[field]=value;
+      assert.throws(()=>parseSemanticExecutionPayload(JSON.stringify(raw),'EXECUTE_SLICE'),new RegExp(field+' is required'));
+    }
+  }
+  assert.equal(parseSemanticExecutionPayload(JSON.stringify(payload(1)),'EXECUTE_SLICE').priorRoundFailure,'none');
+  // Schema does not infer the actor or completeness of this explanation.
+  const actorAmbiguous=payload(2);actorAmbiguous.correctionApplied='none; runner is read-only.';
+  assert.equal(parseSemanticExecutionPayload(JSON.stringify(actorAmbiguous),'EXECUTE_SLICE').correctionApplied,actorAmbiguous.correctionApplied);
+});

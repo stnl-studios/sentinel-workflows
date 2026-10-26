@@ -397,7 +397,7 @@ for(const malformedHistory of [false,true])test(`Initial failed check then prove
     const {head,...result}=initialPayload(round,status);result.commands=measured.commands;
     result.blockers=status==='BLOCKED'?'The approved zero-amount assertion is missing.':'none';
     if(omissions)result.testCoverageOmissions=omissions;
-    if(malformedHistory&&round===2){result.priorRoundFailure='none';result.correctionApplied='none';}
+    if(malformedHistory&&round===2){result.priorRoundFailure='none';result.correctionApplied='none; runner is read-only.';}
     const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
     const file=path.join(f.root,`coverage-result-${round}.json`);await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
     const captured=await captureNative(started.handle,file);responses.push({file,bytes:await fs.readFile(file),finalResponse});return captured;

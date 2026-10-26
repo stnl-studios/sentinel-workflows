@@ -119,6 +119,8 @@ Realize validação formal independente do estado final completo da slice. Use o
 
 Os objetos abaixo são exemplos semânticos de referência, não são o envelope final de todas as variantes. `head` pertence ao formato legado; quando `origin.responseVariant` selecionar `stnl-current-native-judgment-v1`, omita `head` e `requestSha256` e envolva os demais campos em `result`, com `format` e, em VALIDATE_SLICE, `newFindings`, conforme o ramo selecionado acima. Os exemplos não substituem essa seleção.
 
+Em EXECUTE_SLICE nas rodadas `2/3` e `3/3`, `priorRoundFailure`, `correctionApplied` e `inSliceRationale` exigem descrições concretas; os valores exatos `none`, `pending` e `n/a` são recusados. `priorRoundFailure` descreve a falha anterior preservada. `correctionApplied` descreve a correção já aplicada pelo contexto principal antes desta checagem, não alterações feitas pelo observador; o runner permanece read-only. `inSliceRationale` explica por que essa correção cabe na autoridade atual. Use as fontes anteriores fornecidas e confira a correção no estado atual, sem herdar o veredicto anterior nem inventar histórico. `previousCheck: null` no request Initial não comprova ausência de invocação anterior.
+
 ## Schema EXECUTE_SLICE
 
 ```json
