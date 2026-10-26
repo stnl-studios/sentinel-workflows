@@ -584,7 +584,7 @@ for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-c
       assert.deepEqual(backend.operations.map(item => item.operation), ['SPEC_INIT', 'PLAN']);
       assert.equal(state.terminal.result, 'BLOCKED');
       const evidence = JSON.parse(await fs.readFile(state.operations.at(-1).evidencePath));
-      assert.match(evidence.turn.error, /auxiliary turn failed\/interrupted/u);
+      assert.equal(evidence.turn.error, 'child turn failed/interrupted; preserve its effects (formal=false; status=interrupted; error=absent; cause=absent)');
       assert.equal(evidence.officialReadback.execution.state, 'NO_EXECUTION');
       assert.equal(ledger.total, 3); assert.equal(ledger.reservations.length, 7);
       const unexpected = ledger.turns.filter(turn => turn.childKind === 'pending');

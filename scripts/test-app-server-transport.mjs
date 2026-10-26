@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { appServerEnvironment, appServerRpc, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   selectAppServerBundle, startAppServerTurn, bindAppServerChild, readAppServerChild, observeAppServerChild,
   writeNativeToolResult, captureAppServerChild, persistAppServerStderrSample, readAppServerAgentFeatures,
-  canonicalContractReadCommand } from '../agents/codex/runtime/app-server-transport.mjs';
+  canonicalContractReadCommand, connectAppServer } from '../agents/codex/runtime/app-server-transport.mjs';
 import { createNativeProvider } from '../agents/codex/runtime/native-provider.mjs';
 import { reservedOperation } from './fixtures/current-native-operation.mjs';
 import { bindNative, verifyNative, captureNative, resume } from
@@ -22,6 +22,246 @@ const blocked = error => error.code === 'NATIVE_TRANSPORT_UNPROVEN';
 const parent = '019a0000-0000-7000-8000-000000000001';
 const child = '019a0000-0000-7000-8000-000000000002';
 const identity = { parentThreadId: parent, parentTurnId: 'parent-turn', agentPath: '/root/check-one' };
+const refuses = (message, code='NATIVE_TRANSPORT_UNPROVEN') => error => {
+  assert.equal(error.code,code); assert.equal(error.message,message); return true;
+};
+
+for(const operation of ['bundle','capture','process-metadata'])test(`direct adapter I/O has safe stage and code (${operation})`,async t=>{
+  const f=await fixture(t);let run;
+  if(operation==='bundle')run=()=>describeAppServerBundle({skillsRoot:path.join(f.root,'private-path-secret'),runnerFile:f.bundle.runner.path});
+  if(operation==='capture')run=()=>writeNativeToolResult(path.join(f.root,'private-path-secret/result.json'),{agentId:identity.agentPath,status:'completed',finalResponse:'literal'});
+  if(operation==='process-metadata'){
+    const launcher=path.join(f.root,'pkg/bin/codex.js');await fs.mkdir(path.dirname(launcher),{recursive:true});
+    await fs.writeFile(launcher,'// Never executed\n');await fs.writeFile(path.join(f.root,'pkg/package.json'),'private-json-secret');
+    run=()=>connectAppServer({cliLauncher:launcher,cliSha256:sha('// Never executed\n'),cwd:f.root});
+  }
+  await assert.rejects(run,error=>{
+    assert.equal(error.code,'DRIVER_FAILURE');assert.match(error.message,operation==='process-metadata'?/stage=process; kind=PARSE/:/stage=physical; kind=IO; code=ENOENT/);
+    assert.doesNotMatch(error.message,/private-|\/Users\//u);return true;
+  });
+});
+
+for(const value of [null,false,0,''])test(`RPC falsy error is never a successful result (${JSON.stringify(value)})`,async t=>{
+  const w=wire(t),pending=w.rpc.request('thread/read',{threadId:child});
+  const rejected=assert.rejects(pending,refuses('App Server rejected thread/read (RPC unknown: invalid error envelope)'));
+  w.input.write(JSON.stringify({id:w.sent[0].id,error:value})+'\n');await rejected;assert.equal(w.sent.length,1);
+});
+
+for(const [channel,message] of [
+  ['input','RPC input failed'],['output','RPC output failed; effect uncertain'],
+  ['diagnostics','App Server diagnostic channel failed'],['write-sync','RPC write uncertain (code=EPIPE)'],
+  ['write-callback','RPC write uncertain (code=EPIPE)'],['close','RPC closed by owner'],
+])test(`RPC channel failure retains its distinct safe refusal (${channel})`,async t=>{
+  const w=wire(t);const privateError=Object.assign(new Error('/private/channel-secret'),{code:'EPIPE'});
+  if(channel==='write-sync')w.output.write=()=>{throw privateError;};
+  if(channel==='write-callback')w.output.write=(line,callback)=>{callback(privateError);return false;};
+  const pending=w.rpc.request('thread/read',{threadId:child});
+  const rejected=assert.rejects(pending,refuses(message));
+  if(channel==='close')w.rpc.close();else if(!channel.startsWith('write'))w[channel].emit('error',privateError);
+  await rejected;await assert.rejects(w.rpc.request('thread/read',{}),refuses(message));
+});
+
+for(const [name,frame,message] of [
+  ['null',null,'invalid RPC message'],['notification',{},'invalid RPC notification'],
+  ['both result and error',{id:1,result:{},error:{}},'unexpected RPC response'],
+  ['missing result/error',{id:1},'unexpected RPC response'],
+])test(`RPC invalid frame preserves a concrete protocol refusal (${name})`,async t=>{
+  const w=wire(t),pending=w.rpc.request('thread/read',{threadId:child});
+  const rejected=assert.rejects(pending,refuses(message));w.input.write(JSON.stringify(frame)+'\n');await rejected;
+});
+
+test('RPC bounds, method and notification refusals are distinct before writes',async t=>{
+  assert.throws(()=>appServerRpc({input:new PassThrough(),output:new PassThrough(),timeoutMs:0}),refuses('invalid RPC bounds'));
+  const w=wire(t,{maxLineBytes:32});
+  await assert.rejects(w.rpc.request('private-method-secret',{}),refuses('RPC method outside adapter scope'));
+  assert.throws(()=>w.rpc.notify('private-method-secret'),refuses('notification outside adapter scope'));
+  await assert.rejects(w.rpc.request('thread/read',{threadId:child}),refuses('outgoing RPC line limit exceeded'));
+  assert.equal(w.sent.length,0);
+});
+
+test('bounded public history distinguishes cursor invalidity from page exhaustion',async()=>{
+  const params={parentThreadId:parent,parentTurnId:'turn',agentPath:'/root/check'};let count=0;
+  const rpc={request:async()=>({data:[],nextCursor:'page-'+(++count)})};
+  await assert.rejects(bindAppServerChild(rpc,params),refuses('public history page limit reached; result incomplete'));assert.equal(count,32);
+  await assert.rejects(bindAppServerChild({request:async()=>({data:[],nextCursor:17})},params),refuses('history cursor missing/repeated'));
+});
+
+for(const view of ['private-view-secret',null,17,[],{}])test(`unknown child itemsView cannot bypass surface comparison (${JSON.stringify(view)})`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root});
+  s.state.turns[0].itemsView=view;s.state.turns[0].items.at(-1).text+='drift';
+  const binding=await bindAppServerChild(s.rpc,identity);
+  await assert.rejects(readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root}),
+    refuses('child turn items view unproven'));assert.ok(s.calls.every(c=>c.method.startsWith('thread/')));
+});
+
+for(const view of [undefined,'full','summary','notLoaded'])test(`known child itemsView retains literal item authority (${view??'omitted'})`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root});
+  if(view===undefined)delete s.state.turns[0].itemsView;else s.state.turns[0].itemsView=view;
+  if(view==='summary'||view==='notLoaded')s.state.turns[0].items=[];
+  const binding=await bindAppServerChild(s.rpc,identity),before=JSON.stringify(s.state);
+  const result=await readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root});
+  assert.equal(result.finalResponse,s.state.items.at(-1).text);assert.equal(JSON.stringify(s.state),before);
+});
+
+for(const status of [undefined,null,'private-status-secret',17])for(const formal of [false,true])
+test(`unknown child status cannot certify capture or terminal (${JSON.stringify(status)}, formal=${formal})`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});s.state.turns[0].status=status;
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
+  const result=await p.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'unknown-child',role:'author',observeFormalBinding:()=>formal?{agentPath:identity.agentPath}:null});
+  assert.equal(result.completed,false);assert.equal(result.terminalObserved,false);assert.deepEqual(result.captures,[]);
+  assert.ok(result.error.includes(`status=${status==null?'absent':'other'}`),result.error);
+  assert.doesNotMatch(result.error,/private-/u);assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+});
+
+for(const status of ['failed','interrupted'])for(const formal of [false,true])
+test(`public child failure retains category and role (${status}, formal=${formal})`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  s.state.turns[0].status=status;s.state.turns[0].error={message:'private-child-secret',codexErrorInfo:'rateLimitExceeded'};
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
+  const result=await p.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'failed-child',role:'author',observeFormalBinding:()=>formal?{agentPath:identity.agentPath}:null});
+  assert.equal(result.completed,false);assert.equal(result.terminalObserved,false);assert.deepEqual(result.captures,[]);
+  assert.equal(result.error,`child turn failed/interrupted; preserve its effects (formal=${formal}; status=${status}; error=present; cause=rateLimitExceeded)`);
+  assert.doesNotMatch(result.error,/private-/u);const event=JSON.parse((await fs.readFile(result.eventsPath,'utf8')).trim().split('\n').at(-1));
+  assert.equal(event.message,result.error);assert.equal(event.code,result.errorCode);assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+});
+
+for(const [kind,mutate] of [
+  ['unknown hook',()=>new Error('private-hook-secret')],
+  ['forged native code',()=>Object.assign(new Error('private-hook-secret'),{code:'NATIVE_TRANSPORT_UNPROVEN'})],
+  ['I/O hook',()=>Object.assign(new Error('/private/path-secret'),{code:'EACCES'})],
+])test(`provider dependency refusal is safe and coherent (${kind})`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
+  const result=await p.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'hook-refusal',role:'author',onDispatched:()=>{throw mutate();}});
+  assert.equal(result.completed,false);assert.equal(result.errorCode,'DRIVER_FAILURE');
+  assert.ok(result.error.includes('stage=onDispatched'),result.error);
+  assert.doesNotMatch(result.error,/private-|\/private\//u);
+  const e=JSON.parse((await fs.readFile(result.eventsPath,'utf8')).trim());
+  assert.equal(e.code,result.errorCode);assert.equal(e.message,result.error);
+  assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+});
+
+for(const value of [null,undefined,false,17,'private-error-secret'])test(`unknown dependency throw cannot escape refusal processing (${String(value)})`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true}),request=s.rpc.request;
+  s.rpc.request=(method,params)=>{if(method==='thread/turns/list')throw value;return request(method,params);};
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
+  const result=await p.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',operationId:'unknown-refusal',role:'author'});
+  assert.equal(result.completed,false);assert.equal(result.terminalObserved,false);assert.equal(result.errorCode,'DRIVER_FAILURE');
+  assert.equal(result.error,'native adapter dependency failed (stage=operation; kind=UNKNOWN; code=other)');
+  assert.doesNotMatch(result.error,/private-/u);assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+});
+
+for(const value of [null,undefined,'private-error-secret'])for(const site of ['partial-parent','partial-child','child-hook','provider-binding'])
+test(`partial observation preserves descendants for primitive failure (${site}, ${String(value)})`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  const binding=await bindAppServerChild(s.rpc,identity);let parentReads=0;
+  const rpc={notify:s.rpc.notify,request(method,params){
+    if(site==='provider-binding'&&method==='thread/items/list'&&params.threadId===parent&&++parentReads===2)throw value;
+    if(site!=='provider-binding'&&method==='thread/items/list'&&params.threadId===(site==='partial-parent'?parent:child)){
+      if(params.cursor!==null)throw value;
+      const item={id:'partial-spawn',type:'subAgentActivity',kind:'started',
+        agentPath:site==='partial-parent'?identity.agentPath:'/root/nested',agentThreadId:site==='partial-parent'?child:'nested'};
+      return {data:[{turnId:params.turnId,item}],nextCursor:site==='child-hook'?null:'next'};
+    }
+    if(site==='child-hook'&&method==='thread/read'&&params.threadId==='nested')return {thread:{id:'nested',parentThreadId:child}};
+    return s.rpc.request(method,params);
+  }};
+  if(site==='partial-parent'||site==='provider-binding'){
+    const provider=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc}),charged=[];
+    const result=await provider.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+      operationId:'partial-primitive',role:'author',onUnadmittedChildren:items=>charged.push(...items)});
+    assert.equal(result.completed,false);assert.equal(result.terminalObserved,false);assert.deepEqual(result.captures,[]);
+    assert.equal(result.error,'native adapter dependency failed (stage=operation; kind=UNKNOWN; code=other)');
+    assert.deepEqual(charged.map(item=>item.agentThreadId),[child]);
+  }else await assert.rejects(observeAppServerChild(rpc,{binding,cwd:f.root,onChild:()=>{throw value;}}),error=>{
+    assert.equal(error.code,'DRIVER_FAILURE');assert.equal(error.message,'native adapter dependency failed (stage=operation; kind=UNKNOWN; code=other)');
+    assert.deepEqual(error.descendants.map(item=>item.agentThreadId),['nested']);return true;
+  });
+});
+
+test('foreign close errors remain redacted and keep the RPC closed',async t=>{
+  const w=wire(t),pending=w.rpc.request('thread/read',{threadId:child});
+  const rejection=assert.rejects(pending,refuses('native adapter dependency failed (stage=process; kind=UNKNOWN; code=other)','DRIVER_FAILURE'));
+  w.rpc.close(null);await rejection;
+  await assert.rejects(w.rpc.request('thread/read',{}),refuses('native adapter dependency failed (stage=process; kind=UNKNOWN; code=other)','DRIVER_FAILURE'));
+  assert.equal(w.sent.length,1);
+});
+
+for(const mode of ['existing-evidence','malformed-evidence','invalid-identity','offline-client'])
+test(`pre-dispatch refusal preserves safe preparation category (${mode})`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  if(mode==='offline-client'){
+    await assert.rejects(createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root}),
+      refuses('an explicit offline App Server provider is required for this fixture'));return;
+  }
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
+  const args={prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',operationId:'prepare-refusal',role:'author'};
+  if(mode==='existing-evidence')await fs.writeFile(path.join(f.root,'prepare-refusal.events.jsonl'),'prior');
+  if(mode==='malformed-evidence'){
+    await fs.writeFile(path.join(f.root,'prepare-refusal.events.jsonl'),'private-json-secret');
+    args.observation={threadId:parent,turnId:'parent-turn',deadlineAt:Date.now()+1000};
+  }
+  if(mode==='invalid-identity')args.operationId='../private-identity-secret';
+  const message=mode==='invalid-identity'?'invalid operation evidence identity':mode==='existing-evidence'
+    ?'native adapter dependency failed (stage=prepare; kind=IO; code=EEXIST)':'native adapter dependency failed (stage=prepare; kind=PARSE; code=other)';
+  await assert.rejects(p.runTurn(args),refuses(message,mode==='invalid-identity'?'NATIVE_TRANSPORT_UNPROVEN':'DRIVER_FAILURE'));
+  assert.equal(s.calls.filter(c=>c.method==='turn/start').length,0);
+});
+
+test('failure accounting cannot replace the primary refusal',async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  s.state.parentItems.push({id:'',type:'agentMessage',text:'private-source-secret'});
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});let charged=0;
+  const result=await p.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'account-refusal',role:'author',onUnadmittedChildren:children=>{charged+=children.length;throw new Error('private-accounting-secret');}});
+  assert.equal(result.completed,false);assert.equal(result.error,'public item entry absent or foreign');
+  assert.equal(result.errorCode,'NATIVE_TRANSPORT_UNPROVEN');assert.equal(charged,1);
+  assert.equal(result.secondaryFailures[0].stage,'onUnadmittedChildren');
+  assert.doesNotMatch(JSON.stringify(result.secondaryFailures),/private-/u);
+  const e=JSON.parse((await fs.readFile(result.eventsPath,'utf8')).trim().split('\n').at(-1));
+  assert.equal(e.message,result.error);assert.deepEqual(e.secondaryFailures,result.secondaryFailures);
+});
+
+test('failure recording cannot replace or retry the primary refusal',async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  s.state.parentItems.push({id:'',type:'agentMessage',text:'private-source-secret'});
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
+  const append=fs.appendFile;let attempts=0;fs.appendFile=async(file,data,...rest)=>{
+    if(String(data).includes('native.transport.blocked')){attempts++;throw Object.assign(new Error('/private/evidence-secret'),{code:'ENOSPC'});}
+    return append(file,data,...rest);
+  };
+  try{
+    const result=await p.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',operationId:'record-refusal',role:'author'});
+    assert.equal(result.completed,false);assert.equal(result.error,'public item entry absent or foreign');
+    assert.equal(result.evidenceStatus,'unavailable');assert.equal(attempts,1);
+    assert.equal(result.secondaryFailures.at(-1).stage,'evidence');
+    assert.doesNotMatch(JSON.stringify(result.secondaryFailures),/private-|\/private\//u);
+  }finally{fs.appendFile=append;}
+});
+
+for(const late of ['capture-cancel','auxiliary-cancel','capture-deadline','completed-record-cancel'])
+test(`late observation boundary cannot return success (${late})`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true}),controller=new AbortController();
+  s.state.parentItems.push({...s.state.parentItems[0],id:'completed',kind:'completed'});
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});let deadline;
+  const interrupt=()=>late==='capture-deadline'?t.mock.method(Date,'now',()=>deadline+1):controller.abort();
+  const append=fs.appendFile;
+  if(late==='completed-record-cancel')fs.appendFile=async(file,data,...rest)=>{
+    const value=await append(file,data,...rest);if(String(data).includes('native.turn.completed'))controller.abort();return value;
+  };
+  try{
+    const result=await p.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+      operationId:'late-refusal',role:'author',timeoutMs:1000,signal:controller.signal,
+      ...(late==='auxiliary-cancel'?{observeFormalBinding:()=>null,onAuxiliaryCompleted:interrupt}:
+        late==='completed-record-cancel'?{}:{onChildCompleted:interrupt}),onDispatched:d=>{deadline=d.deadlineAt;}});
+    assert.equal(result.completed,false);assert.match(result.error,late==='capture-deadline'?/deadline/:/cancel/);
+    assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+    if(late.startsWith('capture'))assert.equal(result.captures.length,1,'first immutable capture remains retained');
+  }finally{fs.appendFile=append;}
+});
 
 test('owned App Server excludes inherited informational span logging without changing HOME/config or its caller', () => {
   const environment = Object.freeze({ HOME: '/normal-home', CODEX_HOME: '/existing-codex-home',
@@ -124,6 +364,14 @@ async function continuedHistory(t) {
   return { ...f, s, rpc, binding, continuation };
 }
 
+for(const source of ['{private-envelope-secret', 'null'])test(`malformed saved continuation has safe direct refusal (${source==='null'?'null':'parse'})`,async t=>{
+  const f=await continuedHistory(t);f.continuation.firstToolResultUtf8=source;f.continuation.firstToolResultSha256=sha(source);
+  await assert.rejects(readAppServerChild(f.rpc,{binding:f.binding,bundle:f.bundle,cwd:f.root,continuation:f.continuation}),
+    source==='null'?refuses('continuation saved envelope malformed')
+      :refuses('native adapter dependency failed (stage=contract; kind=PARSE; code=other)','DRIVER_FAILURE'));
+  assert.ok(f.s.calls.every(call=>call.method.startsWith('thread/')));
+});
+
 test('one admitted continuation preserves initialization and reads the first formal response without a new turn', async t => {
   const f = await continuedHistory(t);
   const options = { binding: f.binding, bundle: f.bundle, cwd: f.root, continuation: f.continuation };
@@ -159,7 +407,16 @@ for (const [name, mutate] of [
     return f.rpc.request(method, params);
   } };
   await assert.rejects(readAppServerChild(rpc, { binding: f.binding, bundle: f.bundle, cwd: f.root,
-    continuation: f.continuation }), blocked);
+    continuation: f.continuation }), error=>{
+    const expected={'third judgment':'fresh child has no admitted completed successful turn sequence (failed=COUNT)',
+      'uncertain continuation':'fresh child has no admitted completed successful turn sequence (failed=TURN; status=interrupted; error=absent; cause=absent)',
+      'foreign binding':'continuation public identity/source differs','first bytes changed':'continuation public identity/source differs',
+      'first API response changed':'continuation first public response changed','first contract truncated':'generic runner complete contract output absent, truncated or foreign',
+      'first effect unknown':'continuation initialization command effects are unproven (itemIndex=1; failed=COMMAND_READ_FORM; itemType=commandExecution; cwd=matches; status=completed; exitCode=0)',
+      'first command denied':'continuation initialization has denied, uncertain or unexpected effects (itemIndex=0; failed=EXIT_CODE; itemType=commandExecution; cwd=matches; status=completed; exitCode=1)',
+      'profile changed':'child metadata foreign, forked or version differs','formal response projection drift':'public child surfaces disagree'}[name];
+    assert.ok(expected,`missing diagnostic contract for ${name}`);return refuses(expected)(error);
+  });
 });
 
 for (const kind of ['interacted','completed']) for(const position of [0,1])
@@ -353,7 +610,7 @@ test(`continued provider preserves both sources and reobserves without another t
   const result = await provider.runTurn(args);
   Date.now=now;
   if(['parent-closed-during-admission','expired-during-admission'].includes(fault)) {
-    assert.equal(result.completed,false);assert.match(result.error,/principal/);
+    assert.equal(result.completed,false);assert.match(result.error,fault==='expired-during-admission'?/deadline/:/principal/);
     assert.equal(s.state.turns.length,1);assert.equal(charged.size,1);
     assert.equal((await fs.readFile(result.eventsPath,'utf8')).includes('native.child.continuation.admitted'),false);
     assert.equal(JSON.parse(await fs.readFile(firstFile)).finalResponse,'Initialization is not a verdict.\n');
@@ -408,7 +665,9 @@ for (const [name, mutate] of [
 ]) test(`auxiliary observation blocks ${name}`, async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, mutate });
   const binding = await bindAppServerChild(s.rpc, identity);
-  await assert.rejects(observeAppServerChild(s.rpc, { binding, cwd: f.root }), blocked);
+  await assert.rejects(observeAppServerChild(s.rpc, { binding, cwd: f.root }), refuses({'foreign-parent':'auxiliary child metadata differs','foreign-workspace':'auxiliary child metadata differs',
+      'error-with-completed':'invalid auxiliary turn (status=completed; error=present; cause=absent)',
+      'duplicate-turn':'duplicate auxiliary turns','duplicate-edge':'child missing or ambiguous in parent turn'}[name]));
 });
 
 test('auxiliary turn IDs and known descendants remain accountable when later item or binding reads fail', async t => {
@@ -454,7 +713,8 @@ test('partial auxiliary pagination counts known turns but cannot certify the vie
     return s.rpc.request(method, params);
   } };
   await assert.rejects(observeAppServerChild(rpc, { binding, cwd: f.root,
-    onTurns: turns => charged.push(...turns.map(turn => turn.id)) }), /second page unavailable/u);
+    onTurns: turns => charged.push(...turns.map(turn => turn.id)) }),
+    refuses('native adapter dependency failed (stage=operation; kind=UNKNOWN; code=other)','DRIVER_FAILURE'));
   assert.deepEqual(charged, ['t1', 't2']);
 });
 
@@ -579,7 +839,10 @@ test(`auxiliary follow-up rejects ${fault} without formal capture or another tur
   const p = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
   const result = await p.runTurn({ prompt: 'Offline selected operation', workflowSkill: 'stnl-slice-executor',
     model: 'gpt-6-luna', effort: 'high', operationId: `aux-${fault}`, role: 'review', observeFormalBinding: async () => null });
-  assert.equal(result.completed, false); assert.deepEqual(result.captures, []);
+  assert.equal(result.completed, false);
+  assert.equal(result.error,{'duplicate-event':'duplicate public history item','extra-completion':'auxiliary completion count exceeds completed public turns',
+    'foreign-completion':'unmatched completed child identity','duplicate-turn':'duplicate auxiliary turns',
+    'failed-followup':'auxiliary completion count exceeds completed public turns','incomplete-followup':'auxiliary completion count exceeds completed public turns'}[fault]); assert.deepEqual(result.captures, []);
   assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1);
 });
 
@@ -703,7 +966,9 @@ for (const [name, change] of Object.entries({
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, mutate: change });
   await assert.rejects(() => startAppServerTurn(s.rpc, { bundle: f.bundle, cwd: f.root,
     skillName: 'stnl-slice-executor', prompt: 'normal input', model: 'gpt-6.1-sol', effort: 'high',
-    approvalPolicy: 'never', sandbox: 'workspace-write' }), blocked);
+    approvalPolicy: 'never', sandbox: 'workspace-write' }), refuses(({absent:'frozen sibling absent from discovery',homonymOnly:'frozen sibling absent from discovery',
+      disabled:'frozen skill identity differs',wrongName:'frozen skill identity differs',nonSentinelNameInBundle:'frozen skill identity differs',wrongPathInBundle:'frozen skill identity differs',
+      duplicate:'missing/duplicate skill identity',discoveryError:'skill discovery incomplete',wrongCwd:'skill discovery incomplete'})[name]));
   assert.equal(s.calls.some(call => /^(?:thread|turn)\/start$/u.test(call.method)), false);
 });
 
@@ -717,7 +982,7 @@ for (const kind of ['skill', 'sibling', 'runner', 'extra-file', 'symlink', 'mode
     else if (kind === 'mode') await fs.chmod(file, 0o700);
     else await fs.appendFile(file, '\nchanged');
     await assert.rejects(() => selectAppServerBundle(s.rpc, { bundle: f.bundle, cwd: f.root,
-      skillName: 'stnl-slice-executor' }), blocked);
+      skillName: 'stnl-slice-executor' }), refuses(kind==='symlink'?'bundle symlink':'bundle/sibling/runner hash or mode drift'));
     assert.equal(s.calls.length, 0);
   });
 }
@@ -744,7 +1009,7 @@ for(const [name,data,expected] of [
 ])test(`agent feature metadata stays readonly and explicit for ${name}`,async()=>{
   const calls=[],rpc={request:async(method,params)=>{calls.push({method,params});return {data,nextCursor:null};}};
   if(expected)assert.deepEqual(await readAppServerAgentFeatures(rpc,parent),expected);
-  else await assert.rejects(readAppServerAgentFeatures(rpc,parent),blocked);
+  else await assert.rejects(readAppServerAgentFeatures(rpc,parent),refuses('ambiguous agent feature metadata'));
   assert.deepEqual(calls,[{method:'experimentalFeature/list',params:{threadId:parent,cursor:null,limit:100}}]);
 });
 
@@ -754,7 +1019,7 @@ test('S2 unsupported context/policy is rejected before configuration or turn eff
     model: 'gpt-6.1-sol', effort: 'high', approvalPolicy: 'never', sandbox: 'workspace-write' };
   for (const extra of [{ threadId: parent }, { sandbox: 'typo' }, { approvalPolicy: 'accept-all' },
     { approvalPolicy: 'on-failure' }]) {
-    await assert.rejects(() => startAppServerTurn(s.rpc, { ...args, ...extra }), blocked);
+    await assert.rejects(() => startAppServerTurn(s.rpc, { ...args, ...extra }), refuses(extra.threadId?'continuity requires separately admitted existing author thread':'explicit turn settings required'));
   }
   assert.equal(s.calls.length, 0);
 });
@@ -770,14 +1035,14 @@ for(const operation of ['thread/start','thread/resume'])for(const mode of ['lega
     skillName:'stnl-slice-executor',prompt:'payload',model:'gpt-6.1-sol',effort:'medium',
     ...(operation==='thread/resume'?{threadId:parent,admittedAuthorThread:{threadId:parent,cwd:f.root,
       bundleSha256:sha(Buffer.from(JSON.stringify(f.bundle))),role:'author'}}:{}),
-    approvalPolicy:null,sandbox:null}),blocked);
+    approvalPolicy:null,sandbox:null}),refuses('thread creation identity/version/history mode differs'));
   assert.equal(s.calls.filter(c=>c.method==='turn/start').length,0);
 });
 
 test('S2 server handshake version drift blocks initialization completion', async () => {
   let initialized = false;
   await assert.rejects(() => initializeAppServer({ async request() { return { userAgent: 'codex-cli/0.160.0' }; },
-    notify() { initialized = true; } }), blocked);
+    notify() { initialized = true; } }), refuses('server handshake version differs'));
   assert.equal(initialized, false);
 });
 
@@ -839,7 +1104,19 @@ for (const [name, change] of Object.entries({
   const f = await fixture(t), good = server({ bundle: f.bundle, cwd: f.root });
   const binding = await bindAppServerChild(good.rpc, identity);
   const bad = server({ bundle: f.bundle, cwd: f.root, mutate: state => { roleMetadata(state); change(state); } });
-  await assert.rejects(() => readAppServerChild(bad.rpc, { binding, bundle: f.bundle, cwd: f.root }), blocked);
+  await assert.rejects(() => readAppServerChild(bad.rpc, { binding, bundle: f.bundle, cwd: f.root }), error=>{
+    const meta=['foreignMetadata','foreignParent','missingParent','forkedHistory','foreignWorkspace','oldCli','wrongRole','otherRole','emptyRole','malformedRole','wrongMetadataModel','wrongMetadataEffort','missingMetadataEffort'];
+    const expected=meta.includes(name)?'child metadata foreign, forked or version differs':({
+      absent:'child missing or ambiguous in parent turn',onlyCompletedWait:'child missing or ambiguous in parent turn',otherPath:'child missing or ambiguous in parent turn',ambiguous:'child missing or ambiguous in parent turn',
+      ambiguousThreadPath:'child thread has multiple official paths',wrongModel:'child binding changed',missingModel:'child binding changed',wrongEffort:'child binding changed',
+      running:'fresh child has no admitted completed successful turn sequence (failed=TURN; status=inProgress; error=absent; cause=absent)',
+      error:'fresh child has no admitted completed successful turn sequence (failed=TURN; status=completed; error=present; cause=absent)',
+      noTurns:'fresh child has no admitted completed successful turn sequence (failed=COUNT)',extraTurn:'fresh child has no admitted completed successful turn sequence (failed=COUNT)',
+      missingText:'generic runner contract read not observed before scope actions',commentary:'child final response missing/incomplete',partial:'child final response missing/incomplete',
+      divergent:'public child surfaces disagree',divergentParentReport:'completed parent tool report disagrees with child text',duplicateItems:'duplicate public history item',
+      invalidUtf8:'invalid UTF-8 response',truncatedContract:'generic runner complete contract output absent, truncated or foreign'})[name];
+    assert.ok(expected,`missing diagnostic contract for ${name}`);return refuses(expected)(error);
+  });
   assert.ok(bad.calls.every(call => ['thread/read', 'thread/items/list', 'thread/turns/list'].includes(call.method)));
 });
 
@@ -858,7 +1135,7 @@ for(const [name,change]of Object.entries({
 }))test(`generic contract loading refuses ${name} without a new turn`,async t=>{
   const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,mutate:change});
   const binding=await bindAppServerChild(s.rpc,identity);
-  await assert.rejects(()=>readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root}),blocked);
+  await assert.rejects(()=>readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root}),refuses(['missing','claim','nonzero','running','foreignCwd'].includes(name)?'generic runner contract read not observed before scope actions':'generic runner complete contract output absent, truncated or foreign'));
   assert.equal(s.calls.some(c=>c.method==='turn/start'),false);
 });
 
@@ -894,7 +1171,7 @@ test(`generic ${order} contract read rejects ${invalid} without a new turn`,asyn
   if(invalid==='foreign-identity')s.state.thread.parentThreadId='foreign';
   if(invalid==='extra-shell-effect')s.state.items[0].command=`/bin/zsh -lc '${command}; touch other'`;
   const binding=await bindAppServerChild(s.rpc,identity);
-  await assert.rejects(()=>readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root}),blocked);
+  await assert.rejects(()=>readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root}),refuses(invalid==='foreign-identity'?'child metadata foreign, forked or version differs':'generic runner complete contract output absent, truncated or foreign'));
   assert.ok(s.calls.every(call=>['thread/read','thread/items/list','thread/turns/list'].includes(call.method)));
 });
 
@@ -1004,8 +1281,8 @@ for (const [name, value, expected] of [
   ['history-io', { code: -32603, message: 'failed to read thread: /Users/private/session: No such file or directory (os error 2)' },
     { code: -32603, description: 'failed to read thread; no such file or directory; os error 2' }],
   ['unknown', { code: -32001, message: 'Bearer secret-value /Users/private/session', data: { token: 'secret-value' } }, { code: -32001, description: 'omitted' }],
-  ['invalid-code', { code: 'secret-value', message: 'private server detail' }, { code: null, description: 'omitted' }],
-  ['oversized-code', { code: 1e100, message: 'private server detail' }, { code: null, description: 'omitted' }],
+  ['invalid-code', { code: 'secret-value', message: 'private server detail' }, { code: null, description: 'invalid error envelope' }],
+  ['oversized-code', { code: 1e100, message: 'private server detail' }, { code: null, description: 'invalid error envelope' }],
 ]) test(`RPC rejection retains bounded code/category only: ${name}`, async t => {
   const w = wire(t), pending = w.rpc.request('thread/turns/list', { threadId: parent });
   const rejection = assert.rejects(pending, error => {
@@ -1039,9 +1316,9 @@ for (const [name, mutateEntry] of [
   };
   const provider=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
   const result=await provider.runTurn({prompt:'offline',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',operationId:'invalid-envelope',role:'author'});
-  assert.equal(result.completed,false);assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+  assert.equal(result.completed,false);assert.equal(result.error,name==='duplicate-item'?'duplicate public history item':'public item entry absent or foreign');assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
   scope=child;
-  await assert.rejects(()=>readAppServerChild(s.rpc,{binding:{...identity,agentThreadId:child,model:'gpt-6-luna',effort:'medium'},bundle:f.bundle,cwd:f.root}),blocked);
+  await assert.rejects(()=>readAppServerChild(s.rpc,{binding:{...identity,agentThreadId:child,model:'gpt-6-luna',effort:'medium'},bundle:f.bundle,cwd:f.root}),refuses(name==='duplicate-item'?'duplicate public history item':'public item entry absent or foreign'));
 });
 
 test('RPC rejection omits text after its 2048-character diagnostic prefix', async t => {
@@ -1405,7 +1682,8 @@ for (const kind of ['early-denial-in-long-chunk', 'split-denial', 'diagnostic-ov
   test(`S2 diagnostics ${kind} block without disclosing text or dispatching again`, async t => {
     const w = wire(t), pending = w.rpc.request('thread/read', { threadId: child });
     const rejected = assert.rejects(pending, error => {
-      assert.ok(['PERMISSION_REQUIRED', 'NATIVE_TRANSPORT_UNPROVEN'].includes(error.code));
+      assert.equal(error.code,kind==='diagnostic-overflow'?'NATIVE_TRANSPORT_UNPROVEN':'PERMISSION_REQUIRED');
+      assert.equal(error.message,kind==='diagnostic-overflow'?'App Server diagnostic limit exceeded':'App Server process reported a permission denial');
       assert.equal(error.message.includes('private diagnostic example'), false); return true;
     });
     if (kind === 'early-denial-in-long-chunk') w.diagnostics.write('permission denied ' + 'x'.repeat(600));
@@ -1521,11 +1799,11 @@ test('initialization rejection retains available stderr even while the codec rem
   w.rpc.request = (method, params) => {
     const pending = request(method, params);
     w.diagnostics.write('failed to parse config: private-value');
-    w.input.write(JSON.stringify({ id: w.sent.at(-1).id, error: { message: 'private server detail' } }) + '\n');
+    w.input.write(JSON.stringify({ id: w.sent.at(-1).id, error: { code:-32603, message: 'private server detail' } }) + '\n');
     return pending;
   };
   await assert.rejects(createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: w.rpc }), error => {
-    assert.equal(error.message, 'App Server rejected initialize'); assert.equal(error.code, 'NATIVE_TRANSPORT_UNPROVEN');
+    assert.equal(error.message, 'App Server rejected initialize (RPC -32603: omitted)'); assert.equal(error.code, 'NATIVE_TRANSPORT_UNPROVEN');
     assert.equal(error.stderrSample.status, 'retained'); return true;
   });
   const sample = await fs.readFile(path.join(f.root, 'tmp/app-server-stderr-sample.txt'), 'utf8');
@@ -1548,7 +1826,9 @@ for (const kind of ['malformed', 'invalid-wire-utf8', 'oversize', 'foreign-respo
   test(`S2 RPC ${kind} stops without acceptance/reconnect/retry`, async t => {
     const w = wire(t, { timeoutMs: 25, maxLineBytes: 250 });
     const request = w.rpc.request('thread/read', { threadId: child });
-    const rejection = assert.rejects(request, error => ['NATIVE_TRANSPORT_UNPROVEN', 'INTERACTION_REQUIRED'].includes(error.code));
+    const messages={malformed:'malformed public RPC message','invalid-wire-utf8':'invalid UTF-8 in public RPC stream',oversize:'RPC line limit exceeded',
+      'foreign-response':'unexpected RPC response',approval:'App Server requires explicit user interaction',end:'RPC ended; any dispatched turn has uncertain effect',timeout:'RPC timeout for thread/read; effect uncertain'};
+    const rejection=assert.rejects(request,refuses(messages[kind],kind==='approval'?'INTERACTION_REQUIRED':'NATIVE_TRANSPORT_UNPROVEN'));
     if (kind === 'malformed') w.input.write('{bad}\n');
     if (kind === 'invalid-wire-utf8') w.input.write(Buffer.concat([
       Buffer.from(`{"id":${w.sent[0].id},"result":{"text":"`), Buffer.from([0xff]), Buffer.from('"}}\n'),
@@ -1578,7 +1858,7 @@ test('S2 offline public child envelope crosses normal capture-native; persistenc
   const file = path.join(f.root, 'restored-owned-output/native-tool-result.json');
   // A persistence failure is not permission to spawn or rerun the recipe.
   await assert.rejects(() => captureAppServerChild(s.rpc, { binding, bundle: f.bundle, cwd: f.root,
-    toolResultFile: file }), error => error.code === 'ENOENT');
+    toolResultFile: file }), refuses('native adapter dependency failed (stage=physical; kind=IO; code=ENOENT)','DRIVER_FAILURE'));
   await fs.mkdir(path.dirname(file));
   const restoredBeforeCapture = server({ bundle: f.bundle, cwd: f.root, response: text });
   const captured = await captureAppServerChild(restoredBeforeCapture.rpc, { binding, bundle: f.bundle,
@@ -1666,7 +1946,13 @@ test(`provider does not substitute or announce invalid early capture: ${invalid}
       if(['removed-after-ready','removed-and-source-changed'].includes(invalid))await fs.unlink(file);
       if(invalid==='aliased-after-ready'){await fs.rename(file,path.join(f.root,'alias-target'));await fs.symlink(path.join(f.root,'alias-target'),file);}
     }});
-  assert.equal(result.completed,false);assert.ok(['NATIVE_TRANSPORT_UNPROVEN','ENOENT'].includes(result.errorCode));
+  assert.equal(result.completed,false);
+  const expected={'duplicate-completion':'duplicate completed child identity','foreign-completion':'unmatched completed child identity',
+    'truncated-public-copy':'public child surfaces disagree','aliased-file':'path is not physical/canonical','divergent-file':'existing tool result differs',
+    'changed-after-ready':'public child differs from first capture','file-and-source-changed':'public child differs from first capture',
+    'removed-and-source-changed':'public child differs from first capture','aliased-after-ready':'saved first child envelope absent/aliased/divergent',
+    'removed-after-ready':'native adapter dependency failed (stage=capture; kind=IO; code=ENOENT)'}[invalid];
+  assert.equal(result.errorCode,invalid==='removed-after-ready'?'DRIVER_FAILURE':'NATIVE_TRANSPORT_UNPROVEN');assert.equal(result.error,expected);
   assert.equal(ready,afterReady?1:0);
   if(afterReady)assert.equal(result.captures[0].toolResult.finalResponse,'  resultado íntegro\r\n𝛑\n');
   if(invalid==='changed-after-ready')assert.equal(JSON.parse(await fs.readFile(file)).finalResponse,'  resultado íntegro\r\n𝛑\n');
@@ -1689,6 +1975,10 @@ for(const fault of ['absent','both-drift','duplicate-ready','orphan-ready'])test
     else await fs.writeFile(file,JSON.stringify({agentId:identity.agentPath,status:'completed',finalResponse:s.state.items.at(-1).text})+'\n');}
   const next=await p.runTurn({...input,observation:{threadId:parent,turnId:'parent-turn',deadlineAt:first.deadlineAt}});
   assert.equal(next.completed,false);
+  assert.equal(next.error,{'absent':'native adapter dependency failed (stage=capture; kind=IO; code=ENOENT)',
+    'both-drift':'persisted first child envelope differs','duplicate-ready':'persisted child readiness binding differs',
+    'orphan-ready':'persisted child readiness is orphaned or duplicated'}[fault]);
+  assert.equal(next.errorCode,fault==='absent'?'DRIVER_FAILURE':'NATIVE_TRANSPORT_UNPROVEN');
   if(fault==='absent')await assert.rejects(fs.lstat(file),{code:'ENOENT'});
   if(['duplicate-ready','orphan-ready'].includes(fault))assert.deepEqual(await fs.readFile(file),bytes);
   assert.equal(s.calls.filter(call=>call.method==='turn/start').length,1);

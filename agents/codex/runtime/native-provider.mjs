@@ -3,27 +3,10 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { connectAppServer, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   startAppServerTurn, readAppServerTurn, bindAppServerChild, readAppServerChild, writeNativeToolResult,
-  deniedShellTemporaryFile, persistAppServerStderrSample, observeAppServerChild } from './app-server-transport.mjs';
+  deniedShellTemporaryFile, persistAppServerStderrSample, observeAppServerChild,
+  nativeTransportError as blocked, nativeFailure, publicTurnStatus, publicTurnDiagnostic } from './app-server-transport.mjs';
 
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-const blocked = message => Object.assign(new Error(message), { code: 'NATIVE_TRANSPORT_UNPROVEN' });
-const publicTurnStatus = status => ['completed','interrupted','failed','inProgress'].includes(status)
-  ? status : status == null ? 'absent' : 'other';
-// App Server 0.163 public error tags only. Diagnostic projection never grants a
-// retry and never retains message/additionalDetails, IDs, paths or HTTP payloads.
-const turnErrorCodes = new Set(['contextWindowExceeded','sessionBudgetExceeded','usageLimitExceeded',
-  'rateLimitExceeded','flexUnavailable','serverOverloaded','cyberPolicy','misalignmentPolicyViolation',
-  'tooManyDenials','internalServerError','unauthorized','badRequest','threadRollbackFailed','sandboxError','other']);
-const taggedTurnErrors = new Set(['httpConnectionFailed','responseStreamConnectionFailed',
-  'responseStreamDisconnected','responseTooManyFailedAttempts','activeTurnNotSteerable']);
-function parentFailureDiagnostic(turn) {
-  const error=turn.error==null?'absent':typeof turn.error==='object'&&!Array.isArray(turn.error)?'present':'invalid';
-  const info=error==='present'?turn.error.codexErrorInfo:null;
-  const tag=info&&typeof info==='object'&&!Array.isArray(info)&&Object.keys(info).length===1?Object.keys(info)[0]:null;
-  const cause=error==='invalid'?'unrecognized':info==null?'absent':turnErrorCodes.has(info)?info
-    :taggedTurnErrors.has(tag)?tag:'unrecognized';
-  return `status=${publicTurnStatus(turn.status)}; error=${error}; cause=${cause}`;
-}
 const wait = (ms, signal) => new Promise((resolve, reject) => {
   const timer = setTimeout(done, ms);
   function done() { signal?.removeEventListener('abort', cancel); resolve(); }
@@ -35,24 +18,23 @@ const wait = (ms, signal) => new Promise((resolve, reject) => {
 // One owned App Server per case, normal HOME. Tests inject only a fake public
 // RPC object; importing/calling the observer with it never opens a real client.
 export async function createNativeProvider({ snapshot, workspace, evidenceRoot, rpc = null, pollMs = 100 }) {
-  const bundle = await describeAppServerBundle({ skillsRoot: path.join(snapshot, 'skills/workflows'),
-    runnerFile: path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml') });
-  let connection = null;
-  if (rpc === null) {
-    // Legacy SDK offline fixtures must never fall through to an authenticated
-    // client because their provider does not speak App Server.
-    if (process.env.STNL_OFFLINE_PROVIDER_CONTEXT !== undefined || process.env.NODE_TEST_CONTEXT !== undefined) {
-      throw blocked('an explicit offline App Server provider is required for this fixture');
+  let bundle,connection=null;
+  try {
+    bundle=await describeAppServerBundle({skillsRoot:path.join(snapshot,'skills/workflows'),
+      runnerFile:path.join(snapshot,'agents/codex/.codex/agents/stnl_validation_runner.toml')});
+    if(rpc===null) {
+      if(process.env.STNL_OFFLINE_PROVIDER_CONTEXT!==undefined||process.env.NODE_TEST_CONTEXT!==undefined)
+        throw blocked('an explicit offline App Server provider is required for this fixture');
+      const cliLauncher=path.join(snapshot,'agents/codex/node_modules/@openai/codex/bin/codex.js');
+      connection=await connectAppServer({cliLauncher,cliSha256:sha(await fs.readFile(cliLauncher)),cwd:workspace});rpc=connection.rpc;
     }
-    const cliLauncher = path.join(snapshot, 'agents/codex/node_modules/@openai/codex/bin/codex.js');
-    connection = await connectAppServer({ cliLauncher, cliSha256: sha(await fs.readFile(cliLauncher)), cwd: workspace });
-    rpc = connection.rpc;
-  }
-  try { await initializeAppServer(rpc); }
-  catch (error) {
-    const stderrSample = await persistAppServerStderrSample(rpc, evidenceRoot);
-    if (stderrSample !== null) error.stderrSample = stderrSample;
-    throw error;
+    await initializeAppServer(rpc);
+  } catch(error) {
+    const primary=nativeFailure(error,'setup');
+    const stderrSample=await persistAppServerStderrSample(rpc??{},evidenceRoot);
+    if(stderrSample!==null)primary.stderrSample=stderrSample;
+    try { connection?.close(); } catch(secondary) { const safe=nativeFailure(secondary,'process');primary.cleanupFailure={code:safe.code,message:safe.message}; }
+    throw primary;
   }
   return {
     bundle,
@@ -60,25 +42,42 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
       priorAuthorThread = null, signal, timeoutMs = 900_000, onChildStarted, onChildCompleted,
       onDispatched, onUnadmittedChildren, observation = null, observeFormalBinding = null,
       onChildTurns, onFormalObserved, onAuxiliaryCompleted, validateRetainedCaptures, onPrepareContinuation = null }) {
-      await assertAppServerBundle(bundle);
-      if (typeof operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(operationId)) throw blocked('invalid operation evidence identity');
-      const events = [], children = new Map(), captures = new Map();
-      const eventsFile = path.join(evidenceRoot, `${operationId}.events.jsonl`);
-      if (observation === null) await fs.writeFile(eventsFile, '', { flag: 'wx' });
-      else await fs.access(eventsFile);
-      const previousEvents = observation === null ? [] : (await fs.readFile(eventsFile, 'utf8'))
-        .split('\n').filter(Boolean).map(JSON.parse);
-      const previousReady = previousEvents.filter(event => event.type === 'native.child.completed');
-      const continuations = new Map(), firstResponses = new Map(), continuationChecked = new Set();
-      for(const event of previousEvents.filter(event=>event.type==='native.child.continuation.admitted')) {
-        if(continuations.has(event.binding.agentPath))throw blocked('duplicate continuation admission');
-        continuations.set(event.binding.agentPath,event.grant);
-      }
+      const events=[],children=new Map(),captures=new Map();
+      let eventsFile,previousEvents,previousReady;
+      const continuations=new Map(),firstResponses=new Map(),continuationChecked=new Set();
+      try {
+        await assertAppServerBundle(bundle);
+        if(typeof operationId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(operationId))throw blocked('invalid operation evidence identity');
+        eventsFile=path.join(evidenceRoot,`${operationId}.events.jsonl`);
+        if(observation===null)await fs.writeFile(eventsFile,'',{flag:'wx'});else await fs.access(eventsFile);
+        previousEvents=observation===null?[]:(await fs.readFile(eventsFile,'utf8')).split('\n').filter(Boolean).map(JSON.parse);
+        if(!previousEvents.every(event=>event&&typeof event==='object'&&!Array.isArray(event)))throw blocked('persisted observation event malformed');
+        previousReady=previousEvents.filter(event=>event.type==='native.child.completed');
+        for(const event of previousEvents.filter(event=>event.type==='native.child.continuation.admitted')) {
+          if(continuations.has(event.binding.agentPath))throw blocked('duplicate continuation admission');
+          continuations.set(event.binding.agentPath,event.grant);
+        }
+      } catch(error) { throw nativeFailure(error,'prepare'); }
       const notified = new Set();
       const formal = new Map(), views = new Map(), auxiliaryDone = new Set();
       let terminalObserved = false;
+      let dispatch = null, dispatchAttempted = false, historyTimer = null;
+      const assertCurrent = () => {
+        if(signal?.aborted)throw blocked('native observation cancelled; dispatch may be active');
+        if(dispatch&&Date.now()>dispatch.deadlineAt)throw blocked('observation deadline exceeded; started turn is uncertain');
+      };
+      const hook = async (name,callback,value) => {
+        let result;
+        try { result=await callback?.(value); }
+        catch(error) { throw nativeFailure(error,name); }
+        // Dispatch accounting must finish first; its initial-history window is
+        // checked immediately below before any observation can start.
+        if(name!=='onDispatched')assertCurrent();return result;
+      };
       const record = async event => {
-        events.push(event); await fs.appendFile(eventsFile, `${JSON.stringify(event)}\n`);
+        events.push(event);
+        try { await fs.appendFile(eventsFile, `${JSON.stringify(event)}\n`); }
+        catch(error) { throw nativeFailure(error,'evidence'); }
       };
       // Pin each public result independently. A continuation never overwrites
       // the first file, even if both the API and a mutable file later drift.
@@ -98,6 +97,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         const result={...written,binding,toolResult:observed};map.set(binding.agentPath,result);return result;
       };
       const collect = async (binding,parentActive=false) => {
+        try {
         const stem=path.join(evidenceRoot,`${operationId}.child-${sha(binding.agentPath).slice(7)}`);
         let grant=continuations.get(binding.agentPath)??null;
         const count=views.get(binding.agentThreadId)?.turns.length??1;
@@ -111,7 +111,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           if(!(await fs.readFile(stem+'.json')).equals(Buffer.from(grant.firstToolResultUtf8)))throw blocked('continuation first bytes changed');
           if(!continuationChecked.has(binding.agentPath)) {
             if(!parentActive||typeof onPrepareContinuation!=='function')throw blocked('continuation cannot be readmitted after principal termination');
-            const confirmed=await onPrepareContinuation({binding,toolResultFile:stem+'.json',firstTurnId:grant.firstTurnId,validateInitialization});
+            const confirmed=await hook('onPrepareContinuation',onPrepareContinuation,{binding,toolResultFile:stem+'.json',firstTurnId:grant.firstTurnId,validateInitialization});
             if(JSON.stringify(confirmed)!==JSON.stringify(grant))throw blocked('persisted continuation differs from controller');
             continuationChecked.add(binding.agentPath);
           }
@@ -121,11 +121,12 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           }
         }
         const observed=await readAppServerChild(rpc,{binding,bundle,cwd:workspace,continuation:grant});
+        assertCurrent();
         if(!grant) {
           const original=await pin(binding,observed,stem+'.json',firstResponses,
             previousReady.filter(e=>e.binding?.agentPath===binding.agentPath));
           if(parentActive&&onPrepareContinuation!==null&&!captures.has(binding.agentPath)) {
-            grant=await onPrepareContinuation({binding,toolResultFile:original.file,firstTurnId,validateInitialization});
+            grant=await hook('onPrepareContinuation',onPrepareContinuation,{binding,toolResultFile:original.file,firstTurnId,validateInitialization});
             if(grant) {
               // Admission may have raced a long read/checkpoint with termination.
               // Keep the controller's grant, but expose no permission after the
@@ -139,7 +140,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               continuations.set(binding.agentPath,grant);continuationChecked.add(binding.agentPath);
               await record({type:'native.child.continuation.admitted',binding,grant,
                 firstToolResultFile:original.file,firstTurnId,finalResponseSha256:original.finalResponseSha256});
-              await onChildCompleted?.({binding,initialization:true,toolResult:observed,capture:original});
+              await hook('onChildCompleted',onChildCompleted,{binding,initialization:true,toolResult:observed,capture:original});
               return;
             }
           }
@@ -150,10 +151,10 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         if(!notified.has(binding.agentPath)) {
           if(!previousReady.some(e=>e.binding?.agentPath===binding.agentPath))await record({type:'native.child.completed',binding,toolResultFile:file,
             ...(capture.designation?{designation:capture.designation}:{}),finalResponseSha256:capture.finalResponseSha256});
-          await onChildCompleted?.({binding,toolResult:observed,capture});notified.add(binding.agentPath);
+          await hook('onChildCompleted',onChildCompleted,{binding,toolResult:observed,capture});notified.add(binding.agentPath);
         }
+        } catch(error) { throw nativeFailure(error,'capture'); }
       };
-      let dispatch = null, dispatchAttempted = false, historyTimer = null;
       try {
         if (role !== 'author' && priorAuthorThread !== null) throw blocked('review context cannot inherit author history');
         if (observation !== null && (!Number.isSafeInteger(observation.deadlineAt) || observation.deadlineAt < 1))
@@ -168,7 +169,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         const acknowledgedAt = Date.now();
         const historyDeadlineAt = observation === null && priorAuthorThread === null
           ? acknowledgedAt + Math.min(30_000, timeoutMs) : null;
-        await onDispatched?.(dispatch);
+        await hook('onDispatched',onDispatched,dispatch);
         await record({ type: observation === null ? 'native.turn.started' : 'native.turn.observation-resumed', ...dispatch, operationId, role });
         const started = Date.now(); let observed, historyObserved = false, pendingRecorded = false;
         // ACK is not a readable history barrier. Observe this fresh dispatch
@@ -181,7 +182,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             Math.max(0, historyDeadlineAt - Date.now()));
         }) : null;
         for (;;) {
-          if (signal?.aborted || Date.now() > dispatch.deadlineAt) throw blocked('observation interrupted; started turn is uncertain');
+          assertCurrent();
           if (!historyObserved && historyDeadlineAt !== null && Date.now() >= historyDeadlineAt) {
             throw blocked('initial public history observation deadline exceeded; dispatch remains uncertain');
           }
@@ -189,6 +190,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             const reading = readAppServerTurn(rpc, { ...dispatch, cwd: workspace });
             observed = await (!historyObserved && historyDeadline ? Promise.race([reading, historyDeadline]) : reading);
           } catch (error) {
+            error=nativeFailure(error);
             if (historyObserved || !historyDeadline || error.initialHistoryUnavailable !== true) throw error;
             if (!pendingRecorded) {
               await record({ type: 'native.history.pending', ...dispatch, message: error.message });
@@ -197,12 +199,12 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             await Promise.race([wait(pollMs, signal), historyDeadline]);
             continue;
           }
-          if (signal?.aborted || Date.now() > dispatch.deadlineAt) throw blocked('observation interrupted; started turn is uncertain');
+          assertCurrent();
           if (!historyObserved && historyDeadlineAt !== null && Date.now() >= historyDeadlineAt) {
             throw blocked('initial public history observation deadline exceeded; dispatch remains uncertain');
           }
           if (['absent','other'].includes(publicTurnStatus(observed.turn.status)))
-            throw blocked(`parent turn status unproven (${parentFailureDiagnostic(observed.turn)})`);
+            throw blocked(`parent turn status unproven (${publicTurnDiagnostic(observed.turn)})`);
           historyObserved = true; clearTimeout(historyTimer); historyTimer = null;
           const reportedStarts = observed.items.filter(value => value.type === 'subAgentActivity' && value.kind === 'started'
             && typeof value.agentThreadId === 'string' && typeof value.agentPath === 'string')
@@ -219,8 +221,9 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               let binding;
               try { binding = await bindAppServerChild(rpc, { parentThreadId: dispatch.threadId,
                 parentTurnId: dispatch.turnId, agentPath: item.agentPath });
-                await onChildStarted?.(binding); }
-              catch (error) { throw Object.assign(error, { descendants: [...(error.descendants ?? []), ...reportedStarts] }); }
+                await hook('onChildStarted',onChildStarted,binding); }
+              catch (error) { const safe=nativeFailure(error);
+                throw Object.assign(safe,{descendants:[...(safe.descendants??[]),...reportedStarts]}); }
               children.set(item.agentPath, binding);
               await record({ type: 'native.child.started', binding });
             }
@@ -235,7 +238,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             const needsDesignation = [...children.values()].some(binding => !formal.has(binding.agentThreadId)
               && !auxiliaryDone.has(binding.agentThreadId)
               && (rootCompleted.has(binding.agentThreadId) || observed.turn.status !== 'inProgress'));
-            const designation = needsDesignation ? await observeFormalBinding() : null;
+            const designation = needsDesignation ? await hook('observeFormalBinding',observeFormalBinding) : null;
             if (!designation && previousReady.length && formal.size === 0) {
               if (typeof validateRetainedCaptures !== 'function') throw blocked('retained formal verifier absent');
               const saved = [];
@@ -245,7 +248,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
                   || sha(toolResult.finalResponse) !== ready.finalResponseSha256) throw blocked('retained formal readiness differs');
                 saved.push({ ...ready, toolResult });
               }
-              await validateRetainedCaptures(saved);
+              await hook('validateRetainedCaptures',validateRetainedCaptures,saved);
               for (const ready of saved) {formal.set(ready.binding.agentThreadId, ready.designation);
                 if(ready.toolResult.preVerificationContinuation)continuationChecked.add(ready.binding.agentPath);}
             }
@@ -255,17 +258,18 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               if (observed.turn.status === 'inProgress' && !rootCompleted.has(binding.agentThreadId)
                 && !designated && !views.has(binding.agentThreadId)) continue;
               const view = await observeAppServerChild(rpc, { binding, cwd: workspace,
-                onTurns: turns => onChildTurns?.(binding, turns),
+                onTurns: turns => hook('onChildTurns',value=>onChildTurns?.(binding,value),turns),
                 onChild: async descendant => {
                 const known = children.get(descendant.agentPath);
                 if (known && (known.agentThreadId !== descendant.agentThreadId
                   || known.parentThreadId !== descendant.parentThreadId || known.parentTurnId !== descendant.parentTurnId)) throw blocked('descendant lineage changed');
                 if (!known) {
                   if ([...children.values()].some(item => item.agentThreadId === descendant.agentThreadId)) throw blocked('child has duplicate lineage');
-                  await onChildStarted?.(descendant); children.set(descendant.agentPath, descendant);
+                  await hook('onChildStarted',onChildStarted,descendant); children.set(descendant.agentPath, descendant);
                   await record({ type: 'native.child.started', binding: descendant });
                 }
               } });
+              assertCurrent();
               views.set(binding.agentThreadId, view);
               const completions = observed.items.filter(item => item.type === 'subAgentActivity' && item.kind === 'completed'
                 && item.agentPath === binding.agentPath).length;
@@ -279,12 +283,13 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               } else if (completions > view.turns.filter(turn => turn.status === 'completed').length) {
                 throw blocked('auxiliary completion count exceeds completed public turns');
               }
-              if (view.turns.some(item => ['failed', 'interrupted'].includes(item.status))) throw blocked('auxiliary turn failed/interrupted; preserve its effects');
+              const failedTurn=view.turns.find(item => ['failed','interrupted'].includes(item.status));
+              if(failedTurn)throw blocked(`child turn failed/interrupted; preserve its effects (formal=${designated||formal.has(binding.agentThreadId)}; ${failedTurn.failure})`);
               if (designated) {
                 const previous = formal.get(binding.agentThreadId);
                 if (previous && JSON.stringify(previous) !== JSON.stringify(designation)) throw blocked('formal designation changed');
                 if (!previous) {
-                  await onFormalObserved?.(binding, designation); formal.set(binding.agentThreadId, designation);
+                  await hook('onFormalObserved',value=>onFormalObserved?.(binding,value),designation); formal.set(binding.agentThreadId, designation);
                   await record({ type: 'native.child.formal', binding, designation });
                 }
               }
@@ -293,7 +298,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               } else if (view.turns.length && view.turns.every(item => item.status === 'completed')) {
                 const key = `${binding.agentThreadId}:${view.turns.map(item => item.id).join(',')}`;
                 if (!notified.has(key)) {
-                  await onAuxiliaryCompleted?.(binding); auxiliaryDone.add(binding.agentThreadId);
+                  await hook('onAuxiliaryCompleted',onAuxiliaryCompleted,binding); auxiliaryDone.add(binding.agentThreadId);
                   await record({ type: 'native.auxiliary.completed', binding, turns: view.turns }); notified.add(key);
                 }
               }
@@ -304,7 +309,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               if (!complete) { await wait(pollMs, signal); continue; }
               terminalObserved = true;
               for (const binding of children.values()) if (!formal.has(binding.agentThreadId) && !auxiliaryDone.has(binding.agentThreadId)) {
-                await onAuxiliaryCompleted?.(binding); auxiliaryDone.add(binding.agentThreadId);
+                await hook('onAuxiliaryCompleted',onAuxiliaryCompleted,binding); auxiliaryDone.add(binding.agentThreadId);
                 await record({ type: 'native.auxiliary.completed', binding, turns: views.get(binding.agentThreadId).turns });
               }
             }
@@ -319,7 +324,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           await wait(pollMs, signal);
         }
         if (observed.turn.status !== 'completed' || observed.turn.error != null)
-          throw blocked(`parent turn failed/interrupted (${parentFailureDiagnostic(observed.turn)})`);
+          throw blocked(`parent turn failed/interrupted (${publicTurnDiagnostic(observed.turn)})`);
         // Also reobserve already captured children after the principal ends.
         // A changed/extra turn or modified envelope cannot replace the first.
         for (const binding of children.values()) if (observeFormalBinding === null || formal.has(binding.agentThreadId)) await collect(binding);
@@ -338,7 +343,9 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           }
         }
         await assertAppServerBundle(bundle);
+        assertCurrent();
         await record({ type: 'native.turn.completed', ...dispatch });
+        assertCurrent();
         return { ...dispatch, completed: true, turnStarted: true, response: answer.text, terminalObserved,
           commandResults, captures: [...captures.values()], eventsPath: eventsFile, usage: null, toolCalls: null,
           requestedModel: model, requestedEffort: effort, reportedModel: null,
@@ -346,15 +353,23 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             bundleSha256: sha(Buffer.from(JSON.stringify(bundle))), role: 'author' } : null };
       } catch (error) {
         clearTimeout(historyTimer); historyTimer = null;
-        if (error.descendants?.length) await onUnadmittedChildren?.(error.descendants);
+        const primary=nativeFailure(error,'operation'),secondaryFailures=[];
+        if (error?.descendants?.length)try { await onUnadmittedChildren?.(error.descendants); }
+        catch(secondary) { const safe=nativeFailure(secondary,'onUnadmittedChildren');
+          secondaryFailures.push({stage:'onUnadmittedChildren',code:safe.code,message:safe.message}); }
         const stderrSample = await persistAppServerStderrSample(rpc, evidenceRoot);
-        await record({ type: 'native.transport.blocked', code: error.code ?? 'DRIVER_FAILURE',
-          message: error.message, dispatch, dispatchAttempted, stderrSample });
+        let evidenceStatus='retained';
+        try { await record({ type: 'native.transport.blocked', code: primary.code,
+          message: primary.message, dispatch, dispatchAttempted, stderrSample,
+          ...(secondaryFailures.length?{secondaryFailures}:{}) }); }
+        catch(secondary) { const safe=nativeFailure(secondary,'evidence');evidenceStatus='unavailable';
+          secondaryFailures.push({stage:'evidence',code:safe.code,message:safe.message}); }
         return { ...dispatch, threadId: dispatch?.threadId ?? null, completed: false,
           turnStarted: dispatchAttempted ? null : false, response: null, usage: null, toolCalls: null,
-          captures: [...captures.values()], commandResults: [], eventsPath: eventsFile, error: error.message,
-          errorCode: error.code ?? 'NATIVE_TRANSPORT_UNPROVEN', requestedModel: model, requestedEffort: effort,
-          observation: dispatch, stderrSample, terminalObserved };
+          captures: [...captures.values()], commandResults: [], eventsPath: eventsFile, error: primary.message,
+          errorCode: primary.code, requestedModel: model, requestedEffort: effort,
+          observation: dispatch, stderrSample, terminalObserved,evidenceStatus,
+          ...(secondaryFailures.length?{secondaryFailures}:{}) };
       } finally { clearTimeout(historyTimer); }
     },
     close() { connection?.close(); },

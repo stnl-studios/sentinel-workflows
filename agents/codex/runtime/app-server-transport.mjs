@@ -10,10 +10,49 @@ export const APP_SERVER_VERSION = '0.163.0';
 // Scope logging to this owned process; warnings/errors and the 64 KiB guard stay.
 export const appServerEnvironment = environment => ({ ...environment, RUST_LOG: 'warn' });
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-const fail = (message, code = 'NATIVE_TRANSPORT_UNPROVEN') => Object.assign(new Error(message), { code });
+// Origin marks only messages constructed/projection-redacted in this adapter.
+// It grants no authority, recovery or permission.
+const nativeDiagnostics = new WeakSet();
+export function nativeTransportError(message, code='NATIVE_TRANSPORT_UNPROVEN') {
+  const error=Object.assign(new Error(message),{code});nativeDiagnostics.add(error);return error;
+}
+const fail=nativeTransportError;
+const ioCodes=new Set(['ENOENT','EACCES','EPERM','EEXIST','ENOTDIR','EISDIR','ELOOP','EIO','ENOSPC','EMFILE','ENFILE','EPIPE','ECONNRESET','ECONNREFUSED','ETIMEDOUT']);
+const failureStages=new Set(['physical','bundle','process','contract','capture','setup','prepare','operation','evidence',
+  'onDispatched','onChildStarted','onChildTurns','onFormalObserved','onAuxiliaryCompleted','onChildCompleted',
+  'onPrepareContinuation','observeFormalBinding','validateRetainedCaptures','onUnadmittedChildren']);
+export function nativeFailure(error,stage='operation') {
+  if(nativeDiagnostics.has(error))return error;
+  stage=failureStages.has(stage)?stage:'operation';
+  const code=ioCodes.has(error?.code)?error.code:'other';
+  const kind=code!=='other'?'IO':error instanceof SyntaxError?'PARSE'
+    :stage.startsWith('on')||['observeFormalBinding','validateRetainedCaptures'].includes(stage)?'PRODUCT_CALLBACK':'UNKNOWN';
+  const safe=fail(`native adapter dependency failed (stage=${stage}; kind=${kind}; code=${code})`,'DRIVER_FAILURE');
+  if(Array.isArray(error?.descendants))safe.descendants=error.descendants;
+  return safe;
+}
 const requireThat = (condition, message) => { if (!condition) throw fail(message); };
 const id = value => typeof value === 'string' && value.length > 0 && !/[\0\r\n]/u.test(value);
 const inside = (root, file) => file.startsWith(`${root}${path.sep}`);
+export const publicTurnStatus = status => ['completed','interrupted','failed','inProgress'].includes(status)
+  ? status : status == null ? 'absent' : 'other';
+// App Server 0.163 public error tags only. Diagnostic projection never grants a
+// retry and never retains message/additionalDetails, IDs, paths or HTTP payloads.
+const turnErrorCodes = new Set(['contextWindowExceeded','sessionBudgetExceeded','usageLimitExceeded',
+  'rateLimitExceeded','flexUnavailable','serverOverloaded','cyberPolicy','misalignmentPolicyViolation',
+  'tooManyDenials','internalServerError','unauthorized','badRequest','threadRollbackFailed','sandboxError','other']);
+const taggedTurnErrors = new Set(['httpConnectionFailed','responseStreamConnectionFailed',
+  'responseStreamDisconnected','responseTooManyFailedAttempts','activeTurnNotSteerable']);
+export function publicTurnDiagnostic(turn) {
+  turn=turn??{};
+  const error=turn.error==null?'absent':typeof turn.error==='object'&&!Array.isArray(turn.error)?'present':'invalid';
+  const info=error==='present'?turn.error.codexErrorInfo:null;
+  const tag=info&&typeof info==='object'&&!Array.isArray(info)&&Object.keys(info).length===1?Object.keys(info)[0]:null;
+  const cause=error==='invalid'?'unrecognized':info==null?'absent':turnErrorCodes.has(info)?info
+    :taggedTurnErrors.has(tag)?tag:'unrecognized';
+  return `status=${publicTurnStatus(turn.status)}; error=${error}; cause=${cause}`;
+}
+
 // A default-deny projection, not a general-purpose secret scrubber. Persist
 // only these fixed phrases; unknown text/paths/values never leave memory.
 const STDERR_PHRASES = ['operation not permitted', 'permission denied', 'no such file or directory',
@@ -59,6 +98,9 @@ function initialRolloutMetadataPending(prefix, threadId) {
 // Unknown messages, data, paths and identifiers are never retained verbatim.
 function rpcRejection(method, value, threadId) {
   const code = Number.isSafeInteger(value?.code) ? value.code : null;
+  if(!value||typeof value!=='object'||Array.isArray(value)||code===null||typeof value.message!=='string')
+    return Object.assign(fail(`App Server rejected ${method} (RPC ${code??'unknown'}: invalid error envelope)`),{
+      rpcError:{code,description:'invalid error envelope'},initialHistoryUnavailable:false,paginatedIndexUnavailable:false});
   const rawPrefix = typeof value?.message === 'string' ? value.message.slice(0, 2048) : '';
   const prefix = rawPrefix.toLowerCase();
   const categories = ['method not found', 'invalid params', 'invalid request',
@@ -94,17 +136,20 @@ function rpcRejection(method, value, threadId) {
 }
 
 async function physical(file, directory = false) {
+  try {
   requireThat(typeof file === 'string' && path.isAbsolute(file) && path.resolve(file) === file,
     'noncanonical path');
   const stat = await fs.lstat(file);
   requireThat(!stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile())
     && await fs.realpath(file) === file, 'path is not physical/canonical');
   return stat;
+  } catch(error) { throw nativeFailure(error,'physical'); }
 }
 
 // The caller freezes this descriptor with its existing snapshot identity. It is
 // not proof that the client loaded these bytes; that remains a runtime gate.
 export async function describeAppServerBundle({ skillsRoot, runnerFile }) {
+  try {
   await physical(skillsRoot, true);
   await physical(runnerFile);
   requireThat(path.basename(runnerFile) === 'stnl_validation_runner.toml', 'wrong runner contract path');
@@ -129,13 +174,16 @@ export async function describeAppServerBundle({ skillsRoot, runnerFile }) {
     readCommand:canonicalContractReadCommand(runnerFile) };
   requireThat(files.some(file => path.basename(file.path) === 'SKILL.md'), 'empty skill bundle');
   return { skillsRoot, files, runner };
+  } catch(error) { throw nativeFailure(error,'bundle'); }
 }
 
 export async function assertAppServerBundle(bundle) {
+  try {
   requireThat(bundle && Array.isArray(bundle.files) && bundle.runner, 'missing frozen bundle');
   const actual = await describeAppServerBundle({ skillsRoot: bundle.skillsRoot, runnerFile: bundle.runner.path });
   requireThat(JSON.stringify(actual) === JSON.stringify(bundle), 'bundle/sibling/runner hash or mode drift');
   return actual;
+  } catch(error) { throw nativeFailure(error,'bundle'); }
 }
 
 // JSONL only. This codec is bounded and stops on uncertainty; it cannot accept
@@ -156,9 +204,12 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
   }
   function send(value) {
     if (closed) throw closed;
-    const line = `${JSON.stringify(value)}\n`;
+    let line;
+    try { line=`${JSON.stringify(value)}\n`; } catch(error) { throw nativeFailure(error,'process'); }
     requireThat(Buffer.byteLength(line) <= maxLineBytes, 'outgoing RPC line limit exceeded');
-    output.write(line, error => { if (error) stop(fail('RPC write uncertain')); });
+    const uncertain=error=>fail(`RPC write uncertain (code=${ioCodes.has(error?.code)?error.code:'other'})`);
+    try { output.write(line, error => { if (error) stop(uncertain(error)); }); }
+    catch(error) { stop(uncertain(error)); }
   }
   input.on('data', bytes => {
     if (closed) return;
@@ -181,13 +232,13 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
           requireThat(entry && (Object.hasOwn(message, 'result') !== Object.hasOwn(message, 'error')),
             'unexpected RPC response');
           clearTimeout(entry.timer); pending.delete(message.id);
-          if (message.error) entry.reject(rpcRejection(entry.method, message.error, entry.threadId));
+          if (Object.hasOwn(message,'error')) entry.reject(rpcRejection(entry.method, message.error, entry.threadId));
           else entry.resolve(message.result);
         }
         // Notifications are hints, never completion evidence. Read scoped public
         // history to recover exact identities/items even after a client restart.
         else requireThat(typeof message.method === 'string', 'invalid RPC notification');
-      } catch (error) { stop(error.code ? error : fail('malformed public RPC message')); return; }
+      } catch (error) { stop(nativeDiagnostics.has(error) ? error : fail('malformed public RPC message')); return; }
     }
     if (Buffer.byteLength(buffer) > maxLineBytes) stop(fail('RPC line limit exceeded'));
   });
@@ -231,7 +282,7 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
       requireThat(method === 'initialized', 'notification outside adapter scope');
       send({ method, params });
     },
-    close(error = fail('RPC closed by owner')) { stop(error); },
+    close(error = fail('RPC closed by owner')) { stop(nativeFailure(error,'process')); },
     stderrSample() {
       if (diagnosticHeadSize === 0) return null;
       const text = diagnosticHead.subarray(0, diagnosticHeadSize).toString('utf8').toLowerCase();
@@ -263,11 +314,13 @@ export async function persistAppServerStderrSample(rpc, evidenceRoot) {
 // Explicit opt-in only. Importing this module and all offline tests spawn zero
 // authenticated clients. No HOME/config/auth copy and no desktop socket.
 export async function connectAppServer({ cliLauncher, cliSha256, cwd, timeoutMs }) {
+  let child=null;
+  try {
   await physical(cliLauncher); await physical(cwd, true);
   const metadata = JSON.parse(await fs.readFile(path.resolve(cliLauncher, '../../package.json'), 'utf8'));
   requireThat(metadata.name === '@openai/codex' && metadata.version === APP_SERVER_VERSION
     && cliSha256 === sha(await fs.readFile(cliLauncher)), 'CLI pin/hash differs');
-  const child = spawn(process.execPath, [cliLauncher, 'app-server', '--listen', 'stdio://'],
+  child = spawn(process.execPath, [cliLauncher, 'app-server', '--listen', 'stdio://'],
     { cwd, env: appServerEnvironment(process.env), stdio: ['pipe', 'pipe', 'pipe'], shell: false });
   const rpc = appServerRpc({ input: child.stdout, output: child.stdin, diagnostics: child.stderr, timeoutMs });
   // Drain without printing potentially sensitive diagnostics or retaining an
@@ -275,6 +328,11 @@ export async function connectAppServer({ cliLauncher, cliSha256, cwd, timeoutMs 
   child.on('error', () => rpc.close(fail('owned App Server process failed to start')));
   child.on('exit', () => rpc.close(fail('owned App Server exited; dispatched effect may be uncertain')));
   return { rpc, close() { rpc.close(); child.stdin.end(); child.kill(); } };
+  } catch(error) {
+    const primary=nativeFailure(error,'process');
+    try { child?.kill(); } catch(secondary) { const safe=nativeFailure(secondary,'process');primary.cleanupFailure={code:safe.code,message:safe.message}; }
+    throw primary;
+  }
 }
 
 export async function initializeAppServer(rpc) {
@@ -401,6 +459,7 @@ async function pages(rpc, method, params, onPage = null) {
   }
   throw fail('public history page limit reached; result incomplete');
   } catch (error) {
+    error=nativeFailure(error);
     if (observedChildren.length) error.descendants = [...(error.descendants ?? []), ...observedChildren];
     throw error;
   }
@@ -432,6 +491,7 @@ export async function readAppServerTurn(rpc, { threadId, turnId, cwd }) {
   let turns;
   try { turns = await pages(rpc, 'thread/turns/list', { threadId, itemsView: 'full' }); }
   catch (error) {
+    error=nativeFailure(error);
     if (error.paginatedIndexUnavailable !== true) throw error;
     const { thread } = await rpc.request('thread/read', { threadId, includeTurns: false });
     requireThat(id(cwd) && thread?.id === threadId && thread.cliVersion === APP_SERVER_VERSION
@@ -474,14 +534,14 @@ export async function observeAppServerChild(rpc, { binding, cwd, onTurns, onChil
     for (const turn of page) if (id(turn?.id)) observedTurns.set(turn.id, { id: turn.id, status: turn.status });
     await onTurns?.([...observedTurns.values()]);
   });
-  requireThat(new Set(turns.map(turn => turn.id)).size === turns.length, 'duplicate auxiliary turns');
-  requireThat(turns.every(turn => id(turn.id)), 'invalid auxiliary turn identity');
+  requireThat(new Set(turns.map(turn => turn?.id)).size === turns.length, 'duplicate auxiliary turns');
+  requireThat(turns.every(turn => id(turn?.id)), 'invalid auxiliary turn identity');
   // Cost counts unique observed IDs; the malformed full view still fails.
   const children = [], observedChildren = [];
   try {
   for (const turn of turns) {
-    requireThat(id(turn.id) && ['inProgress', 'completed', 'failed', 'interrupted'].includes(turn.status)
-      && (turn.status !== 'completed' || turn.error == null), 'invalid auxiliary turn');
+    requireThat(id(turn.id) && !['absent','other'].includes(publicTurnStatus(turn.status))
+      && (turn.status !== 'completed' || turn.error == null), `invalid auxiliary turn (${publicTurnDiagnostic(turn)})`);
     const items = await pages(rpc, 'thread/items/list', { threadId: binding.agentThreadId, turnId: turn.id });
     const starts = items.filter(item => item.type === 'subAgentActivity' && item.kind === 'started');
     observedChildren.push(...starts.filter(item => id(item.agentThreadId) && id(item.agentPath))
@@ -496,8 +556,11 @@ export async function observeAppServerChild(rpc, { binding, cwd, onTurns, onChil
       await onChild?.(child); children.push(child);
     }
   }
-  } catch (error) { throw Object.assign(error, { descendants: [...(error.descendants ?? []), ...observedChildren] }); }
-  return { turns: turns.map(turn => ({ id: turn.id, status: turn.status })), children };
+  } catch (error) {
+    const safe=nativeFailure(error);throw Object.assign(safe,{descendants:[...(safe.descendants??[]),...observedChildren]});
+  }
+  return { turns: turns.map(turn => ({ id: turn.id, status: turn.status,
+    ...(['failed','interrupted'].includes(turn.status)?{failure:publicTurnDiagnostic(turn)}:{}) })), children };
 }
 
 // Observe the contract-loaded generic profile approved by the product. A
@@ -582,7 +645,7 @@ async function assertGenericContractLoad(items, bundle, cwd, binding) {
     && !isBoundRunnerMetadata(item,binding));
   requireThat(firstAction?.type === 'commandExecution' && firstAction.status === 'completed'
     && firstAction.exitCode === 0 && firstAction.cwd === cwd, 'generic runner contract read not observed before scope actions');
-  const bytes = await fs.readFile(bundle.runner.path), text = bytes.toString('utf8');
+  const bytes = await fs.readFile(bundle.runner.path).catch(error=>{throw nativeFailure(error,'contract');}), text = bytes.toString('utf8');
   requireThat(Buffer.from(text, 'utf8').equals(bytes) && sha(bytes) === bundle.runner.sha256,
     'generic runner contract bytes differ');
   const forms = contractReadForms(bundle.runner.path), command = firstAction.command;
@@ -610,17 +673,23 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd, continuati
     && thread.reasoningEffort === bundle.runner.effort,
   'child metadata foreign, forked or version differs');
   const turns = await pages(rpc, 'thread/turns/list', { threadId: binding.agentThreadId, itemsView: 'full' });
-  requireThat(turns.length === (continuation === null ? 1 : 2)
-    && turns.every(turn => id(turn.id) && turn.status === 'completed' && turn.error == null),
-  'fresh child has no admitted completed successful turn sequence');
+  requireThat(turns.length === (continuation === null ? 1 : 2),
+    'fresh child has no admitted completed successful turn sequence (failed=COUNT)');
+  const invalidTurn=turns.findIndex(turn=>!id(turn?.id)||turn.status!=='completed'||turn.error!=null);
+  requireThat(invalidTurn===-1,`fresh child has no admitted completed successful turn sequence (failed=TURN; ${publicTurnDiagnostic(turns[invalidTurn])})`);
+  requireThat(turns.every(turn=>turn.itemsView===undefined||['full','summary','notLoaded'].includes(turn.itemsView)),
+    'child turn items view unproven');
   let original = null;
   if (continuation !== null) {
     requireThat(continuation.format === 'stnl-native-pre-verification-continuation-v1'
       && Object.keys(binding).every(key => continuation.binding?.[key] === binding[key])
       && turns[0].id === continuation.firstTurnId
+      && typeof continuation.firstToolResultUtf8==='string'
       && sha(Buffer.from(continuation.firstToolResultUtf8, 'utf8')) === continuation.firstToolResultSha256,
     'continuation public identity/source differs');
-    original = JSON.parse(continuation.firstToolResultUtf8);
+    try { original=JSON.parse(continuation.firstToolResultUtf8); }
+    catch(error) { throw nativeFailure(error,'contract'); }
+    requireThat(original&&typeof original==='object'&&!Array.isArray(original),'continuation saved envelope malformed');
     const firstItems = await pages(rpc, 'thread/items/list', { threadId: binding.agentThreadId, turnId: turns[0].id });
     const firstFinal = firstItems.filter(item => item.type === 'agentMessage').at(-1);
     requireThat(original.agentId === binding.agentPath && original.status === 'completed'
@@ -667,6 +736,7 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd, continuati
 // Existing capture-native accepts this envelope. Never overwrite an earlier
 // result: exact replay is allowed, differing bytes preserve the first capture.
 export async function writeNativeToolResult(file, envelope) {
+  try {
   await physical(path.dirname(file), true);
   requireThat(path.isAbsolute(file) && path.resolve(file) === file && id(envelope?.agentId)
     && envelope.status === 'completed' && typeof envelope.finalResponse === 'string'
@@ -680,6 +750,7 @@ export async function writeNativeToolResult(file, envelope) {
     requireThat(bytes.equals(await fs.readFile(file)), 'existing tool result differs');
   }
   return { file, finalResponseSha256: sha(Buffer.from(envelope.finalResponse, 'utf8')) };
+  } catch(error) { throw nativeFailure(error,'capture'); }
 }
 
 export async function captureAppServerChild(rpc, { toolResultFile, ...observation }) {
