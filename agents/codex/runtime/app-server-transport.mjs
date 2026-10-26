@@ -522,13 +522,25 @@ function contractReadForms(file) {
   return { plain: wrap(plain), hashFirst: wrap(hashFirst), readFirst: wrap(readFirst), hashOnly: wrap(hashOnly) };
 }
 function assertInitializationEffects(items,bundle,cwd) {
-  for(const item of items) {
+  for(const [itemIndex,item] of items.entries()) {
     if(['userMessage','agentMessage','reasoning'].includes(item.type))continue;
-    requireThat(item.type==='commandExecution'&&item.cwd===cwd&&item.status==='completed'&&item.exitCode===0,
-      'continuation initialization has denied, uncertain or unexpected effects');
+    // Fixed labels and protocol scalars only. This existing refusal must say
+    // which guard failed without retaining commands, output, paths or IDs.
+    const diagnostic = failed => {
+      const itemType = ['commandExecution','subAgentActivity','collabAgentToolCall','mcpToolCall','fileChange']
+        .includes(item.type) ? item.type : 'other';
+      const status = ['completed','inProgress','failed','declined','interrupted'].includes(item.status)
+        ? item.status : item.status == null ? 'absent' : 'other';
+      const exitCode = Number.isSafeInteger(item.exitCode) ? item.exitCode : item.exitCode == null ? 'absent' : 'other';
+      return `itemIndex=${itemIndex}; failed=${failed}; itemType=${itemType}; cwd=${item.cwd===cwd?'matches':'differs'}; status=${status}; exitCode=${exitCode}`;
+    };
+    const failed = [['ITEM_TYPE',item.type==='commandExecution'],['CWD',item.cwd===cwd],
+      ['STATUS',item.status==='completed'],['EXIT_CODE',item.exitCode===0]].filter(([,valid])=>!valid).map(([label])=>label);
+    requireThat(failed.length===0,
+      `continuation initialization has denied, uncertain or unexpected effects (${diagnostic(failed.join(','))})`);
     const paths=[bundle.runner.path,...(item.commandActions??[]).filter(x=>x.type==='read'&&typeof x.path==='string').map(x=>x.path)];
     requireThat(paths.some(file=>Object.values(contractReadForms(file)).some(forms=>forms.has(item.command))),
-      'continuation initialization command effects are unproven');
+      `continuation initialization command effects are unproven (${diagnostic('COMMAND_READ_FORM')})`);
   }
 }
 async function assertGenericContractLoad(items, bundle, cwd) {

@@ -160,6 +160,54 @@ for (const [name, mutate] of [
     continuation: f.continuation }), blocked);
 });
 
+for (const [name, changes, failed, detail] of [
+  ['unexpected item', { type: 'private-unknown-type-secret' }, 'ITEM_TYPE', 'itemType=other'],
+  ['foreign cwd', { cwd: '/private/cwd-secret' }, 'CWD', 'cwd=differs'],
+  ['uncertain command', { status: 'inProgress', exitCode: null }, 'STATUS,EXIT_CODE', 'status=inProgress'],
+  ['denied command', { status: 'declined', exitCode: 1 }, 'STATUS,EXIT_CODE', 'status=declined'],
+  ['failed command', { exitCode: 2 }, 'EXIT_CODE', 'exitCode=2'],
+  ['missing metadata', { status: undefined, exitCode: undefined }, 'STATUS,EXIT_CODE', 'status=absent'],
+  ['unknown metadata', { status: 'private-status-secret', exitCode: 'private-exit-secret' }, 'STATUS,EXIT_CODE', 'status=other'],
+  ['unproven command', { command: 'touch private-command-secret' }, 'COMMAND_READ_FORM', 'itemType=commandExecution'],
+]) test(`initialization refusal retains bounded concrete diagnostic through provider (${name})`, async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true,
+    response: 'Initialization is not a verdict.\n' });
+  const effect = { id: 'private-item-secret', type: 'commandExecution',
+    cwd: f.root, command: `cat '${f.bundle.runner.path}'`, status: 'completed', exitCode: 0,
+    aggregatedOutput: 'private-output-secret', commandActions: [], ...changes };
+  s.state.items.splice(1, 0, effect);
+  s.state.turns[0].items = structuredClone(s.state.items);
+  s.state.parentItems.push({ ...s.state.parentItems[0], id: 'first-completion', kind: 'completed' });
+  const request = s.rpc.request.bind(s.rpc);
+  s.rpc.request = async (method, params) => {
+    const value = await request(method, params);
+    if (method === 'thread/turns/list' && params.threadId === parent) value.data[0].status = 'inProgress';
+    return value;
+  };
+  const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root,
+    evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  const result = await provider.runTurn({ prompt: 'OFFLINE only', workflowSkill: 'stnl-slice-executor',
+    model: 'gpt-6-luna', effort: 'high', role: 'review', operationId: 'initialization-refusal', timeoutMs: 1000,
+    observeFormalBinding: () => ({ agentPath: identity.agentPath }),
+    onPrepareContinuation: async ({ validateInitialization }) => { await validateInitialization(); assert.fail('must reject'); },
+    onChildCompleted: () => assert.fail('refused initialization cannot grant continuation or formal capture') });
+  assert.equal(result.completed, false); assert.equal(result.errorCode, 'NATIVE_TRANSPORT_UNPROVEN');
+  assert.ok(result.error.includes(`itemIndex=1; failed=${failed};`), result.error);
+  assert.ok(result.error.includes(detail), result.error);
+  assert.ok(Buffer.byteLength(result.error) <= 320, 'bounded diagnostic');
+  assert.doesNotMatch(result.error, /private-|\.toml|\/Users\//u, 'no raw paths, commands, output, IDs or foreign metadata');
+  const events = (await fs.readFile(result.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
+  const refusal = events.find(event => event.type === 'native.transport.blocked');
+  assert.equal(refusal.message, result.error, 'existing artifact preserves the exact safe diagnostic');
+  assert.ok(!events.some(event => event.type === 'native.child.continuation.admitted'));
+  assert.equal(result.captures.length, 0);
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1, 'only original fake principal');
+  assert.equal(s.state.turns.length, 1, 'no second producer turn or recipe');
+  const first = JSON.parse(await fs.readFile(path.join(f.root,
+    `initialization-refusal.child-${sha(identity.agentPath).slice(7)}.json`), 'utf8'));
+  assert.equal(first.finalResponse, 'Initialization is not a verdict.\n', 'first source remains literal');
+});
+
 for (const fault of [null, 'first-file-removed', 'first-alias', 'simultaneous-drift', 'duplicate-admission', 'expired',
   'parent-closed-during-admission', 'expired-during-admission'])
 test(`continued provider preserves both sources and reobserves without another turn (${fault ?? 'valid'})`, async t => {
