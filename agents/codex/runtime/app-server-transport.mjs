@@ -125,7 +125,8 @@ export async function describeAppServerBundle({ skillsRoot, runnerFile }) {
   requireThat(runnerFile === path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml'),
     'runner is not from the candidate distribution');
   const { model, effort } = await readRunnerConfiguration(snapshot);
-  const runner = { path: runnerFile, sha256: sha(await fs.readFile(runnerFile)), model, effort };
+  const runner = { path: runnerFile, sha256: sha(await fs.readFile(runnerFile)), model, effort,
+    readCommand:canonicalContractReadCommand(runnerFile) };
   requireThat(files.some(file => path.basename(file.path) === 'SKILL.md'), 'empty skill bundle');
   return { skillsRoot, files, runner };
 }
@@ -505,6 +506,11 @@ export async function observeAppServerChild(rpc, { binding, cwd, onTurns, onChil
 // never execute parsed shell text or accept a claim/echo as a read.
 const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`;
 const shellDoubleQuote = value => `"${value.replace(/[\\$`"]/gu, '\\$&')}"`;
+export function canonicalContractReadCommand(file) {
+  requireThat(typeof file==='string'&&path.isAbsolute(file)&&path.resolve(file)===file,
+    'noncanonical contract read path');
+  return `cat -- ${shellQuote(file)}`;
+}
 function contractReadForms(file) {
   const operands = [shellQuote(file), shellDoubleQuote(file), ...(/^[a-zA-Z0-9_./-]+$/u.test(file) ? [file] : [])];
   const plain = new Set(), hashFirst = new Set(), readFirst = new Set(), hashOnly = new Set();
@@ -521,9 +527,23 @@ function contractReadForms(file) {
       [shellQuote(form), shellDoubleQuote(form)].map(script => `${shell} ${script}`))]));
   return { plain: wrap(plain), hashFirst: wrap(hashFirst), readFirst: wrap(readFirst), hashOnly: wrap(hashOnly) };
 }
-function assertInitializationEffects(items,bundle,cwd) {
+// These activities describe this already-bound agent, not a tool action by it.
+// The containing thread/turn and its parent binding are checked independently.
+function isBoundRunnerMetadata(item,binding) {
+  return item.type==='subAgentActivity'&&['interacted','completed'].includes(item.kind)
+    &&item.agentPath===binding.agentPath&&item.agentThreadId===binding.agentThreadId
+    &&(item.model==null||item.model===binding.model)
+    &&(item.reasoningEffort==null||item.reasoningEffort===binding.effort);
+}
+function assertRunnerActivities(items,binding) {
+  const descendants=items.filter(item=>item.type==='subAgentActivity'&&item.kind==='started');
+  if(descendants.length)throw Object.assign(fail('runner delegated outside the admitted operation'),{descendants});
+  requireThat(items.every(item=>!['subAgentActivity','collabAgentToolCall'].includes(item.type)
+    ||isBoundRunnerMetadata(item,binding)), 'runner activity is foreign, effectful or ambiguous');
+}
+function assertInitializationEffects(items,bundle,cwd,binding) {
   for(const [itemIndex,item] of items.entries()) {
-    if(['userMessage','agentMessage','reasoning'].includes(item.type))continue;
+    if(['userMessage','agentMessage','reasoning'].includes(item.type)||isBoundRunnerMetadata(item,binding))continue;
     // Fixed labels and protocol scalars only. This existing refusal must say
     // which guard failed without retaining commands, output, paths or IDs.
     const diagnostic = failed => {
@@ -543,8 +563,9 @@ function assertInitializationEffects(items,bundle,cwd) {
       `continuation initialization command effects are unproven (${diagnostic('COMMAND_READ_FORM')})`);
   }
 }
-async function assertGenericContractLoad(items, bundle, cwd) {
-  const firstAction = items.find(item => !['userMessage', 'agentMessage', 'reasoning'].includes(item.type));
+async function assertGenericContractLoad(items, bundle, cwd, binding) {
+  const firstAction = items.find(item => !['userMessage', 'agentMessage', 'reasoning'].includes(item.type)
+    && !isBoundRunnerMetadata(item,binding));
   requireThat(firstAction?.type === 'commandExecution' && firstAction.status === 'completed'
     && firstAction.exitCode === 0 && firstAction.cwd === cwd, 'generic runner contract read not observed before scope actions');
   const bytes = await fs.readFile(bundle.runner.path), text = bytes.toString('utf8');
@@ -593,16 +614,16 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd, continuati
       && firstFinal?.phase === 'final_answer'
       && turns[0].items?.filter(item => item.type === 'agentMessage').at(-1)?.text === firstFinal.text,
     'continuation first public response changed');
-    assertInitializationEffects(firstItems,bundle,cwd);
-    await assertGenericContractLoad(firstItems, bundle, cwd);
+    assertRunnerActivities(firstItems,binding);
+    assertInitializationEffects(firstItems,bundle,cwd,binding);
+    await assertGenericContractLoad(firstItems, bundle, cwd, binding);
   }
   const turn = turns.at(-1);
   const items = await pages(rpc, 'thread/items/list', { threadId: binding.agentThreadId, turnId: turn.id });
-  if(initialization)assertInitializationEffects(items,bundle,cwd);
+  assertRunnerActivities(items,binding);
+  if(initialization)assertInitializationEffects(items,bundle,cwd,binding);
   if (items.some(deniedShellTemporaryFile)) throw fail('SANDBOX_COMMAND_DENIED: runner implicit temporary file denial');
-  const descendants = items.filter(item => item.type === 'subAgentActivity' && item.kind === 'started');
-  if (descendants.length) throw Object.assign(fail('runner delegated outside the admitted operation'), { descendants });
-  if (continuation === null) await assertGenericContractLoad(items, bundle, cwd);
+  if (continuation === null) await assertGenericContractLoad(items, bundle, cwd, binding);
   requireThat(new Set(items.map(item => item.id)).size === items.length, 'duplicate child history items');
   const messages = items.filter(item => item.type === 'agentMessage');
   const final = messages.at(-1);

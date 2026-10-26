@@ -4,11 +4,13 @@ import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { appServerEnvironment, appServerRpc, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   selectAppServerBundle, startAppServerTurn, bindAppServerChild, readAppServerChild, observeAppServerChild,
-  writeNativeToolResult, captureAppServerChild, persistAppServerStderrSample, readAppServerAgentFeatures } from '../agents/codex/runtime/app-server-transport.mjs';
+  writeNativeToolResult, captureAppServerChild, persistAppServerStderrSample, readAppServerAgentFeatures,
+  canonicalContractReadCommand } from '../agents/codex/runtime/app-server-transport.mjs';
 import { createNativeProvider } from '../agents/codex/runtime/native-provider.mjs';
 import { reservedOperation } from './fixtures/current-native-operation.mjs';
 import { bindNative, verifyNative, captureNative, resume } from
@@ -158,6 +160,51 @@ for (const [name, mutate] of [
   } };
   await assert.rejects(readAppServerChild(rpc, { binding: f.binding, bundle: f.bundle, cwd: f.root,
     continuation: f.continuation }), blocked);
+});
+
+for (const kind of ['interacted','completed']) for(const position of [0,1])
+test(`bound self ${kind} metadata at ${position} permits initialization and immutable continuation replay`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root});
+  const activity={id:'self-metadata',type:'subAgentActivity',kind,agentPath:identity.agentPath,agentThreadId:child,
+    model:'gpt-6-luna',reasoningEffort:'medium'};
+  if(kind==='completed'&&position===1){delete activity.model;delete activity.reasoningEffort;}
+  s.state.items.splice(position,0,activity);s.state.turns[0].items=structuredClone(s.state.items);
+  const binding=await bindAppServerChild(s.rpc,identity),options={binding,bundle:f.bundle,cwd:f.root,initialization:true};
+  const before=JSON.stringify(s.state);assert.equal((await readAppServerChild(s.rpc,options)).status,'completed');
+  assert.equal(JSON.stringify(s.state),before);assert.ok(s.calls.every(call=>call.method.startsWith('thread/')));
+  const replay=await continuedHistory(t);
+  replay.s.state.turns[0].items.splice(position,0,activity);
+  const args={binding:replay.binding,bundle:replay.bundle,cwd:replay.root,continuation:replay.continuation};
+  const first=await readAppServerChild(replay.rpc,args),again=await readAppServerChild(replay.rpc,args);
+  assert.deepEqual(first,again);assert.equal(first.finalResponse,'First and only formal response\r\n');
+  assert.equal(replay.s.calls.filter(call=>call.method==='turn/start').length,0);
+  s.state.items.splice(s.state.items.findIndex(item=>item.id==='contract-read'),0,{id:'early-action',type:'commandExecution',cwd:f.root,
+    command:'cat other-scope',status:'completed',exitCode:0,aggregatedOutput:''});
+  await assert.rejects(readAppServerChild(s.rpc,{...options,initialization:false}),blocked,
+    'metadata cannot conceal a real scope action before the contract read');
+});
+
+for(const [name,changes] of [
+  ['spawn',{kind:'started'}],['interruption',{kind:'interrupted'}],
+  ['foreign path',{agentPath:'/root/other'}],['foreign thread',{agentThreadId:'other'}],
+  ['missing kind',{kind:undefined}],['unknown kind',{kind:'unknown'}],
+  ['missing target',{agentThreadId:undefined}],['foreign model',{model:'foreign'}],
+  ['foreign effort',{reasoningEffort:'high'}],
+  ['collaboration action',{type:'collabAgentToolCall',tool:'wait',senderThreadId:child,receiverThreadIds:['other'],status:'completed',agentsStates:{}}],
+]) test(`formal runner activity rejects ${name} in normal and initialization observations`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root});
+  const activity={id:'activity',type:'subAgentActivity',kind:'interacted',agentPath:identity.agentPath,
+    agentThreadId:child,...changes};
+  s.state.items.splice(1,0,activity);s.state.turns[0].items=structuredClone(s.state.items);
+  const binding=await bindAppServerChild(s.rpc,identity);
+  for(const initialization of [false,true])await assert.rejects(readAppServerChild(s.rpc,
+    {binding,bundle:f.bundle,cwd:f.root,initialization}),blocked);
+  assert.ok(s.calls.every(call=>call.method.startsWith('thread/')),'no new producer, recipe or advancement');
+  for(const position of [0,1]){
+    const replay=await continuedHistory(t);replay.s.state.turns[position].items.splice(1,0,activity);
+    await assert.rejects(readAppServerChild(replay.rpc,{binding:replay.binding,bundle:replay.bundle,
+      cwd:replay.root,continuation:replay.continuation}),blocked);
+  }
 });
 
 for (const [name, changes, failed, detail] of [
@@ -800,6 +847,28 @@ test('generic contract read preserves paths with spaces/quotes and double-quoted
   s.state.items[0].command='/bin/zsh -lc "'+script.replace(/[\\$`"]/gu,'\\$&')+'"';
   const binding=await bindAppServerChild(s.rpc,identity);
   assert.equal((await readAppServerChild(s.rpc,{binding,bundle,cwd:root})).finalResponse,s.state.items.at(-1).text);
+});
+
+test('canonical contract read preserves literal special characters and still rejects altered commands/output',async t=>{
+  const f=await fixture(t),root=f.root+" space's $() ` ; unicode-𝛑";
+  await fs.rename(f.root,root);t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const bundle=await describeAppServerBundle({skillsRoot:path.join(root,'skills/workflows'),
+    runnerFile:path.join(root,'agents/codex/.codex/agents/stnl_validation_runner.toml')});
+  const command=canonicalContractReadCommand(bundle.runner.path);
+  assert.equal(bundle.runner.readCommand,command,'producer owns the derived command');
+  const read=spawnSync('/bin/zsh',['-c',command],{cwd:root,encoding:'utf8'});
+  assert.equal(read.status,0);assert.equal(read.stderr,'');assert.equal(read.stdout,await fs.readFile(bundle.runner.path,'utf8'));
+  const s=server({bundle,cwd:root});s.state.items[0].command=command;s.state.items[0].aggregatedOutput=read.stdout;
+  const binding=await bindAppServerChild(s.rpc,identity),options={binding,bundle,cwd:root,initialization:true};
+  assert.equal((await readAppServerChild(s.rpc,options)).status,'completed');
+  // Malicious/unknown commands are represented as fake public history, never executed.
+  s.state.items[0].command=command+'; touch forbidden';
+  await assert.rejects(readAppServerChild(s.rpc,options),blocked);
+  s.state.items[0].command=command;s.state.items[0].aggregatedOutput+='foreign output';
+  await assert.rejects(readAppServerChild(s.rpc,options),blocked);
+  const tampered=structuredClone(bundle);tampered.runner.readCommand+='; touch forbidden';
+  await assert.rejects(assertAppServerBundle(tampered),blocked,'a caller cannot change the producer command');
+  assert.throws(()=>canonicalContractReadCommand('/noncanonical/../runner.toml'),blocked);
 });
 
 test('S2 another completed child is not substituted for the scoped child', async t => {

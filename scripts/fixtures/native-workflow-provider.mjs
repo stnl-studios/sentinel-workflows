@@ -193,10 +193,14 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       if (operation === 'EXECUTE_SLICE' && fault === 'aux-followup-twelve') auxiliary(thread, turn, { turns: 12 });
       const continuing=fault==='pre-verification-continuation'&&operation==='EXECUTE_SLICE'
         ||fault==='formal-continuation-exhausted'&&operation==='VALIDATE_SLICE';
-      const contractRead=()=>({id:randomUUID(),type:'commandExecution',command:`cat -- '${path.join(snapshot,'agents/codex/.codex/agents/stnl_validation_runner.toml')}'`,cwd:workspace,status:'completed',exitCode:0,aggregatedOutput:null});
+      const contractCommand=/^cat -- .+$/mu.exec(prompt)?.[0];
+      if(!contractCommand)throw Error('canonical full-contract read command absent from public context');
+      const contractRead=()=>({id:randomUUID(),type:'commandExecution',command:contractCommand,cwd:workspace,status:'completed',exitCode:0,aggregatedOutput:null});
       if(continuing) {
         const read=contractRead();read.aggregatedOutput=await fs.readFile(path.join(snapshot,'agents/codex/.codex/agents/stnl_validation_runner.toml'),'utf8');
-        child.turns.push({id:randomUUID(),status:'completed',error:null,itemsView:'full',items:[read,{id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Arbitrary initialization; no verification yet.'}]});
+        child.turns.push({id:randomUUID(),status:'completed',error:null,itemsView:'full',items:[
+          {id:randomUUID(),type:'subAgentActivity',kind:'interacted',agentPath,agentThreadId:childId},
+          read,{id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Arbitrary initialization; no verification yet.'}]});
         turn.items.push({id:randomUUID(),type:'subAgentActivity',kind:'completed',agentPath,agentThreadId:childId});
         const eventPath=/record in (.+?); match binding\.agentPath/u.exec(prompt)?.[1];
         const deadline=Date.now()+10000;let admittedContinuation;

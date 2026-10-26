@@ -171,7 +171,8 @@ test('independent synthetic Case C transcript detects unmeasured delegation with
 });
 
 test('normal operator context selects the generic profile and keeps implementation before checks',()=>{
-  const bundle={runner:{path:'/frozen/stnl_validation_runner.toml',sha256:`sha256:${'a'.repeat(64)}`,model:'gpt-6-luna',effort:'medium'}};
+  const bundle={runner:{path:'/frozen/stnl_validation_runner.toml',sha256:`sha256:${'a'.repeat(64)}`,model:'gpt-6-luna',effort:'medium',
+    readCommand:"cat -- '/frozen/stnl_validation_runner.toml'"}};
   for(const operation of ['EXECUTE_SLICE','APPLY_FINDINGS','VALIDATE_SLICE']){
     const context=manager.nativeRunnerContext(operation,bundle,'/run/operation.events.jsonl');
     assert.ok(context.includes(bundle.runner.path)&&context.includes(bundle.runner.sha256));
@@ -186,7 +187,19 @@ test('normal operator context selects the generic profile and keeps implementati
   assert.equal(manager.nativeRunnerContext('PLAN',bundle),'');
   assert.throws(()=>manager.nativeRunnerContext('EXECUTE_SLICE',{runner:{...bundle.runner,effort:'high'}}),/missing explicit generic runner profile/u);
   assert.throws(()=>manager.nativeRunnerContext('EXECUTE_SLICE',null),/missing explicit generic runner profile/u);
+  assert.throws(()=>manager.nativeRunnerContext('EXECUTE_SLICE',{runner:{...bundle.runner,readCommand:undefined}},'/run/operation.events.jsonl'),/missing canonical contract read command/u);
   assert.throws(()=>manager.nativeRunnerContext('VALIDATE_SLICE',bundle),/missing official capture event path/u);
+});
+
+test('normal operator context emits one canonical full-contract read with literal shell quoting',()=>{
+  const file="/frozen space's $() ` ; directory/stnl_validation_runner.toml";
+  const expected="cat -- '"+file.replaceAll("'","'\\''")+"'";
+  const bundle={runner:{path:file,sha256:`sha256:${'a'.repeat(64)}`,model:'gpt-6-luna',effort:'medium',readCommand:expected}};
+  for(const operation of ['EXECUTE_SLICE','APPLY_FINDINGS','VALIDATE_SLICE']){
+    const context=manager.nativeRunnerContext(operation,bundle,'/run/operation.events.jsonl');
+    assert.ok(context.split('\n').includes(expected),'producer supplies the exact command, not an interpolation template');
+    assert.ok(context.includes('Pass this exact full-contract read command to the child'));
+  }
 });
 
 test('native launcher disagreement stops before SDK and runner dispatch for every runner operation', () => {
