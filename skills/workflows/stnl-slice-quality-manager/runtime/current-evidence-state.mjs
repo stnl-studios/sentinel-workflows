@@ -3263,6 +3263,8 @@ export function composeCurrentValidationEvidence(input) {
   if(normalizing)bundle.support=[...base.bundle.support,
     ...(derived.rejection?bundle.support.filter(item=>item.kind==='rejection'&&item.operationAttemptId===input.owner.operationAttemptId)
       :base.bundle.validation?[base.bundle.validation]:[])];
+  if(base.cycle)bundle.support=retainOperationalSupport(base.bundle,bundle.support,base.map,
+    [...bundle.implementation,...bundle.findingsChecks,bundle.validation].filter(Boolean));
   if(base.cycle||bundle.support.some(item=>item.kind==='implementation-check')) {
     const rank={'implementation-check':0,'findings-check':1,validation:2,rejection:3};
     bundle.support.sort((a,b)=>rank[a.kind]-rank[b.kind]);
@@ -3366,8 +3368,10 @@ export function composeCurrentFindingsEvidence(input) {
     && (base.bundle.openFindings.some(finding=>finding.originAttempt===item.id)||implementation.length&&item.id==='attempt-01'));
   const retained=selectRemovalSupport(base,cycle,input.rounds,input.context);
   const refusals=implementation.length?[...implementationRefusals(base.bundle),...firstFormalRefusals(base.bundle,base.map)]:[];
-  const support=[...retained.filter(item=>item.kind!=='rejection'),...oldOrigins,
-    ...new Set([...refusals,...retained.filter(item=>item.kind==='rejection')])];
+  const support=retainOperationalSupport(base.bundle,
+    [...retained.filter(item=>item.kind!=='rejection'),...oldOrigins,
+      ...new Set([...refusals,...retained.filter(item=>item.kind==='rejection')])],
+    base.map,[...implementation,base.bundle.validation]);
   if (cycle.rejection) support.push(cycle.rejection);
   const joined=new Map([...base.map,...store.finish().map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])]);
   const bundle={...base.bundle,implementation,findingsChecks:cycle.checks,
