@@ -425,6 +425,20 @@ for(const malformedHistory of [false,true])test(`Initial failed check then prove
     assert.deepEqual(await fs.readFile(responseFile),raw);assert.deepEqual(await fs.readFile(path.join(root,'round-2.observation.json')),observation);
     for(const response of responses)assert.deepEqual(await fs.readFile(response.file),response.bytes);
     await assert.rejects(fs.stat(path.join(root,'round-3.observation.json')),{code:'ENOENT'});
+    const retained=await captureCurrentExecution(f.specPath);
+    const current=JSON.parse(Buffer.from(retained.files.get('continuity.json'))).deliveries.find(item=>item.slice==='slice-01');
+    assert.match(current.lastDiagnostic.reason,/priorRoundFailure is required for automatic check rounds after 1\/3/u);
+    const bundle=JSON.parse(Buffer.from(retained.files.get(current.evidence.path)));
+    const rejection=bundle.support.find(item=>item.kind==='rejection');
+    assert.equal(rejection.diagnostic,current.lastDiagnostic.reason,'the public handoff retains the complete parser diagnostic');
+    const objects=new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')]));
+    assert.deepEqual(objects.get(rejection.sources.rawResponse),Buffer.from(responses[1].finalResponse));
+    const successor=await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:retained.inspection.activationId});
+    const next=await reserveDispatch(successor.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+    const nextRequest=JSON.parse(await fs.readFile(next.requestFile)),nextOrigin=JSON.parse(await fs.readFile(next.originFile));
+    assert.equal(nextRequest.round,3);assert.equal(nextRequest.previousCheck,null);
+    assert.equal(nextOrigin.admission.binding.normalization.sourceEvidenceSha256,current.evidence.sha256,
+      'the next producer is bound to the retained feedback sources, not an invented corrected verdict');
     return;
   }
   assert.equal(captured.status,'BLOCKED');assert.equal(captured.nextAction,'reserve-dispatch');
