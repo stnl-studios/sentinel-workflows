@@ -518,3 +518,15 @@ test('native execution schemas require their literal admitted round and cannot u
  const raw=payload(1);assert.equal(parseSemanticExecutionPayload(JSON.stringify(raw),'EXECUTE_SLICE').automaticCheckRound,'1/3');delete raw.automaticCheckRound;
  assert.throws(()=>parseSemanticExecutionPayload(JSON.stringify(raw),'EXECUTE_SLICE',{automaticCheckRound:'1/3'}),/Automatic check round is invalid/u);
 });
+
+
+test('Codex native findings explicitly separate envelope and canonical attempt token', async () => {
+  const contract = await fs.readFile(path.join(canonical, 'codex/.codex/agents/stnl_validation_runner.toml'), 'utf8');
+  const selected = contract.split('Se o `round-N.origin.json`')[1].split('\n\n')[0];
+  assert.match(selected, /\{"format":"stnl-current-native-judgment-v1","result":<julgamento semântico>,"newFindings":\[\]\}/u,
+    'VALIDATE selected native envelope names both root siblings explicitly');
+  const common = contract.split('## Regras de findings e validação')[1].split('# EXECUTE_SLICE')[0];
+  assert.match(common, /originAttempt[^\n]*request\.attemptId[^\n]*attempt-01/u,
+    'all selected response variants define the canonical finding-attempt token');
+  assert.match(common, /não[^\n]*owner\.operationAttemptId/u, 'the owner UUID is not the finding attempt token');
+});
