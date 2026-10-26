@@ -387,7 +387,7 @@ test('Initial valid BLOCKED is distinct from semantic refusal and remains outsid
   assert.equal((await captureNative(started.handle,file)).replayed,true);
 });
 
-test('Initial failed check then proved missing test uses only the existing third invocation',async t=>{
+for(const malformedHistory of [false,true])test(`Initial failed check then proved missing test ${malformedHistory?'rejects invalid round history':'uses only the existing third invocation'}`,async t=>{
   const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   await installCurrentInitial(f);const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');
   const responses=[];
@@ -397,6 +397,7 @@ test('Initial failed check then proved missing test uses only the existing third
     const {head,...result}=initialPayload(round,status);result.commands=measured.commands;
     result.blockers=status==='BLOCKED'?'The approved zero-amount assertion is missing.':'none';
     if(omissions)result.testCoverageOmissions=omissions;
+    if(malformedHistory&&round===2){result.priorRoundFailure='none';result.correctionApplied='none';}
     const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
     const file=path.join(f.root,`coverage-result-${round}.json`);await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
     const captured=await captureNative(started.handle,file);responses.push({file,bytes:await fs.readFile(file),finalResponse});return captured;
@@ -408,6 +409,24 @@ test('Initial failed check then proved missing test uses only the existing third
   const omission={obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),
     evidence:'The prepared assertion checks paid but never invokes pay(0), required by AC-001.',expectedCorrection:'Add the zero-amount declined assertion to this prepared test.'};
   const captured=await conclude(second,2,'BLOCKED',[omission]);
+  if(malformedHistory) {
+    assert.equal(captured.captureClass,'initial-rejection');assert.equal(captured.nextAction,'publish');
+    const root=path.dirname(second.originFile),responseFile=path.join(root,'round-2.response.json');
+    const raw=await fs.readFile(responseFile),observation=await fs.readFile(path.join(root,'round-2.observation.json'));
+    assert.equal((await captureNative(started.handle,responses[1].file)).replayed,true);
+    assert.equal((await resume(started.handle)).nextAction,'publish');
+    const receiptFile=path.join(root,'round-2.receipt.json'),receiptBefore=await fs.readFile(receiptFile);
+    const changed=JSON.parse(receiptBefore);changed.semanticResponseStatus='TESTS_PASS';await fs.writeFile(receiptFile,JSON.stringify(changed));
+    await assert.rejects(publish(started.handle),{code:'OWNER_UNCERTAIN'},'a genuine receipt/payload status mismatch remains fatal');
+    await fs.writeFile(receiptFile,receiptBefore);
+    const published=await publish(started.handle);assert.equal(published.transition.outcome,'rejected');
+    const image=await inspectCurrentExecution(f.specPath);assert.deepEqual(image,await inspectQualityExecution(f.specPath));
+    assert.equal(image.state,'MATERIALIZED_PRISTINE');assert.equal(image.deliveries[0].counters.implementationChecks,1,'the preceding valid failed check remains counted');
+    assert.deepEqual(await fs.readFile(responseFile),raw);assert.deepEqual(await fs.readFile(path.join(root,'round-2.observation.json')),observation);
+    for(const response of responses)assert.deepEqual(await fs.readFile(response.file),response.bytes);
+    await assert.rejects(fs.stat(path.join(root,'round-3.observation.json')),{code:'ENOENT'});
+    return;
+  }
   assert.equal(captured.status,'BLOCKED');assert.equal(captured.nextAction,'reserve-dispatch');
   assert.equal((await resume(started.handle)).nextAction,'reserve-dispatch');
   await assert.rejects(publish(started.handle),error=>error.code==='EVIDENCE_INCOMPLETE');

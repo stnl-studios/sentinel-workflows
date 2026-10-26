@@ -577,7 +577,8 @@ function compose(input, info) {
       } else if (receipt.status === 'RUNNER_RESPONSE_CAPTURED') {
         if (receipt.captureFailure !== null) uncertain(`round ${round}: captured schema result is not concluded`);
         let loose;
-        try { loose=JSON.parse(rawText); } catch { uncertain(`round ${round}: accepted receipt cannot bind non-JSON raw`); }
+        // Bind the receipt to the same projected operation payload parsed above.
+        try { loose=JSON.parse(semanticText); } catch { uncertain(`round ${round}: accepted receipt cannot bind non-JSON raw`); }
         if (receipt.semanticResponseStatus !== loose?.status) uncertain(`round ${round}: accepted receipt semantic status differs`);
         if (cap.verificationObservation === null) incomplete(`round ${round}: accepted schema result lacks observation`);
         const observed=jsonBytes(cap.verificationObservation, `round ${round} verificationObservation`).value;
