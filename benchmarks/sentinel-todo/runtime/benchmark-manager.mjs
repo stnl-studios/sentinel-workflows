@@ -152,8 +152,10 @@ async function updateLedger(runRoot, mutator, limit) {
   return job;
 }
 function availableTurns(ledger) { return ledger.limit - ledger.total - ledger.reservations.length; }
-export async function admitOperation({ runRoot, runId, caseId, operation, runnerRequired, runnerSlots = runnerRequired ? 1 : 0, auxiliaryLimit = 0, limit }) {
+export async function admitOperation({ runRoot, runId, caseId, operation, runnerRequired, runnerSlots = runnerRequired ? 1 : 0, auxiliaryLimit = 0, limit, beforeAdmission = null }) {
   return updateLedger(runRoot, (ledger) => {
+    // Recheck after queued ledger I/O, in the synchronous reservation mutation.
+    beforeAdmission?.();
     if (!Number.isSafeInteger(runnerSlots) || runnerSlots < 0 || runnerSlots > 3) fail('invalid native child margin');
     if (availableTurns(ledger) < 1 + runnerSlots) throw budgetPause();
     const main = randomUUID();
@@ -490,7 +492,7 @@ export function settledNativeCase(state, ledger) {
 }
 
 export async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal,
-  resume = false }) {
+  resume = false, beforeOperation = null, reportTerminal = null }) {
   const policy = contextPolicy(configuration), turnLimit = configuration.turnBudget?.maxTurnsPerRun;
   if (!Number.isSafeInteger(turnLimit) || turnLimit < 1) fail('invalid per-run turn budget');
   const caseRoot = path.join(runRoot, caseName(caseId)), workspace = path.join(caseRoot, 'workspace');
@@ -557,6 +559,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
     await atomicJson(stateFile, state);
     for (let sequence = pending?.sequence ?? state.operations.length + 1; target !== null; sequence++) {
       if (signal?.aborted) throw Object.assign(new Error('cancelled'), { code: 'CANCELLED' });
+      beforeOperation?.(caseId);
       if (finalSequence !== null && sequence > finalSequence) { terminal = { result: 'FOCAL_STOP', blocker: null }; break; }
       const { operation, slice } = target, route = dispatch(configuration, caseId, operation);
       const violation = budgetViolation([...state.operations, target], caseConfiguration.budgets);
@@ -618,8 +621,11 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       // cannot retroactively prevent a spawn; unexpected children block rather
       // than being called free. No promise of a financial/HTTP limit is made.
       const runnerSlots = ['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation) ? 3 : operation === 'VALIDATE_SLICE' ? 2 : 0;
+      // The serialized admission rechecks the sibling barrier after ledger I/O.
+      // An operation admitted earlier keeps its original observation and deadline.
       const admission = pending?.admission ?? await admitOperation({ runRoot, runId: path.basename(runRoot), caseId,
-        operation, runnerRequired: runnerSlots > 0, runnerSlots, auxiliaryLimit: 8, limit: turnLimit });
+        operation, runnerRequired: runnerSlots > 0, runnerSlots, auxiliaryLimit: 8, limit: turnLimit,
+        beforeAdmission: () => beforeOperation?.(caseId) });
       const reserved = [...(pending?.reserved ?? admission.runners)], startedChildren = new Map(pending?.startedChildren ?? []);
       let mainNumber = pending?.mainNumber ?? null, turn = null;
       const startedAt = new Date().toISOString(), startedMs = Date.now();
@@ -839,6 +845,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       blocker: error.code ?? 'DRIVER_FAILURE', diagnostic: error.message,
       ...(error.stderrSample ? { stderrSample: error.stderrSample } : {}) };
   } finally {
+    // Publish a known failure before asynchronous finalization lets a sibling advance.
+    reportTerminal?.({ caseId, outcome: terminal });
     provider?.close();
     const rawPath = path.join(caseRoot, resume ? `raw-resume-${state.operations.length}.json` : 'raw.json');
     const args = ['finalize', '--workspace', workspace, '--case', caseId, '--spec', specPath, '--journal', journal, '--output', rawPath];
@@ -853,6 +861,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
     try { await assertSnapshotIntegrity(runRoot); state.integrity = 'PASS'; }
     catch (error) { state.integrity = `BLOCKED: ${error.message}`; state.status = 'BLOCKED'; }
     await atomicJson(stateFile, state);
+    // A finalizer/oracle failure can also turn a producer PASS into a failed case.
+    reportTerminal?.({ caseId, outcome: { ...state.terminal, result: state.status } });
   }
   return { caseId, status: state.status, terminal: state.terminal, operations: state.operations.length,
     mainTurns: state.mainTurns, runnerTurns: state.runnerTurns, rawPath: state.finalizer?.rawPath ?? null };
@@ -917,8 +927,20 @@ async function run(options) {
       ? await runCase({ runRoot, caseId: 'A', configuration, snapshotMetadata, maxOperations: options.maxOperations,
         mode: runInfo.mode, product, signal: signalController.signal, resume: !!options.resumeId }) : { status: 'NOT_RUN' };
     if (options.full && results.A.status === 'PASS' && !signalController.signal.aborted) {
+      let failedCase = null;
+      const reportTerminal = ({ caseId, outcome }) => {
+        if (failedCase === null && outcome?.result !== 'PASS') failedCase = { caseId, outcome };
+      };
+      const beforeOperation = () => {
+        if (failedCase !== null) throw Object.assign(new Error(`FULL stopped after case ${failedCase.caseId} terminal ${failedCase.outcome?.result ?? 'BLOCKED'}`),
+          { code: 'FULL_SIBLING_TERMINAL' });
+      };
       const [b, c] = await Promise.allSettled(['B', 'C'].map((caseId) => runCase({ runRoot, caseId,
-        configuration, snapshotMetadata, maxOperations: null, mode, product, signal: signalController.signal })));
+        configuration, snapshotMetadata, maxOperations: null, mode, product, signal: signalController.signal,
+        beforeOperation, reportTerminal }).catch(error => {
+          reportTerminal({ caseId, outcome: { result: 'BLOCKED', blocker: error.code ?? 'DRIVER_FAILURE' } });
+          throw error;
+        })));
       results.B = b.status === 'fulfilled' ? b.value : { status: 'BLOCKED', error: String(b.reason) };
       results.C = c.status === 'fulfilled' ? c.value : { status: 'BLOCKED', error: String(c.reason) };
     } else if (options.full) results.B = { status: 'NOT_RUN' }, results.C = { status: 'NOT_RUN' };

@@ -64,6 +64,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
     if (!specPath) throw new Error('fixture requires the real launcher SPEC_PATH');
     operations.push({ operation, threadId: thread.id, specPath });
     if (beforeAuthored !== null) await beforeAuthored(operation);
+    if (operation === 'PLAN' && fault === 'missing-plan-result') return;
     if (operation === 'SPEC_INIT') {
       const candidate = path.join(caseRoot, 'candidates/spec-draft');
       async function author(source, target) {

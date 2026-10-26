@@ -629,3 +629,54 @@ for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-c
     }
   } finally { if (context !== undefined) process.env.NODE_TEST_CONTEXT = context; }
 });
+
+
+for (const boundary of ['before-admission', 'in-flight']) test(`FULL stops sibling admission after a terminal case (${boundary})`, { timeout: 120000 }, async t => {
+  const fixture = await allocateOfflineFixture(repo), entered = Promise.withResolvers(), release = Promise.withResolvers();
+  const backends = new Map(); let running;
+  t.after(async () => { release.resolve(); await running?.catch(() => {}); await Promise.all([...backends.values()].map(x => x.settled())); await finishOfflineFixture(fixture); });
+  const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
+  const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
+  const actual = (await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
+  const sdk = await describeOfflineSdk(await fs.realpath(path.join(repo, 'agents/codex/node_modules')), fixture.root);
+  const offline = { mode: 'OFFLINE_TEST_ONLY', sdk, createNativeProvider: async args => {
+    const caseId = /case-([abc])\/workspace$/u.exec(args.workspace)[1].toUpperCase();
+    if (caseId === 'C' && boundary === 'before-admission') { entered.resolve(); await release.promise; }
+    const backend = offlineNativeWorkflow({ ...args, caseRoot: args.evidenceRoot,
+      fault: caseId === 'B' ? 'missing-plan-result' : null,
+      beforeAuthored: async operation => {
+        if (caseId === 'B' && operation === 'PLAN') await entered.promise;
+        if (caseId === 'C' && boundary === 'in-flight' && operation === 'PLAN') { entered.resolve(); await release.promise; }
+        if (caseId === 'C' && !['SPEC_INIT', 'PLAN'].includes(operation)) throw Error('sibling advanced after terminal B');
+      } });
+    backends.set(caseId, backend); return actual({ ...args, rpc: backend.rpc, pollMs: 1 });
+  } };
+  const context = process.env.NODE_TEST_CONTEXT; delete process.env.NODE_TEST_CONTEXT;
+  let runRoot;
+  try {
+    running = manager.main(['run', '--full', '--json'], { offline });
+    await Promise.race([entered.promise, running.then(() => { throw Error('FULL ended before the controlled sibling boundary'); })]);
+    const runId = (await fs.readdir(path.join(fixture.root, 'benchmark-temp'))).find(name => name.startsWith('run-'));
+    runRoot = path.join(fixture.root, 'benchmark-temp', runId);
+    const deadline = Date.now() + 20000;
+    for (;;) {
+      const state = await fs.readFile(path.join(runRoot, 'case-b/case-state.json'), 'utf8').then(JSON.parse);
+      if (state.status === 'BLOCKED') break;
+      assert.ok(Date.now() < deadline, 'controlled terminal B result must become observable');
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    release.resolve(); assert.equal(await running, 1);
+  } finally { release.resolve(); if (context !== undefined) process.env.NODE_TEST_CONTEXT = context; }
+  const summary = JSON.parse(await fs.readFile(path.join(runRoot, 'summary.json')));
+  const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
+  assert.equal(summary.status, 'BLOCKED', 'sibling failure is not cancellation of a valid active turn');
+  assert.equal(summary.cases.A.status, 'PASS'); assert.equal(summary.cases.B.status, 'BLOCKED');
+  assert.deepEqual(backends.get('C').operations.map(x => x.operation), boundary === 'in-flight' ? ['SPEC_INIT', 'PLAN'] : [],
+    'a concluded failed sibling prevents every later operation admission');
+  assert.equal(summary.cases.C.terminal.blocker, 'FULL_SIBLING_TERMINAL');
+  assert.ok([...backends.values()].every(x => !x.calls.some(call => call.method === 'turn/interrupt')),
+    'an already admitted valid operation is allowed to settle without observation cancellation');
+  assert.ok(ledger.turns.every(turn => turn.state === 'completed')); assert.equal(ledger.reservations.length, 0);
+  assert.equal(ledger.total, boundary === 'in-flight' ? 12 : 10, 'only admitted operations and children are charged');
+  if (boundary === 'in-flight') assert.equal(JSON.parse(await fs.readFile(path.join(runRoot, 'case-c/case-state.json'))).operations.at(-1).outcome.result, 'PASS');
+});

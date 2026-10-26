@@ -443,6 +443,38 @@ test('fresh per-run budget starts at zero and safely admits concurrent B/C turns
   await assert.rejects(fs.lstat(path.join(root, '.turn-ledger.json')), { code: 'ENOENT' });
 });
 
+test('terminal barrier is rechecked inside serialized admission before creating reservations', async t => {
+  const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-admission-race-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await initializeTurnBudget(root, 4);
+  const ledgerFile = path.join(root, '.turn-ledger.json'), before = await fs.readFile(ledgerFile);
+  const entered = Promise.withResolvers(), release = Promise.withResolvers();
+  const read = fs.readFile.bind(fs); let paused = false, terminal = false;
+  const reader = t.mock.method(fs, 'readFile', async (file, ...args) => {
+    const value = await read(file, ...args);
+    if (file === ledgerFile && !paused) { paused = true; entered.resolve(); await release.promise; }
+    return value;
+  });
+  const guard = () => { if (terminal) throw Object.assign(new Error('terminal B'), { code: 'FULL_SIBLING_TERMINAL' }); };
+  let admission;
+  try {
+    admission = admitOperation({ runRoot: root, runId: 'run-admission-race', caseId: 'C',
+      operation: 'PLAN', runnerRequired: false, limit: 4, beforeAdmission: guard });
+    await entered.promise; terminal = true; release.resolve();
+    await assert.rejects(admission, { code: 'FULL_SIBLING_TERMINAL' });
+  } finally { release.resolve(); await admission?.catch(() => {}); reader.mock.restore(); }
+  assert.deepEqual(await fs.readFile(ledgerFile), before, 'a terminal sibling leaves no late reservation or cost');
+  terminal = false;
+  const admitted = await admitOperation({ runRoot: root, runId: 'run-admission-race', caseId: 'C',
+    operation: 'PLAN', runnerRequired: false, limit: 4, beforeAdmission: guard });
+  terminal = true;
+  const number = await startReservedTurn(root, admitted.main, 4);
+  await settleTurn(root, number, { completed: true, turnStarted: true, threadId: 'already-admitted' }, 4);
+  const ledger = JSON.parse(await fs.readFile(ledgerFile));
+  assert.equal(ledger.total, 1); assert.equal(ledger.turns[0].state, 'completed');
+  assert.equal(ledger.reservations.length, 0, 'admission won first and its operation settles without cancellation');
+});
+
 test('manager status creates an absent benchmark-temp in an isolated checkout fixture', async (t) => {
   const { runs: isolatedRuns, runtime } = await isolatedManagerFixture(t);
   await assert.rejects(fs.lstat(isolatedRuns), { code: 'ENOENT' });

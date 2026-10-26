@@ -26,8 +26,11 @@ Both entrypoints use `campaign.fullRuns` (default **3**) and accept an explicit
 positive integer override, for example `npm run benchmark -- --runs 1` or
 `npm run benchmark:campaign -- --runs 2`. Invalid, duplicated and unknown
 arguments are rejected before preparation or dispatch. Each FULL retains the
-manager's A-first, then B/C policy. FULLs are sequential; the first failure,
-cancellation, unavailable evidence or publication error stops the sequence.
+manager's A-first, then B/C policy. A terminal B/C failure blocks admission of
+later sibling operations. An already admitted operation settles under its original
+deadline; this cooperative stop does not cancel its observation or invent a result.
+FULLs are sequential; the first failure, cancellation, unavailable evidence or
+publication error stops the sequence.
 The offline tests use controlled hooks, not real FULLs.
 
 Both entrypoints retain per-run reports and campaign state in ignored
