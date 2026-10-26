@@ -304,6 +304,9 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     const rawOperation = /^(?:OPERATION|MODE)=(.*)$/mu.exec(text[0].text)[1];
     const operation = { INIT: 'SPEC_INIT', CLOSE: 'SPEC_CLOSE', READINESS: 'SPEC_READINESS' }[rawOperation] ?? rawOperation;
     assert.ok(text[0].text.includes(`You are executing ${operation} as ${skill[0].name}.`));
+    if (['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE'].includes(operation))
+      assert.equal(/^SLICE=(.*)$/mu.exec(text[0].text)?.[1], 'slice-01',
+        'the actual prompt must preserve the public handoff identity consumed literally by begin');
     const turnIndex = backend.calls.findIndex(call => call.method === 'turn/start' && call.params === params);
     const contextRequest = backend.calls.slice(0, turnIndex).findLast(call => ['thread/start', 'thread/resume'].includes(call.method));
     const provenance = /^Context provenance: (thread\/(?:start|resume)); (.+)\.$/mu.exec(text[0].text);

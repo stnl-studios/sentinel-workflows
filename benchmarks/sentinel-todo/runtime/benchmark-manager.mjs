@@ -273,9 +273,9 @@ export function nativeRunnerContext(operation, bundle, eventsFile) {
       ? 'The selected operation includes the approved implementation/corrections and preparation of reusable tests. The controller nextAction names its next command; it does not replace that work. Complete the approved work and test preparation before delegating read-only verification. The child must not implement.\n' : 'The independent child judges the complete canonical criteria; tests alone are not the authority. For the explicitly requested integral judgment reserve-dispatch --terminal before spawn. For a rejected or incomplete review follow the Formal corrective credit section of the selected skill runner-invocation guide and the public controller handoff; preserve all literal responses and its separate triage when required. The manager does not decide recovery eligibility.\n');
 }
 
-export function assertNativeLauncher(prompt, context, numericSlice) {
+export function assertNativeLauncher(prompt, context) {
   const declarations = [...prompt.matchAll(/^([A-Z_]+)=(.*)$/gmu)];
-  const expected = { SPEC_PATH: context.specPath, OPERATION: context.operation, SLICE: numericSlice };
+  const expected = { SPEC_PATH: context.specPath, OPERATION: context.operation, SLICE: context.slice };
   for (const [name, value] of Object.entries(expected)) {
     const matches = declarations.filter((match) => match[1] === name);
     if (matches.length !== 1 || matches[0][2] !== value) fail(`native launcher ${name} disagrees with official context`);
@@ -604,7 +604,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       const { role, prior, text: invocation } = invocationContext(operation, workflowSkill, policy, state.authorThread, temporaryDirectory);
       const operationId = `${caseId}-${String(sequence).padStart(2, '0')}-${operation}`;
       const prompt = `$${workflowSkill}\n` + renderLauncher(template, { SPEC_PATH: specPath, REQUIREMENTS_SOURCE: requirementsPath,
-        SLICE: slice === null ? '' : specInput(slice), READINESS_SCOPE: 'GLOBAL', READINESS_FOCUS: 'not-applicable',
+        SLICE: slice ?? '', READINESS_SCOPE: 'GLOBAL', READINESS_FOCUS: 'not-applicable',
         NEW_INFORMATION: operation === 'SPEC_PROMOTE' ? `GLOBAL READY ${readiness.snapshotSha256}; promote status only.`
           : readiness?.verdict === 'FINDINGS' ? JSON.stringify(readiness.findings) : '',
         REPLAN_REASON: 'Follow the exact current public requirements and handoff.' })
@@ -616,7 +616,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         + `\nProject working directory: ${workspace}\nOriginal requirements input: ${requirementsPath}\n`
         + nativeRunnerContext(operation, provider.bundle, path.join(caseRoot, `${operationId}.events.jsonl`));
       const promptFile = path.join(prompts, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.md`);
-      if (RUNNER_OPERATIONS.has(operation)) assertNativeLauncher(prompt, { operation, specPath }, specInput(slice));
+      if (RUNNER_OPERATIONS.has(operation)) assertNativeLauncher(prompt, { operation, specPath, slice });
       if (pending === null) await fs.writeFile(promptFile, prompt, { flag: 'wx' });
       else if (await fs.readFile(promptFile, 'utf8') !== prompt) fail('observation prompt differs from original');
       // Reserve the legal maximum before the principal starts. Native events

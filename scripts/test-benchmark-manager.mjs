@@ -204,16 +204,19 @@ test('normal operator context emits one canonical full-contract read with litera
 
 test('native launcher disagreement stops before SDK and runner dispatch for every runner operation', () => {
   for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS', 'VALIDATE_SLICE']) {
-    const context = { operation, slice: 'slice-01', specPath: '/run-ABC123/case-c/workspace/specs/case-c' };
-    const prompt = `Use runner.\nOPERATION=${operation}\nSPEC_PATH=${context.specPath}\nSLICE=1\n`;
-    assert.doesNotThrow(() => assertNativeLauncher(prompt, context, '1'));
-    assert.throws(() => assertNativeLauncher(prompt.replace('/run-ABC123/', '/run-ABC123-c-QwE456/'), context, '1'),
-    /native launcher SPEC_PATH disagrees/u);
-    assert.throws(() => assertNativeLauncher(prompt.replace('SLICE=1', 'SLICE=2'), context, '1'),
-    /native launcher SLICE disagrees/u);
-    const wrongOperation = operation === 'EXECUTE_SLICE' ? 'VALIDATE_SLICE' : 'EXECUTE_SLICE';
-    assert.throws(() => assertNativeLauncher(prompt.replace(`OPERATION=${operation}`, `OPERATION=${wrongOperation}`), context, '1'),
-    /native launcher OPERATION disagrees/u);
+    for (const slice of ['slice-01', 'slice-02', 'slice-10']) {
+      const context = { operation, slice, specPath: '/run-ABC123/case-c/workspace/specs/case-c' };
+      const prompt = `Use runner.\nOPERATION=${operation}\nSPEC_PATH=${context.specPath}\nSLICE=${slice}\n`;
+      assert.doesNotThrow(() => assertNativeLauncher(prompt, context));
+      assert.throws(() => assertNativeLauncher(prompt.replace('/run-ABC123/', '/run-ABC123-c-QwE456/'), context),
+        /native launcher SPEC_PATH disagrees/u);
+      for (const changed of [BigInt(slice.slice(6)).toString(), 'slice-99'])
+        assert.throws(() => assertNativeLauncher(prompt.replace(`SLICE=${slice}`, `SLICE=${changed}`), context, changed),
+          /native launcher SLICE disagrees/u, 'a separate expected argument cannot replace the official handoff identity');
+      const wrongOperation = operation === 'EXECUTE_SLICE' ? 'VALIDATE_SLICE' : 'EXECUTE_SLICE';
+      assert.throws(() => assertNativeLauncher(prompt.replace(`OPERATION=${operation}`, `OPERATION=${wrongOperation}`), context),
+        /native launcher OPERATION disagrees/u);
+    }
   }
 });
 

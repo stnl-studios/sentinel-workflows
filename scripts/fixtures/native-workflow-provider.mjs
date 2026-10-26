@@ -143,7 +143,8 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       command(turn.items, await publishPreparationCandidate({ specPath, candidateExecutionRoot: preparation.candidateExecutionRoot, reviewDecision: review }));
     } else if (['EXECUTE_SLICE', 'VALIDATE_SLICE', 'APPLY_FINDINGS'].includes(operation)) {
       const current = await inspectCurrentExecution(specPath);
-      let admitted = await begin({ specPath, operation, slice: 'slice-01', expectedActivationId: current.activationId });
+      const slice = /^SLICE=(.*)$/mu.exec(prompt)?.[1];
+      let admitted = await begin({ specPath, operation, slice, expectedActivationId: current.activationId });
       if (operation === 'VALIDATE_SLICE' && !prompt.includes('Solicito validação integral terminal')) {
         throw new Error('fixture requires the same explicit integral request as the normal author');
       }
@@ -180,7 +181,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         if(formalRound)dispatch=await reserveDispatch(admitted.handle,{responseVariant:'stnl-current-native-judgment-v1'});
       }
       else if(formalRound){const next=await inspectCurrentExecution(specPath);
-        admitted=await normalizeSuccessor({specPath,operation,slice:'slice-01',expectedActivationId:next.activationId});
+        admitted=await normalizeSuccessor({specPath,operation,slice,expectedActivationId:next.activationId});
         dispatch=await reserveDispatch(admitted.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal:true});}
       const agentPath = `/root/check-${randomUUID()}`, childId = randomUUID();
       const child = { id: childId, cwd: workspace, cliVersion: '0.163.0', historyMode: 'paginated', parentThreadId: thread.id,
