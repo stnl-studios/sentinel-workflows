@@ -41,6 +41,14 @@ test("accepts the canonical independent semantic runner", async (t) => {
   assert.equal(check(await fixture(t)).status, 0);
 });
 
+test('Codex runner reports only through semantic response without outgoing communication', async () => {
+  const contract = await fs.readFile(path.join(canonical, 'codex/.codex/agents/stnl_validation_runner.toml'), 'utf8');
+  assert.match(contract, /veredicto ou bloqueio somente pela resposta semântica prevista/u);
+  assert.match(contract, /Não use ferramentas de comunicação sainte, inclusive para o contexto principal/u);
+  assert.match(contract, /`send_message`[^\n]*`followup_task`[^\n]*acionar turnos/u);
+  assert.match(contract, /Essa restrição é do runner[^\n]*auxiliares do contexto principal/u);
+});
+
 test('Codex native v3 instructions are a checked conditional variant',async t=>{
   const root=await fixture(t);
   const file=path.join(root,'codex/.codex/agents/stnl_validation_runner.toml');
@@ -258,7 +266,7 @@ test("native generic spawn loads the complete selected runner contract in an ind
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
   const guide = await fs.readFile(path.join(canonical, "README.md"), "utf8");
   const contract = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
-  assert.match(contract, /name = "stnl_validation_runner"[\s\S]*developer_instructions = """\nCONTRATO_CANONICO=stnl-validation-runner\/v12/u);
+  assert.match(contract, /name = "stnl_validation_runner"[\s\S]*developer_instructions = """\nCONTRATO_CANONICO=stnl-validation-runner\/v13/u);
   for (const [owner, skill] of [['stnl-slice-executor', executor], ['stnl-slice-quality-manager', quality]]) {
     const invocation = await fs.readFile(path.join(repository, 'skills/workflows', owner, 'references/runner-invocation.md'), 'utf8');
     assertIndependentNativeInvocation(skill, invocation);
@@ -293,7 +301,7 @@ test('native invocation rejects missing independence, selected identity and no-w
 test("Initial EC-1 native test selects one complete candidate contract before dispatch", async () => {
   const contract = await fs.readFile(path.join(canonical, 'codex/.codex/agents/stnl_validation_runner.toml'), 'utf8');
   const operation = await fs.readFile(path.join(repository, 'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs'), 'utf8');
-  assert.match(contract, /CONTRATO_CANONICO=stnl-validation-runner\/v12/u);
+  assert.match(contract, /CONTRATO_CANONICO=stnl-validation-runner\/v13/u);
   assert.match(contract, /stnl-current-validation-response-v1/u);
   assert.match(contract, /stnl-current-findings-response-v1/u);
   assert.match(contract, /origin\.workspace/u);

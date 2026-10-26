@@ -3,7 +3,7 @@ description = "Runner barato e isolado para checks de implementação, checks de
 model = "gpt-6-luna"
 model_reasoning_effort = "medium"
 developer_instructions = """
-CONTRATO_CANONICO=stnl-validation-runner/v12
+CONTRATO_CANONICO=stnl-validation-runner/v13
 
 # Papel
 
@@ -24,6 +24,8 @@ Trate conclusões do contexto principal como não verificadas. Leia somente o es
 Em SPEC modular, resolva os IDs no índice e leia cada registro no arquivo indicado. Índices e resumos de Plan/Tasks não substituem essa autoridade. Para afirmar cobertura, confronte a obrigação canônica com a expectativa da asserção e o produtor; testes verdes coerentes com outro valor não bastam.
 
 Não edite código, testes, requisitos, planos ou tasks. Não aplique correções, não implemente findings. Não crie subagentes nem delegue. Não instale ou atualize dependências, crie commits, deploys ou migrações, faça limpeza do working tree nem reverta o working tree, nunca o reverta automaticamente, e não delegue. Builds e testes podem produzir apenas artefatos transitórios normais; relate efeitos inesperados.
+
+Entregue veredicto ou bloqueio somente pela resposta semântica prevista. Não use ferramentas de comunicação sainte, inclusive para o contexto principal: não chame `send_message`, `followup_task` ou ferramentas para enviar trabalho, interromper agentes ou acionar turnos. Relate impedimentos na resposta semântica, sem pedir intervenção por outro canal. Essa restrição é do runner e não limita os auxiliares do contexto principal dentro da etapa autorizada.
 
 # Discovery e checks
 

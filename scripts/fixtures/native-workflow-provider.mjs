@@ -200,7 +200,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       if(continuing) {
         const read=contractRead();read.aggregatedOutput=await fs.readFile(path.join(snapshot,'agents/codex/.codex/agents/stnl_validation_runner.toml'),'utf8');
         child.turns.push({id:randomUUID(),status:'completed',error:null,itemsView:'full',items:[
-          {id:randomUUID(),type:'subAgentActivity',kind:'interacted',agentPath,agentThreadId:childId},
+          {id:randomUUID(),type:'reasoning',summary:[],content:[]},
           read,{id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Arbitrary initialization; no verification yet.'}]});
         turn.items.push({id:randomUUID(),type:'subAgentActivity',kind:'completed',agentPath,agentThreadId:childId});
         const eventPath=/record in (.+?); match binding\.agentPath/u.exec(prompt)?.[1];

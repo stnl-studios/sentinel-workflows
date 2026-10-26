@@ -376,10 +376,8 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     assert.equal(op.turn.captures.length,1);
     const cap=op.turn.captures[0],grant=cap.toolResult.preVerificationContinuation;
     const initialization=backend.threads.get(cap.binding.agentThreadId).turns[0];
-    assert.equal(initialization.items[0].type,'subAgentActivity');
-    assert.equal(initialization.items[0].kind,'interacted');
-    assert.equal(initialization.items[0].agentThreadId,cap.binding.agentThreadId);
-    assert.equal(initialization.items[0].agentPath,cap.binding.agentPath);
+    assert.equal(initialization.items[0].type,'reasoning');
+    assert.deepEqual(initialization.items[0].content,[]);
     assert.equal(grant.firstTurnId,state.preVerificationContinuation.firstTurnId);
     assert.notEqual(JSON.parse(grant.firstToolResultUtf8).finalResponse,cap.toolResult.finalResponse);
     const events=(await fs.readFile(op.turn.eventsPath,'utf8')).trim().split('\n').map(JSON.parse);

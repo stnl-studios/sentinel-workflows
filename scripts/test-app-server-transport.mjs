@@ -419,13 +419,12 @@ for (const [name, mutate] of [
   });
 });
 
-for (const kind of ['interacted','completed']) for(const position of [0,1])
+for (const kind of ['completed']) for(const position of [0,1])
 test(`bound self ${kind} metadata at ${position} permits initialization and immutable continuation replay`,async t=>{
   const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root});
   const activity={id:'self-metadata',type:'subAgentActivity',kind,agentPath:identity.agentPath,agentThreadId:child,
     model:'gpt-6-luna',reasoningEffort:'medium'};
   if(kind==='completed'&&position===1){delete activity.model;delete activity.reasoningEffort;}
-  if(kind==='interacted'&&position===1){activity.model=null;activity.reasoningEffort=null;}
   s.state.items.splice(position,0,activity);s.state.turns[0].items=structuredClone(s.state.items);
   const binding=await bindAppServerChild(s.rpc,identity),options={binding,bundle:f.bundle,cwd:f.root,initialization:true};
   const before=JSON.stringify(s.state);assert.equal((await readAppServerChild(s.rpc,options)).status,'completed');
@@ -442,6 +441,51 @@ test(`bound self ${kind} metadata at ${position} permits initialization and immu
     'metadata cannot conceal a real scope action before the contract read');
 });
 
+// rust-v0.163.0 message_tool.rs emits Interacted in the caller's history,
+// naming the recipient. send_message and followup_task share this item shape;
+// no recipient, including self, makes either communication harmless metadata.
+for (const [target, agentPath, agentThreadId, relation] of [
+  ['principal', '/root', parent, 'differs'],
+  ['another agent', '/root/other', 'private-recipient-secret', 'differs'],
+  ['self', identity.agentPath, child, 'matches'],
+]) test(`formal outgoing Interacted forbids indistinguishable send/followup to ${target}`, async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true });
+  const activity = { id: 'private-item-secret', type: 'subAgentActivity', kind: 'interacted',
+    agentPath, agentThreadId, model: null, reasoningEffort: null };
+  s.state.items.splice(1, 0, activity); s.state.turns[0].items = structuredClone(s.state.items);
+  const binding = await bindAppServerChild(s.rpc, identity);
+  const check = error => {
+    assert.equal(error.code, 'NATIVE_TRANSPORT_UNPROVEN');
+    assert.match(error.message, /^runner outgoing communication is forbidden /u);
+    assert.ok(error.message.includes('failed=OUTGOING_COMMUNICATION;'), error.message);
+    assert.ok(error.message.includes(`recipientThreadId=${relation}`), error.message);
+    assert.ok(error.message.includes(`recipientPath=${relation}`), error.message);
+    assert.doesNotMatch(error.message, /foreign|private-|\/root|019a/u);
+    return true;
+  };
+  for (const initialization of [false, true]) await assert.rejects(readAppServerChild(s.rpc,
+    { binding, bundle: f.bundle, cwd: f.root, initialization }), check);
+  for (const position of [0, 1]) {
+    const replay = await continuedHistory(t);
+    replay.s.state.turns[position].items.splice(1, 0, activity);
+    await assert.rejects(readAppServerChild(replay.rpc, { binding: replay.binding, bundle: replay.bundle,
+      cwd: replay.root, continuation: replay.continuation }), check);
+  }
+  s.state.parentItems.push({ ...s.state.parentItems[0], id: 'completed', kind: 'completed' });
+  const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root,
+    evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  const result = await provider.runTurn({ prompt: 'OFFLINE only', workflowSkill: 'stnl-slice-quality-manager',
+    model: 'gpt-6.1-sol', effort: 'medium', role: 'review', operationId: 'outgoing-refusal', timeoutMs: 1000,
+    observeFormalBinding: () => ({ agentPath: identity.agentPath }),
+    onChildCompleted: () => assert.fail('outgoing communication cannot become capture or continuation') });
+  assert.equal(result.completed, false); assert.deepEqual(result.captures, []);
+  check({ code: result.errorCode, message: result.error });
+  const events = (await fs.readFile(result.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.find(event => event.type === 'native.transport.blocked').message, result.error);
+  assert.ok(!events.some(event => event.type === 'native.child.continuation.admitted'));
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1, 'only original fake principal');
+});
+
 for(const [name,changes] of [
   ['spawn',{kind:'started'}],['interruption',{kind:'interrupted'}],
   ['foreign path',{agentPath:'/root/other'}],['foreign thread',{agentThreadId:'other'}],
@@ -451,7 +495,7 @@ for(const [name,changes] of [
   ['collaboration action',{type:'collabAgentToolCall',tool:'wait',senderThreadId:child,receiverThreadIds:['other'],status:'completed',agentsStates:{}}],
 ]) test(`formal runner activity rejects ${name} in normal and initialization observations`,async t=>{
   const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root});
-  const activity={id:'activity',type:'subAgentActivity',kind:'interacted',agentPath:identity.agentPath,
+  const activity={id:'activity',type:'subAgentActivity',kind:'completed',agentPath:identity.agentPath,
     agentThreadId:child,...changes};
   s.state.items.splice(1,0,activity);s.state.turns[0].items=structuredClone(s.state.items);
   const binding=await bindAppServerChild(s.rpc,identity);
@@ -487,7 +531,7 @@ for (const [name, changes, failed, detail] of [
   ['unknown collaboration', { type: 'collabAgentToolCall', tool: 'private-tool-secret' }, 'ITEM_TYPE', 'itemType=collabAgentToolCall'],
 ]) test(`formal activity diagnostic survives refusal (${name})`, async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true });
-  const activity = { id: 'private-item-secret', type: 'subAgentActivity', kind: 'interacted',
+  const activity = { id: 'private-item-secret', type: 'subAgentActivity', kind: 'completed',
     agentPath: identity.agentPath, agentThreadId: child, ...changes };
   s.state.items.splice(1, 0, activity); s.state.turns[0].items = structuredClone(s.state.items);
   const binding = await bindAppServerChild(s.rpc, identity);

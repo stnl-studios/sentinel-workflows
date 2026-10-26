@@ -590,11 +590,15 @@ function contractReadForms(file) {
       [shellQuote(form), shellDoubleQuote(form)].map(script => `${shell} ${script}`))]));
   return { plain: wrap(plain), hashFirst: wrap(hashFirst), readFirst: wrap(readFirst), hashOnly: wrap(hashOnly) };
 }
-// These activities describe this already-bound agent, not a tool action by it.
+// Bound completion metadata remains informational. In rust-v0.163.0,
+// multi_agents_v2/message_tool.rs emits Interacted in the caller's history
+// with the recipient's identity, for both send_message and followup_task.
+// Self-addressing cannot turn outgoing communication into harmless metadata.
 // The containing thread/turn and its parent binding are checked independently.
 function runnerMetadataFailures(item,binding) {
   if(item.type!=='subAgentActivity')return ['ITEM_TYPE'];
-  return [['KIND',['interacted','completed'].includes(item.kind)],
+  if(item.kind==='interacted')return ['OUTGOING_COMMUNICATION'];
+  return [['KIND',item.kind==='completed'],
     ['AGENT_PATH',item.agentPath===binding.agentPath],['AGENT_THREAD',item.agentThreadId===binding.agentThreadId],
     ['MODEL',item.model==null||item.model===binding.model],
     ['EFFORT',item.reasoningEffort==null||item.reasoningEffort===binding.effort]]
@@ -608,15 +612,21 @@ function runnerActivityDiagnostic(item,itemIndex,binding) {
   // agent paths, commands, output or unknown server values to explain a denial.
   const relation=(value,expected)=>value==null?'absent':!id(value)?'invalid':value===expected?'matches':'differs';
   const kind=['started','interacted','interrupted','completed'].includes(item.kind)?item.kind:item.kind==null?'absent':'other';
+  const [pathLabel,threadLabel]=item.type==='subAgentActivity'&&item.kind==='interacted'
+    ?['recipientPath','recipientThreadId']:['agentPath','agentThreadId'];
   return `itemIndex=${itemIndex}; failed=${runnerMetadataFailures(item,binding).join(',')}; itemType=${item.type}; kind=${kind}; `
-    + `agentPath=${relation(item.agentPath,binding.agentPath)}; agentThreadId=${relation(item.agentThreadId,binding.agentThreadId)}; `
+    + `${pathLabel}=${relation(item.agentPath,binding.agentPath)}; ${threadLabel}=${relation(item.agentThreadId,binding.agentThreadId)}; `
     + `model=${relation(item.model,binding.model)}; effort=${relation(item.reasoningEffort,binding.effort)}`;
 }
 function assertRunnerActivities(items,binding) {
   const descendants=items.filter(item=>item.type==='subAgentActivity'&&item.kind==='started');
   if(descendants.length)throw Object.assign(fail(`runner delegated outside the admitted operation (${runnerActivityDiagnostic(descendants[0],items.indexOf(descendants[0]),binding)})`),{descendants});
   for(const [index,item] of items.entries())if(['subAgentActivity','collabAgentToolCall'].includes(item.type)
-    &&!isBoundRunnerMetadata(item,binding))throw fail(`runner activity is foreign, effectful or ambiguous (${runnerActivityDiagnostic(item,index,binding)})`);
+    &&!isBoundRunnerMetadata(item,binding)) {
+    const reason=item.type==='subAgentActivity'&&item.kind==='interacted'
+      ?'runner outgoing communication is forbidden':'runner activity is foreign, effectful or ambiguous';
+    throw fail(`${reason} (${runnerActivityDiagnostic(item,index,binding)})`);
+  }
 }
 function assertInitializationEffects(items,bundle,cwd,binding) {
   for(const [itemIndex,item] of items.entries()) {
