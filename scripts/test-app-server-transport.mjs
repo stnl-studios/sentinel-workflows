@@ -1234,7 +1234,7 @@ test('initial paginated index observation keeps the existing deadline and stops 
     ?{error:{code:-32601,message:'list_turns is not supported yet'}}
     :{data:[{id:'parent-turn',status:'interrupted',error:null}],nextCursor:null});
   const result=await h.provider.runTurn(h.args);
-  assert.equal(result.completed,false);assert.equal(result.error,'parent turn failed/interrupted');
+  assert.equal(result.completed,false);assert.equal(result.error,'parent turn failed/interrupted (status=interrupted; error=absent; cause=absent)');
   assert.equal(h.reads(),2);assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
 });
 
@@ -1265,8 +1265,54 @@ test('a persistently unavailable paginated index cannot certify completion or ex
 for(const status of ['interrupted','failed'])test(`initial metadata pending followed by ${status} stops before timeout without a new turn`,async t=>{
   const h=await historyBootstrapFixture(t,n=>n===1?{error:emptyMetadataError()}:{data:[{id:'parent-turn',status,error:null}],nextCursor:null});
   const started=Date.now(),result=await h.provider.runTurn({...h.args,timeoutMs:1000});
-  assert.equal(result.completed,false);assert.equal(result.error,'parent turn failed/interrupted');assert.equal(h.reads(),2);
+  assert.equal(result.completed,false);assert.equal(result.error,`parent turn failed/interrupted (status=${status}; error=absent; cause=absent)`);assert.equal(h.reads(),2);
   assert.ok(Date.now()-started<500);assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
+});
+
+const publicParentErrorCases = [
+  ...['contextWindowExceeded','sessionBudgetExceeded','usageLimitExceeded','rateLimitExceeded','flexUnavailable',
+    'serverOverloaded','cyberPolicy','misalignmentPolicyViolation','tooManyDenials','internalServerError',
+    'unauthorized','badRequest','threadRollbackFailed','sandboxError','other'].map(cause => [cause, cause, cause]),
+  ...['httpConnectionFailed','responseStreamConnectionFailed','responseStreamDisconnected','responseTooManyFailedAttempts']
+    .map(cause => [cause, {[cause]:{httpStatusCode:503}}, cause]),
+  ['activeTurnNotSteerable', {activeTurnNotSteerable:{turnKind:'review'}}, 'activeTurnNotSteerable'],
+  ['absent cause', null, 'absent'],
+  ['unknown cause', 'private-cause-secret', 'unrecognized'],
+  ['unknown tagged cause', {'private-cause-secret':{}}, 'unrecognized'],
+  ['multiple tags', {httpConnectionFailed:{},'private-cause-secret':{}}, 'unrecognized'],
+];
+for (const [name, codexErrorInfo, cause] of publicParentErrorCases)
+test(`parent failure preserves safe public cause without retry (${name})`, async t => {
+  const h=await historyBootstrapFixture(t,n=>n===1?{error:emptyMetadataError()}:
+    {data:[{id:'parent-turn',status:'failed',error:{message:'private-message-secret /private/path',
+      additionalDetails:'private-details-secret',codexErrorInfo}}],nextCursor:null});
+  const result=await h.provider.runTurn({...h.args,observeFormalBinding:()=>null});
+  assert.equal(result.completed,false);assert.equal(result.terminalObserved,true);
+  assert.equal(result.errorCode,'NATIVE_TRANSPORT_UNPROVEN');
+  assert.equal(result.error,`parent turn failed/interrupted (status=failed; error=present; cause=${cause})`);
+  assert.doesNotMatch(result.error,/private-|\/private\//u);
+  const events=(await fs.readFile(result.eventsPath,'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.find(e=>e.type==='native.transport.blocked').message,result.error);
+  assert.equal(h.reads(),2);assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
+  assert.deepEqual(result.captures,[]);
+});
+
+for (const [name,status,error,detail,terminalObserved] of [
+  ['interrupted','interrupted',null,'status=interrupted; error=absent; cause=absent',true],
+  ['completed with error','completed',{message:'private-message-secret',codexErrorInfo:'serverOverloaded'},
+    'status=completed; error=present; cause=serverOverloaded',true],
+  ['invalid error','failed','private-error-secret','status=failed; error=invalid; cause=unrecognized',true],
+  ['missing status',undefined,null,'status=absent; error=absent; cause=absent',false],
+  ['null status',null,null,'status=absent; error=absent; cause=absent',false],
+  ['unknown status','private-status-secret',null,'status=other; error=absent; cause=absent',false],
+  ['invalid status',17,null,'status=other; error=absent; cause=absent',false],
+]) test(`parent failure proves terminal state only for public enum (${name})`,async t=>{
+  const h=await historyBootstrapFixture(t,()=>({data:[{id:'parent-turn',status,error}],nextCursor:null}));
+  const result=await h.provider.runTurn({...h.args,observeFormalBinding:()=>null});
+  assert.equal(result.completed,false);assert.equal(result.terminalObserved,terminalObserved);
+  assert.ok(result.error.includes(detail),result.error);assert.doesNotMatch(result.error,/private-/u);
+  assert.equal(h.reads(),1);assert.equal(h.s.calls.filter(c=>c.method==='turn/start').length,1);
+  assert.deepEqual(result.captures,[]);
 });
 
 test('initial public history tolerance ends after the first valid observation', async t => {

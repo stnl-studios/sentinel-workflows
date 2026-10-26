@@ -7,6 +7,23 @@ import { connectAppServer, initializeAppServer, describeAppServerBundle, assertA
 
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const blocked = message => Object.assign(new Error(message), { code: 'NATIVE_TRANSPORT_UNPROVEN' });
+const publicTurnStatus = status => ['completed','interrupted','failed','inProgress'].includes(status)
+  ? status : status == null ? 'absent' : 'other';
+// App Server 0.163 public error tags only. Diagnostic projection never grants a
+// retry and never retains message/additionalDetails, IDs, paths or HTTP payloads.
+const turnErrorCodes = new Set(['contextWindowExceeded','sessionBudgetExceeded','usageLimitExceeded',
+  'rateLimitExceeded','flexUnavailable','serverOverloaded','cyberPolicy','misalignmentPolicyViolation',
+  'tooManyDenials','internalServerError','unauthorized','badRequest','threadRollbackFailed','sandboxError','other']);
+const taggedTurnErrors = new Set(['httpConnectionFailed','responseStreamConnectionFailed',
+  'responseStreamDisconnected','responseTooManyFailedAttempts','activeTurnNotSteerable']);
+function parentFailureDiagnostic(turn) {
+  const error=turn.error==null?'absent':typeof turn.error==='object'&&!Array.isArray(turn.error)?'present':'invalid';
+  const info=error==='present'?turn.error.codexErrorInfo:null;
+  const tag=info&&typeof info==='object'&&!Array.isArray(info)&&Object.keys(info).length===1?Object.keys(info)[0]:null;
+  const cause=error==='invalid'?'unrecognized':info==null?'absent':turnErrorCodes.has(info)?info
+    :taggedTurnErrors.has(tag)?tag:'unrecognized';
+  return `status=${publicTurnStatus(turn.status)}; error=${error}; cause=${cause}`;
+}
 const wait = (ms, signal) => new Promise((resolve, reject) => {
   const timer = setTimeout(done, ms);
   function done() { signal?.removeEventListener('abort', cancel); resolve(); }
@@ -184,6 +201,8 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           if (!historyObserved && historyDeadlineAt !== null && Date.now() >= historyDeadlineAt) {
             throw blocked('initial public history observation deadline exceeded; dispatch remains uncertain');
           }
+          if (['absent','other'].includes(publicTurnStatus(observed.turn.status)))
+            throw blocked(`parent turn status unproven (${parentFailureDiagnostic(observed.turn)})`);
           historyObserved = true; clearTimeout(historyTimer); historyTimer = null;
           const reportedStarts = observed.items.filter(value => value.type === 'subAgentActivity' && value.kind === 'started'
             && typeof value.agentThreadId === 'string' && typeof value.agentPath === 'string')
@@ -299,7 +318,8 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           if (observed.turn.status !== 'inProgress') break;
           await wait(pollMs, signal);
         }
-        if (observed.turn.status !== 'completed' || observed.turn.error != null) throw blocked('parent turn failed/interrupted');
+        if (observed.turn.status !== 'completed' || observed.turn.error != null)
+          throw blocked(`parent turn failed/interrupted (${parentFailureDiagnostic(observed.turn)})`);
         // Also reobserve already captured children after the principal ends.
         // A changed/extra turn or modified envelope cannot replace the first.
         for (const binding of children.values()) if (observeFormalBinding === null || formal.has(binding.agentThreadId)) await collect(binding);
