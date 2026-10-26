@@ -529,17 +529,31 @@ function contractReadForms(file) {
 }
 // These activities describe this already-bound agent, not a tool action by it.
 // The containing thread/turn and its parent binding are checked independently.
+function runnerMetadataFailures(item,binding) {
+  if(item.type!=='subAgentActivity')return ['ITEM_TYPE'];
+  return [['KIND',['interacted','completed'].includes(item.kind)],
+    ['AGENT_PATH',item.agentPath===binding.agentPath],['AGENT_THREAD',item.agentThreadId===binding.agentThreadId],
+    ['MODEL',item.model==null||item.model===binding.model],
+    ['EFFORT',item.reasoningEffort==null||item.reasoningEffort===binding.effort]]
+    .filter(([,valid])=>!valid).map(([label])=>label);
+}
 function isBoundRunnerMetadata(item,binding) {
-  return item.type==='subAgentActivity'&&['interacted','completed'].includes(item.kind)
-    &&item.agentPath===binding.agentPath&&item.agentThreadId===binding.agentThreadId
-    &&(item.model==null||item.model===binding.model)
-    &&(item.reasoningEffort==null||item.reasoningEffort===binding.effort);
+  return runnerMetadataFailures(item,binding).length===0;
+}
+function runnerActivityDiagnostic(item,itemIndex,binding) {
+  // Fixed enums/relations only, in the existing refusal. Never retain item IDs,
+  // agent paths, commands, output or unknown server values to explain a denial.
+  const relation=(value,expected)=>value==null?'absent':!id(value)?'invalid':value===expected?'matches':'differs';
+  const kind=['started','interacted','interrupted','completed'].includes(item.kind)?item.kind:item.kind==null?'absent':'other';
+  return `itemIndex=${itemIndex}; failed=${runnerMetadataFailures(item,binding).join(',')}; itemType=${item.type}; kind=${kind}; `
+    + `agentPath=${relation(item.agentPath,binding.agentPath)}; agentThreadId=${relation(item.agentThreadId,binding.agentThreadId)}; `
+    + `model=${relation(item.model,binding.model)}; effort=${relation(item.reasoningEffort,binding.effort)}`;
 }
 function assertRunnerActivities(items,binding) {
   const descendants=items.filter(item=>item.type==='subAgentActivity'&&item.kind==='started');
-  if(descendants.length)throw Object.assign(fail('runner delegated outside the admitted operation'),{descendants});
-  requireThat(items.every(item=>!['subAgentActivity','collabAgentToolCall'].includes(item.type)
-    ||isBoundRunnerMetadata(item,binding)), 'runner activity is foreign, effectful or ambiguous');
+  if(descendants.length)throw Object.assign(fail(`runner delegated outside the admitted operation (${runnerActivityDiagnostic(descendants[0],items.indexOf(descendants[0]),binding)})`),{descendants});
+  for(const [index,item] of items.entries())if(['subAgentActivity','collabAgentToolCall'].includes(item.type)
+    &&!isBoundRunnerMetadata(item,binding))throw fail(`runner activity is foreign, effectful or ambiguous (${runnerActivityDiagnostic(item,index,binding)})`);
 }
 function assertInitializationEffects(items,bundle,cwd,binding) {
   for(const [itemIndex,item] of items.entries()) {

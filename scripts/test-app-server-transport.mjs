@@ -168,6 +168,7 @@ test(`bound self ${kind} metadata at ${position} permits initialization and immu
   const activity={id:'self-metadata',type:'subAgentActivity',kind,agentPath:identity.agentPath,agentThreadId:child,
     model:'gpt-6-luna',reasoningEffort:'medium'};
   if(kind==='completed'&&position===1){delete activity.model;delete activity.reasoningEffort;}
+  if(kind==='interacted'&&position===1){activity.model=null;activity.reasoningEffort=null;}
   s.state.items.splice(position,0,activity);s.state.turns[0].items=structuredClone(s.state.items);
   const binding=await bindAppServerChild(s.rpc,identity),options={binding,bundle:f.bundle,cwd:f.root,initialization:true};
   const before=JSON.stringify(s.state);assert.equal((await readAppServerChild(s.rpc,options)).status,'completed');
@@ -205,6 +206,63 @@ for(const [name,changes] of [
     await assert.rejects(readAppServerChild(replay.rpc,{binding:replay.binding,bundle:replay.bundle,
       cwd:replay.root,continuation:replay.continuation}),blocked);
   }
+});
+
+for (const [name, changes, failed, detail] of [
+  ['spawn', { kind: 'started' }, 'KIND', 'kind=started'],
+  ['interruption', { kind: 'interrupted' }, 'KIND', 'kind=interrupted'],
+  ['missing kind', { kind: undefined }, 'KIND', 'kind=absent'],
+  ['unknown kind', { kind: 'private-kind-secret' }, 'KIND', 'kind=other'],
+  ['foreign path', { agentPath: '/private/path-secret' }, 'AGENT_PATH', 'agentPath=differs'],
+  ['missing path', { agentPath: undefined }, 'AGENT_PATH', 'agentPath=absent'],
+  ['invalid path', { agentPath: 17 }, 'AGENT_PATH', 'agentPath=invalid'],
+  ['foreign thread', { agentThreadId: 'private-thread-secret' }, 'AGENT_THREAD', 'agentThreadId=differs'],
+  ['missing thread', { agentThreadId: undefined }, 'AGENT_THREAD', 'agentThreadId=absent'],
+  ['invalid thread', { agentThreadId: false }, 'AGENT_THREAD', 'agentThreadId=invalid'],
+  ['foreign model', { model: 'private-model-secret' }, 'MODEL', 'model=differs'],
+  ['invalid model', { model: 17 }, 'MODEL', 'model=invalid'],
+  ['foreign effort', { reasoningEffort: 'private-effort-secret' }, 'EFFORT', 'effort=differs'],
+  ['invalid effort', { reasoningEffort: {} }, 'EFFORT', 'effort=invalid'],
+  ['combined mismatch', { agentPath: null, agentThreadId: 'private-thread-secret', model: 'private-model-secret' },
+    'AGENT_PATH,AGENT_THREAD,MODEL', 'agentPath=absent'],
+  ['collaboration', { type: 'collabAgentToolCall', tool: 'wait', senderThreadId: child,
+    receiverThreadIds: ['private-thread-secret'], agentsStates: {}, status: 'completed' }, 'ITEM_TYPE', 'itemType=collabAgentToolCall'],
+  ['unknown collaboration', { type: 'collabAgentToolCall', tool: 'private-tool-secret' }, 'ITEM_TYPE', 'itemType=collabAgentToolCall'],
+]) test(`formal activity diagnostic survives refusal (${name})`, async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true });
+  const activity = { id: 'private-item-secret', type: 'subAgentActivity', kind: 'interacted',
+    agentPath: identity.agentPath, agentThreadId: child, ...changes };
+  s.state.items.splice(1, 0, activity); s.state.turns[0].items = structuredClone(s.state.items);
+  const binding = await bindAppServerChild(s.rpc, identity);
+  const checkDiagnostic = error => {
+    assert.equal(error.code, 'NATIVE_TRANSPORT_UNPROVEN');
+    assert.ok(error.message.includes(`itemIndex=1; failed=${failed};`), error.message);
+    assert.ok(error.message.includes(detail), error.message);
+    assert.ok(error.message.includes('agentThreadId=') && error.message.includes('agentPath='), error.message);
+    assert.ok(Buffer.byteLength(error.message) < 512, 'bounded fixed diagnostic');
+    assert.doesNotMatch(error.message, /private-|\/root\/|019a|\.toml|\/Users\//u, 'no identifiers, paths, commands or unknown values');
+    if (name === 'spawn') assert.deepEqual(error.descendants, [activity], 'all descendant evidence remains attached');
+    return true;
+  };
+  for (const initialization of [false, true]) await assert.rejects(readAppServerChild(s.rpc,
+    { binding, bundle: f.bundle, cwd: f.root, initialization }), checkDiagnostic);
+  // The generic descendant observer can refuse a spawn before formal collection.
+  // Test that classifier's own spawn refusal directly, without bypassing observation.
+  if (name === 'spawn') return;
+  s.state.parentItems.push({ ...s.state.parentItems[0], id: 'completed', kind: 'completed' });
+  const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root,
+    evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  const result = await provider.runTurn({ prompt: 'OFFLINE only', workflowSkill: 'stnl-slice-quality-manager',
+    model: 'gpt-6.1-sol', effort: 'medium', role: 'review', operationId: 'activity-refusal', timeoutMs: 1000,
+    observeFormalBinding: () => ({ agentPath: identity.agentPath }),
+    onChildCompleted: () => assert.fail('refused activity cannot become capture or continuation') });
+  assert.equal(result.completed, false); assert.equal(result.errorCode, 'NATIVE_TRANSPORT_UNPROVEN');
+  checkDiagnostic({ code: result.errorCode, message: result.error });
+  const events = (await fs.readFile(result.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.find(event => event.type === 'native.transport.blocked').message, result.error);
+  assert.equal(result.captures.length, 0);
+  assert.ok(!events.some(event => event.type === 'native.child.continuation.admitted'));
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1, 'only original fake principal');
 });
 
 for (const [name, changes, failed, detail] of [
