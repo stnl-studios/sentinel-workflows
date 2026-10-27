@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { PassThrough } from 'node:stream';
 import Ajv2020 from 'ajv/dist/2020.js';
 import { allocateOfflineFixture, finishOfflineFixture } from './fixtures/offline-checkout.mjs';
@@ -800,6 +801,63 @@ for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-c
   } finally { if (context !== undefined) process.env.NODE_TEST_CONTEXT = context; }
 });
 
+
+test('public case finalizer accepts its closed evidence while a sibling ledger operation remains active', { timeout: 120000 }, async t => {
+  const fixture = await allocateOfflineFixture(repo);
+  const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
+  const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
+  const actual = (await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
+  const sdk = await describeOfflineSdk(await fs.realpath(path.join(repo, 'agents/codex/node_modules')), fixture.root);
+  let backend, sibling, runRoot;
+  t.after(async () => {
+    await backend?.settled();
+    if (sibling) {
+      await manager.settleTurn(runRoot, sibling.number, { completed: true, threadId: 'synthetic-sibling' }, 48);
+      await manager.releaseReservation(runRoot, sibling.runner, 48);
+    }
+    await finishOfflineFixture(fixture);
+  });
+  const configurationPath = path.join(fixture.root, 'benchmarks/sentinel-todo/benchmark.json');
+  const configuration = JSON.parse(await fs.readFile(configurationPath));
+  configuration.turnBudget.maxTurnsPerRun = 48;
+  await fs.writeFile(configurationPath, JSON.stringify(configuration));
+  const offline = { mode: 'OFFLINE_TEST_ONLY', sdk, createNativeProvider: async args => {
+    runRoot = path.dirname(args.evidenceRoot);
+    backend = offlineNativeWorkflow({ ...args, caseRoot: args.evidenceRoot, beforeAuthored: async operation => {
+      if (operation !== 'SPEC_CLOSE') return;
+      const reservation = await manager.admitOperation({ runRoot, runId: path.basename(runRoot), caseId: 'B',
+        operation: 'APPLY_FINDINGS', runnerRequired: true, limit: 48 });
+      sibling = { number: await manager.startReservedTurn(runRoot, reservation.main, 48), runner: reservation.runner };
+    } });
+    return actual({ ...args, rpc: backend.rpc, pollMs: 1 });
+  } };
+  const context = process.env.NODE_TEST_CONTEXT; delete process.env.NODE_TEST_CONTEXT;
+  try { assert.equal(await manager.main(['run', '--case', 'A', '--json'], { offline }), 0); }
+  finally { if (context !== undefined) process.env.NODE_TEST_CONTEXT = context; }
+  const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
+  const raw = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/raw.json')));
+  const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
+  assert.equal(state.status, 'PASS'); assert.equal(state.finalizer.exitCode, 0); assert.equal(raw.status, 'PASS');
+  assert.equal(state.operations.at(-1).operation, 'SPEC_CLOSE');
+  assert.equal(ledger.turns.find(turn => turn.number === sibling.number).state, 'dispatched');
+  assert.ok(ledger.reservations.some(item => item.id === sibling.runner && item.caseId === 'B'));
+  assert.ok(ledger.turns.filter(turn => turn.caseId === 'A').every(turn => turn.state === 'completed'));
+  assert.equal(JSON.parse(await fs.readFile(path.join(runRoot, 'run.json'))).mode, 'case',
+    'this boundary test does not certify a FULL or the pending sibling');
+  const stateFile = path.join(runRoot, 'case-a/case-state.json'), originalState = await fs.readFile(stateFile);
+  const forgedOutput = path.join(runRoot, 'case-a/wrong-case.raw.json');
+  await fs.writeFile(stateFile, JSON.stringify({ ...state, caseId: 'C', mainTurns: 0, runnerTurns: 0 }));
+  try {
+    const result = spawnSync(process.execPath, [path.join(fixture.root, 'benchmarks/sentinel-todo/runtime/benchmark.mjs'),
+      'finalize', '--workspace', state.workspace, '--case', 'A', '--spec', state.specPath,
+      '--journal', state.journal, '--output', forgedOutput,
+      '--terminal-evidence', path.join(runRoot, 'case-a/terminal-evidence.json')],
+    { cwd: fixture.root, encoding: 'utf8', timeout: 60000 });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /native case state differs from selected case/u);
+    await assert.rejects(fs.lstat(forgedOutput), { code: 'ENOENT' });
+  } finally { await fs.writeFile(stateFile, originalState); }
+});
 
 for (const boundary of ['before-admission', 'in-flight']) test(`FULL stops sibling admission after a terminal case (${boundary})`, { timeout: 120000 }, async t => {
   const fixture = await allocateOfflineFixture(repo), entered = Promise.withResolvers(), release = Promise.withResolvers();

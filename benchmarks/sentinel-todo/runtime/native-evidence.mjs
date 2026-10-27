@@ -122,22 +122,30 @@ export function operationalCorrectionUsage(turns,{caseId,slice=null,operation}) 
 }
 
 export function validateNativeLedger(ledger, state, runId, { settled = false } = {}) {
-  if (ledger?.version !== 1 || !Number.isSafeInteger(ledger.total) || ledger.total < 0
+  if (!['A', 'B', 'C'].includes(state?.caseId)
+    || ledger?.version !== 1 || !Number.isSafeInteger(ledger.total) || ledger.total < 0
     || !Number.isSafeInteger(ledger.limit) || ledger.limit < 1 || ledger.total > ledger.limit
     || !Array.isArray(ledger.turns) || !Array.isArray(ledger.reservations)
+    || ledger.total + ledger.reservations.length > ledger.limit
     || new Set(ledger.turns.map(turn => turn.number)).size !== ledger.turns.length
     || new Set(ledger.reservations.map(item => item.id)).size !== ledger.reservations.length
     || ledger.turns.some(turn => !Number.isSafeInteger(turn.number) || turn.number < 1
+      || turn.runId !== runId || !['A', 'B', 'C'].includes(turn.caseId)
       || !['main', 'runner'].includes(turn.role)
       || turn.childKind !== undefined && !['pending', 'auxiliary', 'formal'].includes(turn.childKind)
       || !['completed', 'failed', 'dispatched', 'uncertain', 'not_dispatched'].includes(turn.state))
-    || ledger.total !== ledger.turns.filter(turn => turn.state !== 'not_dispatched').length
-    || settled && (ledger.reservations.length !== 0 || ledger.turns.some(turn => !['completed', 'not_dispatched'].includes(turn.state)))) fail('native ledger is absent, inconsistent or unsettled');
+    || ledger.reservations.some(item => item.runId !== runId || !['A', 'B', 'C'].includes(item.caseId))
+    || ledger.total !== ledger.turns.filter(turn => turn.state !== 'not_dispatched').length) fail('native ledger is absent or inconsistent');
+  // The FULL ledger is shared by concurrently running cases. A case proves its
+  // own settlement; the campaign still requires every case to qualify.
+  const scopedTurns = ledger.turns.filter(turn => turn.caseId === state.caseId);
+  const scopedReservations = ledger.reservations.filter(item => item.caseId === state.caseId);
+  if (settled && (scopedReservations.length !== 0
+    || scopedTurns.some(turn => !['completed', 'not_dispatched'].includes(turn.state)))) fail('native case ledger is unsettled');
   if (ledger.turns.filter(turn => turn.childKind === 'auxiliary' && turn.state !== 'not_dispatched').length > 8
-    || settled && ledger.turns.some(turn => turn.childKind === 'pending')) fail('auxiliary ledger is over budget or unresolved');
-  const counted = ledger.turns.filter(turn => turn.caseId === state.caseId && turn.state !== 'not_dispatched');
-  if (counted.some(turn => turn.runId !== runId)
-    || counted.filter(turn => turn.role === 'main').length !== state.mainTurns
+    || settled && scopedTurns.some(turn => turn.childKind === 'pending')) fail('auxiliary ledger is over budget or unresolved');
+  const counted = scopedTurns.filter(turn => turn.state !== 'not_dispatched');
+  if (counted.filter(turn => turn.role === 'main').length !== state.mainTurns
     || counted.filter(turn => turn.role === 'runner').length !== state.runnerTurns) fail('native case counters differ from admitted turns');
   return ledger;
 }

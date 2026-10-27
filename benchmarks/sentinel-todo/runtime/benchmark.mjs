@@ -1096,6 +1096,7 @@ async function finalize(options) {
   if(await fs.lstat(nativeStateFile).catch(()=>null)) {
     const nativeState=await readJson(nativeStateFile,'case state');
     if(nativeState.protocol==='native-app-server-v1') {
+      if(nativeState.caseId!==item.id) throw new CliError('native case state differs from selected case');
       const ledger=await readJson(path.join(path.dirname(path.dirname(realJournal)),'.turn-ledger.json'),'native ledger');
       validateNativeLedger(ledger,nativeState,path.basename(path.dirname(path.dirname(realJournal))),{settled:status==='PASS'});
       const stages=new Map();

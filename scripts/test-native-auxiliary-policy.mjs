@@ -8,6 +8,56 @@ import { loadProduct } from '../benchmarks/sentinel-todo/runtime/benchmark-manag
 import { observeFormalRunner, validateNativeLedger } from '../benchmarks/sentinel-todo/runtime/native-evidence.mjs';
 
 const product = await loadProduct(path.resolve(import.meta.dirname, '..'));
+for (const [closed, sibling] of [['B', 'C'], ['C', 'B']])
+test(`case ${closed} can finalize while sibling ${sibling} still owns admitted work`, () => {
+  const ledger = { version: 1, limit: 48, total: 3,
+    reservations: [{ id: 'sibling-reservation', runId: 'run', caseId: sibling, role: 'runner' }],
+    turns: [
+      { number: 1, runId: 'run', caseId: closed, role: 'main', state: 'completed' },
+      { number: 2, runId: 'run', caseId: closed, role: 'runner', childKind: 'formal', state: 'completed' },
+      { number: 3, runId: 'run', caseId: sibling, role: 'main', state: 'dispatched' },
+    ] };
+  const state = { caseId: closed, mainTurns: 1, runnerTurns: 1 };
+  const unchanged = JSON.stringify(ledger);
+  assert.equal(validateNativeLedger(ledger, state, 'run', { settled: true }), ledger);
+  assert.equal(validateNativeLedger(ledger, state, 'run', { settled: true }), ledger);
+  assert.equal(JSON.stringify(ledger), unchanged, 'validation does not settle or refund the sibling');
+  for (const pendingState of ['dispatched', 'uncertain', 'failed']) {
+    const ownPending = structuredClone(ledger); ownPending.turns[0].state = pendingState;
+    assert.throws(() => validateNativeLedger(ownPending, state, 'run', { settled: true }));
+  }
+  const ownReservation = structuredClone(ledger); ownReservation.reservations[0].caseId = closed;
+  assert.throws(() => validateNativeLedger(ownReservation, state, 'run', { settled: true }));
+  const ownClassification = structuredClone(ledger); ownClassification.turns[1].childKind = 'pending';
+  assert.throws(() => validateNativeLedger(ownClassification, state, 'run', { settled: true }));
+});
+
+test('sibling activity cannot hide invalid ledger identity or global auxiliary cost', () => {
+  const base = { version: 1, limit: 48, total: 2,
+    reservations: [{ id: 'sibling-reservation', runId: 'run', caseId: 'B', role: 'runner' }],
+    turns: [
+      { number: 1, runId: 'run', caseId: 'C', role: 'main', state: 'completed' },
+      { number: 2, runId: 'run', caseId: 'B', role: 'main', state: 'dispatched' },
+    ] };
+  const state = { caseId: 'C', mainTurns: 1, runnerTurns: 0 };
+  assert.throws(() => validateNativeLedger(base, { caseId: 'unknown', mainTurns: 0, runnerTurns: 0 }, 'run', { settled: true }));
+  for (const mutation of [
+    x => { delete x.turns[1].caseId; }, x => { x.turns[1].caseId = 'unknown'; },
+    x => { x.turns[1].runId = 'different'; }, x => { delete x.reservations[0].caseId; },
+    x => { x.reservations[0].caseId = 'unknown'; }, x => { x.reservations[0].runId = 'different'; },
+    x => { x.total = 1; }, x => { x.turns[1].number = 1; },
+    x => { x.limit = x.total; },
+    x => {
+      for (let number = 3; number < 12; number++) x.turns.push({ number, runId: 'run', caseId: 'B',
+        role: 'runner', childKind: 'auxiliary', state: 'completed' });
+      x.total = x.turns.length;
+    },
+  ]) {
+    const ledger = structuredClone(base); mutation(ledger);
+    assert.throws(() => validateNativeLedger(ledger, state, 'run', { settled: true }));
+  }
+});
+
 test('historical child cost stays readable; optional auxiliary metadata cannot turn cost into formal proof', () => {
   const ledger = { version: 1, limit: 30, total: 2, reservations: [], turns: [
     { number: 1, runId: 'run', caseId: 'A', role: 'main', state: 'completed' },
