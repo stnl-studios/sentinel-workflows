@@ -860,6 +860,70 @@ test('public case finalizer accepts its closed evidence while a sibling ledger o
   } finally { await fs.writeFile(stateFile, originalState); }
 });
 
+test('FULL operational checkpoint preserves accepted A/C and resumes only eligible B', {timeout:180000}, async t=>{
+  const fixture=await allocateOfflineFixture(repo),backends=new Map();
+  t.after(async()=>{await Promise.all([...backends.values()].map(x=>x.settled()));await finishOfflineFixture(fixture);});
+  const url=p=>pathToFileURL(path.join(fixture.root,p)).href;
+  const manager=await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
+  const actual=(await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
+  const sdk=await describeOfflineSdk(await fs.realpath(path.join(repo,'agents/codex/node_modules')),fixture.root);
+  const starts=[];
+  const offline={mode:'OFFLINE_TEST_ONLY',sdk,createNativeProvider:async args=>{
+    const id=/case-([abc])\/workspace$/u.exec(args.workspace)[1].toUpperCase();starts.push(id);
+    if(!backends.has(id))backends.set(id,offlineNativeWorkflow({...args,caseId:id,caseRoot:args.evidenceRoot,
+      fault:id==='B'?'review-correction':null}));
+    return actual({...args,rpc:backends.get(id).rpc,pollMs:1});
+  }};
+  const context=process.env.NODE_TEST_CONTEXT;delete process.env.NODE_TEST_CONTEXT;
+  try{
+    assert.equal(await manager.main(['run','--full','--max-operations','6','--json'],{offline}),0);
+    const runId=(await fs.readdir(path.join(fixture.root,'benchmark-temp'))).find(x=>x.startsWith('run-'));
+    const root=path.join(fixture.root,'benchmark-temp',runId),file=path.join(root,'run.json');
+    const run=JSON.parse(await fs.readFile(file)),summary=JSON.parse(await fs.readFile(path.join(root,'summary.json')));
+    assert.equal(run.mode,'full');assert.equal(run.status,'FOCAL_STOP');assert.ok(run.resumeCheckpoint);
+    assert.equal(summary.cases.A.status,'PASS');assert.equal(summary.cases.C.status,'PASS');assert.equal(summary.cases.B.status,'FOCAL_STOP');
+    const preserved=await Promise.all(['A','C'].flatMap(id=>['case-state.json','journal.json','terminal-evidence.json','raw.json']
+      .map(async name=>{const p=path.join(root,`case-${id.toLowerCase()}`,name);return[p,await fs.readFile(p)];})));
+    const ledgerFile=path.join(root,'.turn-ledger.json'),ledgerBytes=await fs.readFile(ledgerFile),before=JSON.parse(ledgerBytes);
+    const runBytes=await fs.readFile(file),calls=starts.length;
+    for(const tamper of [j=>{j.mode='case';},j=>{j.snapshot.baseSha='foreign';},j=>{j.resumeCheckpoint='sha256:'+'0'.repeat(64);}]){
+      const changed=structuredClone(run);tamper(changed);await fs.writeFile(file,JSON.stringify(changed));
+      try{await assert.rejects(manager.main(['run','--resume',runId,'--json'],{offline}));
+        assert.equal(starts.length,calls);assert.deepEqual(await fs.readFile(ledgerFile),ledgerBytes);
+        assert.deepEqual(await fs.readFile(file),Buffer.from(JSON.stringify(changed)),'refuse before ACTIVE');
+      }finally{await fs.writeFile(file,runBytes);}
+    }
+    const bFile=path.join(root,'case-b/case-state.json'),bBytes=await fs.readFile(bFile),bState=JSON.parse(bBytes);
+    for(const mutate of [x=>{x.pendingObservation={dispatch:{threadId:'unknown',turnId:'unknown'}};},
+      x=>{x.terminal={result:'BLOCKED',blocker:'DENIED'};},x=>{x.workspace+='-foreign';},x=>{x.contextPolicy.regime='foreign';}]){
+      const altered=structuredClone(bState);mutate(altered);await fs.writeFile(bFile,JSON.stringify(altered));
+      try{await assert.rejects(manager.main(['run','--resume',runId,'--json'],{offline}));
+        assert.equal(starts.length,calls);assert.deepEqual(await fs.readFile(file),runBytes);assert.deepEqual(await fs.readFile(ledgerFile),ledgerBytes);
+      }finally{await fs.writeFile(bFile,bBytes);}
+    }
+    for(const mutate of [x=>{x.turns.at(-1).state='uncertain';},x=>{x.limit++;},
+      x=>{x.reservations.push({id:'unknown',runId,caseId:'B',role:'main'});}]){
+      const altered=structuredClone(before);mutate(altered);const bytes=Buffer.from(JSON.stringify(altered));await fs.writeFile(ledgerFile,bytes);
+      try{await assert.rejects(manager.main(['run','--resume',runId,'--json'],{offline}));
+        assert.equal(starts.length,calls);assert.deepEqual(await fs.readFile(file),runBytes);assert.deepEqual(await fs.readFile(ledgerFile),bytes,'no refund');
+      }finally{await fs.writeFile(ledgerFile,ledgerBytes);}
+    }
+    assert.equal(await manager.main(['run','--resume',runId,'--json'],{offline}),0);
+    assert.deepEqual(starts.slice(calls),['B'],'no provider or recipe for accepted cases');
+    const after=JSON.parse(await fs.readFile(ledgerFile));assert.deepEqual(after.turns.slice(0,before.turns.length),before.turns);
+    assert.ok(after.total>before.total);assert.equal(after.reservations.length,0);
+    for(const[p,bytes]of preserved)assert.deepEqual(await fs.readFile(p),bytes);
+    const final=JSON.parse(await fs.readFile(file));assert.equal(final.mode,'full');assert.equal(final.status,'PASS');
+    const finalBytes=await fs.readFile(file),settled=await fs.readFile(ledgerFile),providers=starts.length;
+    await assert.rejects(manager.main(['run','--resume',runId,'--json'],{offline}));
+    assert.equal(starts.length,providers);assert.deepEqual(await fs.readFile(ledgerFile),settled);
+    await fs.writeFile(file,runBytes);
+    try{await assert.rejects(manager.main(['run','--resume',runId,'--json'],{offline}));assert.equal(starts.length,providers);
+      assert.deepEqual(await fs.readFile(ledgerFile),settled,'an old stopped state cannot replay after progress');
+    }finally{await fs.writeFile(file,finalBytes);}
+  }finally{if(context!==undefined)process.env.NODE_TEST_CONTEXT=context;}
+});
+
 for (const boundary of ['before-admission', 'in-flight']) test(`FULL stops sibling admission after a terminal case (${boundary})`, { timeout: 120000 }, async t => {
   const fixture = await allocateOfflineFixture(repo), entered = Promise.withResolvers(), release = Promise.withResolvers();
   const backends = new Map(); let running;

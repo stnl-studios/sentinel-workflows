@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { appServerEnvironment, appServerRpc, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   selectAppServerBundle, startAppServerTurn, bindAppServerChild, readAppServerChild, observeAppServerChild,
   writeNativeToolResult, captureAppServerChild, persistAppServerStderrSample, readAppServerAgentFeatures,
-  canonicalContractReadCommand, connectAppServer } from '../agents/codex/runtime/app-server-transport.mjs';
+  canonicalContractReadCommand, connectAppServer,nativeTransportError } from '../agents/codex/runtime/app-server-transport.mjs';
 import { createNativeProvider } from '../agents/codex/runtime/native-provider.mjs';
 import { reservedOperation } from './fixtures/current-native-operation.mjs';
 import { bindNative, verifyNative, captureNative, resume } from
@@ -194,6 +194,18 @@ for(const [kind,mutate] of [
   assert.doesNotMatch(result.error,/private-|\/private\//u);
   const e=JSON.parse((await fs.readFile(result.eventsPath,'utf8')).trim());
   assert.equal(e.code,result.errorCode);assert.equal(e.message,result.error);
+  assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+});
+
+test('private command evidence cannot be forged through an error property',async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
+  const result=await p.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'private-evidence-forgery',role:'author',onDispatched:()=>{throw Object.assign(nativeTransportError('known refusal'),
+      {privateCommandEvidence:{command:'TOKEN=private-secret',output:'private-output',environment:'private-env'}});}});
+  assert.equal(result.completed,false);const events=await fs.readFile(result.eventsPath,'utf8');
+  assert.doesNotMatch(events,/private-secret|private-output|private-env/u);
+  assert.equal(Object.hasOwn(JSON.parse(events.trim()),'privateCommandEvidence'),false);
   assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
 });
 
@@ -697,6 +709,8 @@ for (const [name, changes, failed, detail] of [
   ['missing metadata', { status: undefined, exitCode: undefined }, 'STATUS,EXIT_CODE', 'status=absent'],
   ['unknown metadata', { status: 'private-status-secret', exitCode: 'private-exit-secret' }, 'STATUS,EXIT_CODE', 'status=other'],
   ['unproven command', { command: 'touch private-command-secret' }, 'COMMAND_READ_FORM', 'itemType=commandExecution'],
+  ['sensitive command', { command: 'TOKEN=private-secret cat /private/file-secret' }, 'COMMAND_READ_FORM', 'itemType=commandExecution'],
+  ['oversized command', { command: 'cat '+'private-secret'.repeat(1000) }, 'COMMAND_READ_FORM', 'itemType=commandExecution'],
 ]) test(`initialization refusal retains bounded concrete diagnostic through provider (${name})`, async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true,
     response: 'Initialization is not a verdict.\n' });
@@ -727,6 +741,14 @@ for (const [name, changes, failed, detail] of [
   const events = (await fs.readFile(result.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
   const refusal = events.find(event => event.type === 'native.transport.blocked');
   assert.equal(refusal.message, result.error, 'existing artifact preserves the exact safe diagnostic');
+  if(failed==='COMMAND_READ_FORM'){
+    assert.equal(refusal.privateCommandEvidence.values,'omitted');
+    assert.equal(refusal.privateCommandEvidence.sufficientForEffectJudgment,false);
+    assert.ok(Buffer.byteLength(JSON.stringify(refusal.privateCommandEvidence))<=384);
+    assert.doesNotMatch(JSON.stringify(refusal.privateCommandEvidence),/private-|TOKEN|secret|\/private/iu);
+    assert.equal(Object.hasOwn(result,'privateCommandEvidence'),false);
+    assert.equal((await fs.stat(result.eventsPath)).mode&0o077,0);
+  }
   assert.ok(!events.some(event => event.type === 'native.child.continuation.admitted'));
   assert.equal(result.captures.length, 0);
   assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1, 'only original fake principal');

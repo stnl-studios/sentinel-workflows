@@ -31,6 +31,15 @@ later sibling operations. An already admitted operation settles under its origin
 deadline; this cooperative stop does not cancel its observation or invent a result.
 FULLs are sequential; the first failure, cancellation, unavailable evidence or
 publication error stops the sequence.
+
+The formal campaign also accepts `--max-operations N` as an operational stop
+after at most N additional operations per case. It retains FULL scope and never
+qualifies a partial result. Resume with `npm run benchmark:campaign -- --resume
+<campaign-id>` (repeat `--runs N` if the initial N overrode the manifest).
+Only a settled checkpoint from the same candidate, controller and configuration
+is eligible; accepted FULLs/cases are revalidated without executing them again.
+Refusals, uncertain effects, altered evidence and historical runs without this
+checkpoint are excluded. Costs and correction limits remain cumulative.
 The offline tests use controlled hooks, not real FULLs.
 
 Both entrypoints retain per-run reports and campaign state in ignored
@@ -95,9 +104,11 @@ Run from the repository root:
 
 ```sh
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --full
+node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --full --max-operations 6
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --case A
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --case A --max-operations 4
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --resume <focal-run-id> --max-operations 3
+node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --resume <stopped-full-run-id>
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status --run <run-id>
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs inspect --run <run-id> --case A

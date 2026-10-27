@@ -435,6 +435,75 @@ async function readFocalResumeHandoff({ product, runRoot, caseRoot, state, expec
     ledger: await readJson(ledgerPath(runRoot)), runId: path.basename(runRoot), product });
 }
 
+async function fullResumeCheckpoint(runRoot,run,product) {
+  const digest=createHash('sha256').update('sentinel-full-checkpoint\0').update(JSON.stringify({
+    runId:run.runId,mode:run.mode,cases:run.cases,profile:run.profile,snapshot:run.snapshot,
+    startedAt:run.startedAt,endedAt:run.endedAt,status:run.status,
+    configurationSha256:run.configurationSha256,controllerSha256:run.controllerSha256}));
+  const include=async file=>{const bytes=(await product.readOwnedFile(file)).bytes;
+    digest.update(path.relative(runRoot,file)).update('\0').update(String(bytes.length)).update('\0').update(bytes);};
+  await include(path.join(runRoot,'summary.json'));await include(ledgerPath(runRoot));
+  for(const id of ['A','B','C']) {
+    const root=path.join(runRoot,caseName(id));
+    if(!await exists(root)){digest.update(`${id}:absent\0`);continue;}
+    const state=await readJson(path.join(root,'case-state.json'));
+    await include(path.join(root,'case-state.json'));await include(path.join(root,'journal.json'));
+    const files=new Set((state.operations??[]).map(item=>item.evidencePath));
+    for(const finalizer of [state.finalizer,...(state.finalizerHistory??[]).map(item=>item.finalizer)])
+      if(finalizer?.rawPath)files.add(finalizer.rawPath);
+    if(await exists(path.join(root,'terminal-evidence.json')))files.add(path.join(root,'terminal-evidence.json'));
+    for(const file of [...files].sort()) {
+      if(typeof file!=='string'||path.dirname(file)!==root)fail('FULL checkpoint evidence is not case-owned');
+      await include(file);
+    }
+  }
+  return `sha256:${digest.digest('hex')}`;
+}
+
+async function fullResumeCases({runRoot,run,configuration,snapshot,product}) {
+  if(run.status!=='FOCAL_STOP'||run.mode!=='full'||!isDeepStrictEqual(run.cases,['A','B','C'])
+    ||run.profile!==configuration.productionProfile.id||!isDeepStrictEqual(run.snapshot,snapshot)
+    ||run.configurationSha256!==hash(JSON.stringify(configuration))
+    ||run.controllerSha256!==hash(await fs.readFile(fileURLToPath(import.meta.url))))fail('FULL checkpoint identity/configuration differs');
+  const git=spawnSync('git',['rev-parse','HEAD'],{cwd:ROOT,encoding:'utf8',timeout:30000});
+  if(git.status!==0||git.stdout.trim()!==snapshot.baseSha)fail('FULL checkpoint controller version differs');
+  if(run.resumeCheckpoint!==await fullResumeCheckpoint(runRoot,run,product))fail('FULL checkpoint evidence changed or is absent');
+  const ledger=await readJson(ledgerPath(runRoot)),summary=await readJson(path.join(runRoot,'summary.json'));
+  if(ledger.limit!==configuration.turnBudget.maxTurnsPerRun||ledger.reservations?.length!==0
+    ||ledger.turns?.some(item=>!['completed','not_dispatched'].includes(item.state)||item.childKind==='pending')
+    ||summary.runId!==run.runId||summary.mode!=='full'||summary.status!=='FOCAL_STOP')fail('FULL checkpoint is unsettled');
+  const cases={};let needed=0;
+  for(const id of ['A','B','C']) {
+    const root=path.join(runRoot,caseName(id)),result=summary.cases?.[id];
+    if(result?.status==='NOT_RUN') {
+      if(await exists(root)||ledger.turns.some(item=>item.caseId===id))fail('FULL unstarted case has existing effects');
+      cases[id]={resume:false,result:null};needed++;continue;
+    }
+    const state=await readJson(path.join(root,'case-state.json'));
+    const expected={workspace:path.join(root,'workspace'),specPath:path.join(root,'workspace',
+      ...configuration.cases.find(item=>item.id===id).specPath.split('/')),policy:contextPolicy(configuration)};
+    assertCaseIdentity(state,expected);validateNativeLedger(ledger,state,run.runId,{settled:true});
+    if(state.status!==result?.status||state.pendingObservation!=null||state.integrity!=='PASS'
+      ||!state.finalizer?.rawPath||state.status==='PASS'&&state.finalizer.exitCode!==0
+      ||state.terminal?.result!==state.status||state.terminal.blocker!==null)fail('FULL case checkpoint differs');
+    if(state.status==='PASS'){cases[id]={resume:false,result};continue;}
+    const target=await readFocalResumeHandoff({product,runRoot,caseRoot:root,state,expected,mode:'full'});
+    cases[id]={resume:true,result:null};needed+=RUNNER_OPERATIONS.has(target.operation)?2:1;
+  }
+  if(availableTurns(ledger)<needed)fail('FULL checkpoint has insufficient remaining budget');
+  // Reuse the existing read-only export validators for retained products,
+  // terminal proofs, raw/journal/profile identity and product acceptance.
+  const {exportMeasurement}=await import('./benchmark-measurement.mjs');
+  await exportMeasurement(run.runId);
+  return cases;
+}
+
+export async function preflightFullResume(id) {
+  const runRoot=await assertRun(id),run=await readJson(path.join(runRoot,'run.json'));
+  return fullResumeCases({runRoot,run,configuration:await readJson(MANIFEST),
+    snapshot:await assertSnapshotIntegrity(runRoot),product:await loadProduct(path.join(runRoot,'snapshot'))});
+}
+
 export function recoverableRunnerHandoff({ operation, slice, outcome, readback, priorOperations, remainingTurns }) {
   if (outcome.result !== 'BLOCKED' || outcome.blocker !== 'OFFICIAL_RUNNER_RESULT_BLOCKED'
     || !RUNNER_OPERATIONS.has(operation) || remainingTurns < 2) return null;
@@ -590,7 +659,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       readiness = state.readiness ?? null; preparation = state.preparation ?? null;
     }
     const previousJournal = await fs.readFile(journal), previousScope = JSON.parse(previousJournal).runMode;
-    if (previousScope !== mode) {
+    if (previousScope !== mode || mode==='full') {
       assertResumeScope(previousScope, mode);
       // Only this explicitly resumed case advances from diagnostic to case.
       // Keep the prior bytes/raw and every original event; finalization now
@@ -981,17 +1050,19 @@ async function run(options) {
     const snapshotMetadata = options.resumeId
       ? (await readJson(path.join(runRoot, 'run.json'))).snapshot
       : await createSnapshot(runRoot, { executionMode: offline?.mode, offlineSdk: offline?.sdk });
-    if (options.resumeId) await assertSnapshotIntegrity(runRoot);
+    const validatedSnapshot=options.resumeId?await assertSnapshotIntegrity(runRoot):snapshotMetadata;
     const product = await loadProduct(path.join(runRoot, 'snapshot'));
     if (offline !== null) product.createNativeProvider = offline.createNativeProvider;
     const previous = options.resumeId ? await readJson(path.join(runRoot, 'run.json')) : null;
-    const mode = options.maxOperations !== null ? 'focal' : options.full ? 'full' : 'case';
-    if (previous && (!['FOCAL_STOP', 'BLOCKED'].includes(previous.status) || previous.cases.length !== 1
+    const full=options.full||previous?.mode==='full';
+    const mode = full?'full':options.maxOperations !== null ? 'focal':'case';
+    if (previous && !full && (!['FOCAL_STOP', 'BLOCKED'].includes(previous.status) || previous.cases.length !== 1
       || previous.profile !== 'production-v3')) {
       fail('only a stopped single case or scoped pending observation can be resumed');
     }
     const caseId = previous?.cases[0] ?? options.caseId;
-    if (previous) {
+    const resumedCases=previous&&full?await fullResumeCases({runRoot,run:previous,configuration,snapshot:validatedSnapshot,product}):null;
+    if (previous&&!full) {
       const caseRoot = path.join(runRoot, caseName(caseId)), state = await readJson(path.join(caseRoot, 'case-state.json'));
       if (state.pendingObservation == null) {
         const specPath = path.join(caseRoot, 'workspace', ...configuration.cases.find(item => item.id === caseId).specPath.split('/'));
@@ -1001,39 +1072,43 @@ async function run(options) {
       }
     }
     const runInfo = previous
-      ? { ...previous, status: 'ACTIVE', mode: options.maxOperations !== null ? 'focal' : 'case', resumedAt: new Date().toISOString() }
-      : { runId: id, status: 'ACTIVE', mode, cases: options.full ? ['A', 'B', 'C'] : [caseId],
+      ? { ...previous, status: 'ACTIVE', mode, resumedAt: new Date().toISOString() }
+      : { runId: id, status: 'ACTIVE', mode, cases: full ? ['A', 'B', 'C'] : [caseId],
+        ...(full?{configurationSha256:hash(JSON.stringify(configuration)),controllerSha256:hash(await fs.readFile(fileURLToPath(import.meta.url)))}:{}),
         snapshot: snapshotMetadata, startedAt: new Date().toISOString(), profile: 'production-v3' };
     await atomicJson(path.join(runRoot, 'run.json'), runInfo);
     announce({ runId: id, status: 'ACTIVE', mode, artifacts: runRoot, sourceFunctionalSha256: snapshotMetadata.sourceFunctionalSha256,
       ...await budgetSnapshot(runRoot) });
     const results = {};
-    results.A = options.full || caseId === 'A'
+    results.A = resumedCases?.A.result??(full || caseId === 'A'
       ? await runCase({ runRoot, caseId: 'A', configuration, snapshotMetadata, maxOperations: options.maxOperations,
-        mode: runInfo.mode, product, signal: signalController.signal, resume: !!options.resumeId }) : { status: 'NOT_RUN' };
-    if (options.full && results.A.status === 'PASS' && !signalController.signal.aborted) {
+        mode: runInfo.mode, product, signal: signalController.signal, resume: resumedCases?.A.resume??!!options.resumeId }) : { status: 'NOT_RUN' });
+    if (full && results.A.status === 'PASS' && !signalController.signal.aborted) {
       let failedCase = null;
       const reportTerminal = ({ caseId, outcome }) => {
-        if (failedCase === null && outcome?.result !== 'PASS') failedCase = { caseId, outcome };
+        if (failedCase === null && !['PASS','FOCAL_STOP'].includes(outcome?.result)) failedCase = { caseId, outcome };
       };
       const beforeOperation = () => {
         if (failedCase !== null) throw Object.assign(new Error(`FULL stopped after case ${failedCase.caseId} terminal ${failedCase.outcome?.result ?? 'BLOCKED'}`),
           { code: 'FULL_SIBLING_TERMINAL' });
       };
-      const [b, c] = await Promise.allSettled(['B', 'C'].map((caseId) => runCase({ runRoot, caseId,
-        configuration, snapshotMetadata, maxOperations: null, mode, product, signal: signalController.signal,
+      const [b, c] = await Promise.allSettled(['B', 'C'].map((caseId) => resumedCases?.[caseId].result??runCase({ runRoot, caseId,
+        configuration, snapshotMetadata, maxOperations: options.maxOperations, mode, product, signal: signalController.signal,
+        resume:resumedCases?.[caseId].resume??false,
         beforeOperation, reportTerminal }).catch(error => {
           reportTerminal({ caseId, outcome: { result: 'BLOCKED', blocker: error.code ?? 'DRIVER_FAILURE' } });
           throw error;
         })));
       results.B = b.status === 'fulfilled' ? b.value : { status: 'BLOCKED', error: String(b.reason) };
       results.C = c.status === 'fulfilled' ? c.value : { status: 'BLOCKED', error: String(c.reason) };
-    } else if (options.full) results.B = { status: 'NOT_RUN' }, results.C = { status: 'NOT_RUN' };
+    } else if (full) results.B = { status: 'NOT_RUN' }, results.C = { status: 'NOT_RUN' };
     else if (caseId !== 'A') results[caseId] = await runCase({ runRoot, caseId,
       configuration, snapshotMetadata, maxOperations: options.maxOperations,
       mode: runInfo.mode, product, signal: signalController.signal, resume: !!options.resumeId });
-    const allPass = (options.full ? ['A', 'B', 'C'] : [caseId]).every((name) => results[name]?.status === 'PASS');
-    const focalStop = options.maxOperations !== null && results[caseId]?.status === 'FOCAL_STOP';
+    const allPass = (full ? ['A', 'B', 'C'] : [caseId]).every((name) => results[name]?.status === 'PASS');
+    const focalStop = full?Object.values(results).some(item=>item.status==='FOCAL_STOP')
+      &&Object.values(results).every(item=>['FOCAL_STOP','PASS','NOT_RUN'].includes(item.status))
+      :options.maxOperations !== null && results[caseId]?.status === 'FOCAL_STOP';
     const budgetPaused = Object.values(results).some((result) => result?.status === 'PAUSED_BUDGET_OR_QUOTA');
     summary = { runId: id, status: allPass ? 'PASS' : signalController.signal.aborted ? 'CANCELLED'
       : budgetPaused ? 'PAUSED_BUDGET_OR_QUOTA' : focalStop ? 'FOCAL_STOP' : 'BLOCKED',
@@ -1041,7 +1116,10 @@ async function run(options) {
       sourceFunctionalSha256: snapshotMetadata.sourceFunctionalSha256,
       ...await budgetSnapshot(runRoot), endedAt: new Date().toISOString(), artifacts: runRoot };
     await atomicJson(path.join(runRoot, 'summary.json'), summary);
-    await atomicJson(path.join(runRoot, 'run.json'), { ...runInfo, status: summary.status, endedAt: summary.endedAt });
+    const finalRun={ ...runInfo, status: summary.status, endedAt: summary.endedAt };
+    delete finalRun.resumeCheckpoint;
+    if(full&&focalStop)finalRun.resumeCheckpoint=await fullResumeCheckpoint(runRoot,finalRun,product);
+    await atomicJson(path.join(runRoot, 'run.json'),finalRun);
   } finally {
     process.off('SIGINT', onSignal); process.off('SIGTERM', onSignal);
     await release(id);
@@ -1177,7 +1255,7 @@ export async function main(argv, { offline = null } = {}) {
     if (values['--run'] || [caseId !== null, !!values.full, resumeId !== null].filter(Boolean).length !== 1
       || (caseId && !['A', 'B', 'C'].includes(caseId))) fail('run requires one of --case A|B|C, --full, or --resume <id>');
     const maxOperations = values['--max-operations'] === undefined ? null : Number(values['--max-operations']);
-    if (maxOperations !== null && (!Number.isSafeInteger(maxOperations) || maxOperations < 1 || values.full)) fail('invalid focal operation limit');
+    if (maxOperations !== null && (!Number.isSafeInteger(maxOperations) || maxOperations < 1)) fail('invalid focal operation limit');
     return run({ caseId, full: !!values.full, resumeId, maxOperations, offline });
   }
   if (values.full || values['--resume'] || values['--case'] && verb !== 'inspect' || values['--max-operations']) fail('invalid manager option for command');

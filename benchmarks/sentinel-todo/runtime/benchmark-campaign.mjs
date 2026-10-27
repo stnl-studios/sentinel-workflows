@@ -5,9 +5,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { compareMeasurements, validateMeasurementReport, exportMeasurement } from './benchmark-measurement.mjs';
 import { currentFunctionalIdentity } from './benchmark-snapshot.mjs';
-import { privateHomeNeverCreated, settledNativeCase } from './benchmark-manager.mjs';
+import { privateHomeNeverCreated, settledNativeCase,preflightFullResume } from './benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNTIME = path.join('benchmarks', 'sentinel-todo', 'runtime');
@@ -147,7 +148,11 @@ function adapters(root) {
     processes: knownProcesses,
     identity: () => currentFunctionalIdentity(),
     verify: (signal) => command(root, path.join(RUNTIME, 'benchmark.mjs'), ['verify'], signal),
-    runFull: (signal) => command(root, path.join(RUNTIME, 'benchmark-manager.mjs'), ['run', '--full'], signal),
+    runFull: (signal,{maxOperations}={}) => command(root, path.join(RUNTIME, 'benchmark-manager.mjs'),
+      ['run', '--full',...(maxOperations===undefined?[]:['--max-operations',String(maxOperations)])], signal),
+    resumeFull: (id,signal,{maxOperations}={}) => command(root,path.join(RUNTIME,'benchmark-manager.mjs'),
+      ['run','--resume',id,...(maxOperations===undefined?[]:['--max-operations',String(maxOperations)])],signal),
+    preflightFullResume,
     cleanRun: (runId) => command(root, path.join(RUNTIME, 'benchmark-manager.mjs'), ['clean', '--run', runId], new AbortController().signal, true),
     export: (runId, output, signal) => command(root, path.join(RUNTIME, 'benchmark-measurement.mjs'),
       ['export', '--run', runId, '--output', output], signal, true),
@@ -223,6 +228,14 @@ export function campaignSummary({ campaignId, head, startedAt, endedAt, baseline
 async function writeJson(file, value) {
   await fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
 }
+async function updateCampaignState(file,value) {
+  const {stateSha256,...body}=value;
+  value={...body,stateSha256:digest(JSON.stringify(body))};
+  const temporary=`${file}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporary,`${JSON.stringify(value,null,2)}\n`,{flag:'wx',mode:0o600});
+  await fs.rename(temporary,file);
+}
+const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
 async function promote(root, campaignId, files, signal) {
   const parent = path.join(root, MEASUREMENTS);
@@ -240,8 +253,12 @@ async function promote(root, campaignId, files, signal) {
   return destination;
 }
 
-export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, runs = undefined } = {}) {
+export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, runs = undefined,
+  resumeId=null,maxOperations=undefined } = {}) {
   if (runs !== undefined && (!Number.isSafeInteger(runs) || runs < 1)) throw blocked('BLOCKED_CONFIG', 'runs must be a positive integer');
+  if(maxOperations!==undefined&&(!Number.isSafeInteger(maxOperations)||maxOperations<1))throw blocked('BLOCKED_CONFIG','invalid operation checkpoint limit');
+  if(resumeId!==null&&(!/^campaign-[a-z0-9-]{8,}$/u.test(resumeId)||campaignId!==null&&campaignId!==resumeId))
+    throw blocked('BLOCKED_CONFIG','invalid campaign resume identity');
   if (process.env.STNL_OFFLINE_PROVIDER_CONTEXT !== undefined) throw blocked('BLOCKED_BASE', 'TEST-ONLY provider cannot enter a formal campaign');
   const api = { ...adapters(root), ...hooks };
   const scratch = path.join(root, 'benchmark-temp');
@@ -249,6 +266,7 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, 
   const onSignal = () => signal.abort();
   process.on('SIGINT', onSignal); process.on('SIGTERM', onSignal);
   let lock = null; let campaignRoot = null; let index = 0; let runId = null;
+  let state=null,ownsState=false;
   const say = (line) => console.log(line);
   const checkCancel = () => { if (signal.signal.aborted) throw blocked('CANCELLED', 'campaign interrupted'); };
   try {
@@ -280,31 +298,78 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, 
     const verified = await api.verify(signal.signal);
     checkCancel();
     if (verified.code !== 0) throw blocked('BLOCKED_VERIFY', `benchmark verify failed (${verified.code})`);
-    const id = campaignId ?? `campaign-${new Date().toISOString().replace(/[-:.TZ]/gu, '').slice(0, 14)}-${randomUUID().slice(0, 8)}`;
+    const id = resumeId??campaignId ?? `campaign-${new Date().toISOString().replace(/[-:.TZ]/gu, '').slice(0, 14)}-${randomUUID().slice(0, 8)}`;
     if (!/^campaign-[a-z0-9-]{8,}$/u.test(id)) throw blocked('BLOCKED_DESTINATION', 'invalid campaign ID');
     const destination = path.join(root, MEASUREMENTS, id);
     if (await exists(destination)) throw blocked('BLOCKED_DESTINATION', `measurement destination already exists: ${destination}`);
     campaignRoot = path.join(scratch, id);
-    await fs.mkdir(campaignRoot);
-    await fs.writeFile(path.join(campaignRoot, '.sentinel-campaign-owned'), CAMPAIGN_MARKER, { flag: 'wx' });
-    const startedAt = new Date().toISOString();
     const source = await api.identity();
     const reports = []; const comparisons = []; const files = {};
-    for (index = 1; index <= plannedRuns; index += 1) {
+    const freeze={head:base.head,sourceFunctionalSha256:source.sha256,
+      configurationSha256:digest(JSON.stringify(manifest)),plannedRuns,baselineRef};
+    if(resumeId===null) {
+      await fs.mkdir(campaignRoot);
+      await fs.writeFile(path.join(campaignRoot,'.sentinel-campaign-owned'),CAMPAIGN_MARKER,{flag:'wx'});
+      state={status:'ACTIVE',campaignId:id,freeze,startedAt:new Date().toISOString(),completed:[],runIndex:1,runId:null,pendingCheckpoint:null};
+    } else {
+      state=await readJson(path.join(campaignRoot,'state.json'));
+      const {stateSha256,...sealed}=state;
+      if(state.status!=='FOCAL_STOP'||state.campaignId!==id||!isDeepStrictEqual(state.freeze,freeze)
+        ||stateSha256!==digest(JSON.stringify(sealed))||!Number.isFinite(Date.parse(state.startedAt))
+        ||!Array.isArray(state.completed)||state.runIndex!==state.completed.length+1||state.runIndex>plannedRuns
+        ||!/^run-[a-z0-9-]+$/u.test(state.runId??'')||!/^sha256:[a-f0-9]{64}$/u.test(state.pendingCheckpoint??''))
+        throw blocked('BLOCKED_RESUME','campaign has no matching safe FULL checkpoint');
+      for(const [offset,accepted]of state.completed.entries()) {
+        const n=offset+1,name=`run-${String(n).padStart(2,'0')}.json`,comparisonName=`compare-${String(n).padStart(2,'0')}.json`;
+        if(accepted.index!==n||!/^run-[a-z0-9-]+$/u.test(accepted.runId??'')
+          ||state.completed.some((other,i)=>i!==offset&&other.runId===accepted.runId)||accepted.runId===state.runId)
+          throw blocked('BLOCKED_RESUME','campaign completed run identity differs');
+        const bytes=await fs.readFile(path.join(campaignRoot,name)),comparisonBytes=await fs.readFile(path.join(campaignRoot,comparisonName));
+        const report=validateMeasurementReport(JSON.parse(bytes),{qualify:true});
+        if(digest(bytes)!==accepted.reportSha256||digest(comparisonBytes)!==accepted.comparisonSha256
+          ||report.run.id!==accepted.runId||report.run.status!=='PASS'||report.run.mode!=='full'
+          ||report.provenance.sourceFunctionalSha256!==source.sha256
+          ||!isDeepStrictEqual(report,await api.exportMeasurement(accepted.runId)))
+          throw blocked('BLOCKED_RESUME','campaign accepted report or evidence differs');
+        reports.push(report);comparisons.push(JSON.parse(comparisonBytes));files[name]=path.join(campaignRoot,name);
+      }
+      const pending=await readJson(path.join(scratch,state.runId,'run.json'));
+      if(pending.runId!==state.runId||pending.mode!=='full'||pending.status!=='FOCAL_STOP'
+        ||pending.snapshot?.sourceFunctionalSha256!==source.sha256||pending.resumeCheckpoint!==state.pendingCheckpoint)
+        throw blocked('BLOCKED_RESUME','pending FULL identity/checkpoint differs');
+      await api.preflightFullResume(state.runId);
+    }
+    const startedAt=state.startedAt;
+    ownsState=true;await updateCampaignState(path.join(campaignRoot,'state.json'),{...state,status:'ACTIVE'});
+    const resumeIndex=resumeId===null?null:state.runIndex;
+    for (index = state.completed.length+1; index <= plannedRuns; index += 1) {
       checkCancel();
       if ((await api.gitState()).head !== base.head || (await api.identity()).sha256 !== source.sha256) {
         throw blocked('CAMPAIGN_SOURCE_DRIFT', `checkout or functional source changed before run ${index}`);
       }
       say(`RUN ${index}/${plannedRuns}`);
       const before = await runIds(scratch);
-      const result = await api.runFull(signal.signal);
+      const resuming=index===resumeIndex;
+      runId=resuming?state.runId:null;
+      state={...state,status:'ACTIVE',runIndex:index,runId};
+      await updateCampaignState(path.join(campaignRoot,'state.json'),state);
+      const result = resuming?await api.resumeFull(runId,signal.signal,{maxOperations}):await api.runFull(signal.signal,{maxOperations});
       const created = [...await runIds(scratch)].filter((item) => !before.has(item));
-      if (created.length !== 1) throw blocked('BLOCKED_RUN_ID', `run ${index} created ${created.length} run directories`);
-      runId = created[0];
+      if (created.length !== (resuming?0:1)) throw blocked('BLOCKED_RUN_ID', `run ${index} created ${created.length} run directories`);
+      if(!resuming)runId = created[0];
       const runRoot = path.join(scratch, runId);
       const run = await readJson(path.join(runRoot, 'run.json'));
       const summary = await readJson(path.join(runRoot, 'summary.json')).catch(() => null);
       checkCancel();
+      if(result.code===0&&run.runId===runId&&run.mode==='full'&&run.status==='FOCAL_STOP'
+        &&summary?.runId===runId&&summary.mode==='full'&&summary.status==='FOCAL_STOP'
+        &&run.snapshot?.sourceFunctionalSha256===source.sha256&&/^sha256:[a-f0-9]{64}$/u.test(run.resumeCheckpoint??'')
+        &&['A','B','C'].every(key=>['PASS','FOCAL_STOP','NOT_RUN'].includes(summary.cases?.[key]?.status))) {
+        await api.preflightFullResume(runId);
+        state={...state,status:'FOCAL_STOP',runId,pendingCheckpoint:run.resumeCheckpoint};
+        await updateCampaignState(path.join(campaignRoot,'state.json'),state);
+        return {status:'FOCAL_STOP',campaignId:id,plannedRuns,completedRuns:reports.length,runId};
+      }
       if (result.code !== 0 || run.runId !== runId || run.mode !== 'full' || run.status !== 'PASS'
         || summary?.status !== 'PASS' || ['A', 'B', 'C'].some((key) => summary.cases?.[key]?.status !== 'PASS')) {
         const cases = Object.entries(summary?.cases ?? {}).map(([key, value]) => `${key}:${value.status}${value.terminal?.blocker ? `/${value.terminal.blocker}` : ''}`).join(', ');
@@ -332,6 +397,10 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, 
         : { directlyComparable: false, profileExperiment: false, mismatches: [baseline ? 'baseline version/profile differs' : baselineRef.reason], deltas: 'unavailable' };
       await writeJson(path.join(campaignRoot, `compare-${String(index).padStart(2, '0')}.json`), comparison);
       reports.push(report); comparisons.push(comparison); files[name] = file;
+      state={...state,completed:[...state.completed,{index,runId,reportSha256:digest(await fs.readFile(file)),
+        comparisonSha256:digest(await fs.readFile(path.join(campaignRoot,`compare-${String(index).padStart(2,'0')}.json`)))}],
+        runId:null,pendingCheckpoint:null};
+      await updateCampaignState(path.join(campaignRoot,'state.json'),state);
       runId = null;
     }
     if ((await api.gitState()).head !== base.head || (await api.identity()).sha256 !== source.sha256) {
@@ -347,8 +416,8 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, 
     checkCancel();
     say('PROMOTE');
     const promoted = await promote(root, id, files, signal.signal);
-    await writeJson(path.join(campaignRoot, 'state.json'),
-      { status: 'CAMPAIGN_COMPLETE', campaignId: id, endedAt: campaign.endedAt }).catch((error) => {
+    await updateCampaignState(path.join(campaignRoot, 'state.json'),
+      {...state,status: 'CAMPAIGN_COMPLETE', campaignId: id, endedAt: campaign.endedAt }).catch((error) => {
       console.error(`scratch status could not be written: ${error.message}`);
     });
     say(`CAMPAIGN_COMPLETE ${id}: ${plannedRuns}/${plannedRuns} PASS`);
@@ -358,10 +427,10 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, 
     return campaign;
   } catch (error) {
     const status = signal.signal.aborted ? 'CANCELLED' : error.code ?? 'BLOCKED';
-    if (campaignRoot) await writeJson(path.join(campaignRoot, 'state.json'),
-      { status: status === 'CANCELLED' ? 'CANCELLED' : 'BLOCKED', blockerCode: status,
+    if (campaignRoot&&ownsState) await updateCampaignState(path.join(campaignRoot, 'state.json'),
+      {...state,status: status === 'CANCELLED' ? 'CANCELLED' : 'BLOCKED', blockerCode: status,
         runIndex: index, runId, blocker: error.message, endedAt: new Date().toISOString() }).catch(() => {});
-    else if (lock) await writeJson(path.join(scratch, '.campaign-state.json'),
+    else if (lock&&resumeId===null) await writeJson(path.join(scratch, '.campaign-state.json'),
       { status: status === 'CANCELLED' ? 'CANCELLED' : 'BLOCKED', blockerCode: status,
         blocker: error.message, endedAt: new Date().toISOString() }).catch(() => {});
     console.error(`${status}: run ${index || '-'} ${runId ?? '-'}; ${error.message}`);
@@ -559,12 +628,19 @@ export function parseCampaignArgs(argv) {
   if (argv.length === 1 && argv[0] === '--help') return { mode: 'help' };
   const functional = argv[0] === '--functional';
   const rest = functional ? argv.slice(1) : argv;
-  if (rest.length === 0) return { mode: functional ? 'functional' : 'campaign' };
-  if (rest.length === 2 && rest[0] === '--runs' && /^[0-9]+$/u.test(rest[1])) {
-    const runs = Number(rest[1]);
-    if (Number.isSafeInteger(runs) && runs > 0) return { mode: functional ? 'functional' : 'campaign', runs };
+  const options={mode:functional?'functional':'campaign'},seen=new Set();
+  const usage='usage: benchmark-campaign.mjs [--functional] [--runs N] [--resume campaign-id] [--max-operations N] | --help';
+  for(let i=0;i<rest.length;i+=2) {
+    const flag=rest[i],value=rest[i+1];
+    if(seen.has(flag)||typeof value!=='string')throw blocked('BLOCKED_CONFIG',usage);seen.add(flag);
+    if(flag==='--runs'||flag==='--max-operations'&&!functional) {
+      const n=Number(value);
+      if(!/^[0-9]+$/u.test(value)||!Number.isSafeInteger(n)||n<1)throw blocked('BLOCKED_CONFIG',usage);
+      options[flag==='--runs'?'runs':'maxOperations']=n;
+    } else if(flag==='--resume'&&!functional&&/^campaign-[a-z0-9-]{8,}$/u.test(value))options.resumeId=value;
+    else throw blocked('BLOCKED_CONFIG',usage);
   }
-  throw blocked('BLOCKED_CONFIG', 'usage: benchmark-campaign.mjs [--functional] [--runs <positive integer>] | --help');
+  return options;
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
@@ -574,6 +650,6 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
       const config = await readJson(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'));
       console.log(`Functional ${config.campaign.fullRuns}-full campaign: npm run benchmark\nFormal ${config.campaign.fullRuns}-full campaign: npm run benchmark:campaign\nOverride: npm run benchmark[:campaign] -- --runs N`);
     } else if (options.mode === 'functional') await runFunctionalBenchmark({ runs: options.runs });
-    else await runCampaign({ runs: options.runs });
+    else await runCampaign({ runs: options.runs,resumeId:options.resumeId,maxOperations:options.maxOperations });
   } catch (error) { console.error(`${error.code ?? 'BLOCKED'}: ${error.message}`); process.exitCode = error.exitCode ?? 1; }
 }

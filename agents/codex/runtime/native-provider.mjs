@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { connectAppServer, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   startAppServerTurn, readAppServerTurn, bindAppServerChild, readAppServerChild, writeNativeToolResult,
   deniedShellTemporaryFile, persistAppServerStderrSample, observeAppServerChild,
-  nativeTransportError as blocked, nativeFailure, publicTurnStatus, publicTurnDiagnostic } from './app-server-transport.mjs';
+  nativeTransportError as blocked, nativeFailure, publicTurnStatus, publicTurnDiagnostic,nativeCommandEvidence } from './app-server-transport.mjs';
 
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const wait = (ms, signal) => new Promise((resolve, reject) => {
@@ -49,7 +49,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         await assertAppServerBundle(bundle);
         if(typeof operationId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(operationId))throw blocked('invalid operation evidence identity');
         eventsFile=path.join(evidenceRoot,`${operationId}.events.jsonl`);
-        if(observation===null)await fs.writeFile(eventsFile,'',{flag:'wx'});else await fs.access(eventsFile);
+        if(observation===null)await fs.writeFile(eventsFile,'',{flag:'wx',mode:0o600});else await fs.access(eventsFile);
         previousEvents=observation===null?[]:(await fs.readFile(eventsFile,'utf8')).split('\n').filter(Boolean).map(JSON.parse);
         if(!previousEvents.every(event=>event&&typeof event==='object'&&!Array.isArray(event)))throw blocked('persisted observation event malformed');
         previousReady=previousEvents.filter(event=>event.type==='native.child.completed');
@@ -373,6 +373,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         let evidenceStatus='retained';
         try { await record({ type: 'native.transport.blocked', code: primary.code,
           message: primary.message, dispatch, dispatchAttempted, stderrSample,
+          ...(nativeCommandEvidence(primary)?{privateCommandEvidence:nativeCommandEvidence(primary)}:{}),
           ...(secondaryFailures.length?{secondaryFailures}:{}) }); }
         catch(secondary) { const safe=nativeFailure(secondary,'evidence');evidenceStatus='unavailable';
           secondaryFailures.push({stage:'evidence',code:safe.code,message:safe.message}); }

@@ -12,10 +12,11 @@ export const appServerEnvironment = environment => ({ ...environment, RUST_LOG: 
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 // Origin marks only messages constructed/projection-redacted in this adapter.
 // It grants no authority, recovery or permission.
-const nativeDiagnostics = new WeakSet();
+const nativeDiagnostics = new WeakMap();
 export function nativeTransportError(message, code='NATIVE_TRANSPORT_UNPROVEN') {
-  const error=Object.assign(new Error(message),{code});nativeDiagnostics.add(error);return error;
+  const error=Object.assign(new Error(message),{code});nativeDiagnostics.set(error,null);return error;
 }
+export const nativeCommandEvidence=error=>nativeDiagnostics.get(error)??null;
 const fail=nativeTransportError;
 const ioCodes=new Set(['ENOENT','EACCES','EPERM','EEXIST','ENOTDIR','EISDIR','ELOOP','EIO','ENOSPC','EMFILE','ENFILE','EPIPE','ECONNRESET','ECONNREFUSED','ETIMEDOUT']);
 const failureStages=new Set(['physical','bundle','process','contract','capture','setup','prepare','operation','evidence',
@@ -663,6 +664,16 @@ function assertRunnerActivities(items,binding) {
     throw fail(`${reason} (${runnerActivityDiagnostic(item,index,binding)})`);
   }
 }
+function privateCommandEvidence(command) {
+  // Diagnostic projection only, never a shell parser or authorization source.
+  // No source operands, assignments, scripts, paths or free text are retained.
+  const oversized=typeof command==='string'&&Buffer.byteLength(command)>4096;
+  const tool=typeof command==='string'&&!oversized
+    ?/^(cat|\/bin\/cat|sha256sum|shasum|\/bin\/zsh|\/bin\/sh|\/bin\/bash)(?=\s|$)/u.exec(command)?.[1]??'other':'unknown';
+  return {tool,preview:['other','unknown'].includes(tool)?null:`${tool} <values omitted>`,
+    values:'omitted',reason:oversized?'oversize':tool==='other'?'unrecognized-form':'values-not-retained',
+    sufficientForEffectJudgment:false};
+}
 function assertInitializationEffects(items,bundle,cwd,binding) {
   for(const [itemIndex,item] of items.entries()) {
     if(['userMessage','agentMessage','reasoning'].includes(item.type)||isBoundRunnerMetadata(item,binding))continue;
@@ -681,8 +692,10 @@ function assertInitializationEffects(items,bundle,cwd,binding) {
     requireThat(failed.length===0,
       `continuation initialization has denied, uncertain or unexpected effects (${diagnostic(failed.join(','))})`);
     const paths=[bundle.runner.path,...(item.commandActions??[]).filter(x=>x.type==='read'&&typeof x.path==='string').map(x=>x.path)];
-    requireThat(paths.some(file=>Object.values(contractReadForms(file)).some(forms=>forms.has(item.command))),
-      `continuation initialization command effects are unproven (${diagnostic('COMMAND_READ_FORM')})`);
+    if(!paths.some(file=>Object.values(contractReadForms(file)).some(forms=>forms.has(item.command)))) {
+      const error=fail(`continuation initialization command effects are unproven (${diagnostic('COMMAND_READ_FORM')})`);
+      nativeDiagnostics.set(error,Object.freeze(privateCommandEvidence(item.command)));throw error;
+    }
   }
 }
 async function assertGenericContractLoad(items, bundle, cwd, binding) {

@@ -25,7 +25,7 @@ const before=await fs.readFile(store);let out='';const code=await runCli(['--sto
 assert.equal(code,0);assert.deepEqual(out.trim().split('\\n').map(JSON.parse).map(x=>x.id),[1]);assert.ok(before.equals(await fs.readFile(store)));
 }finally{await fs.rm(root,{recursive:true,force:true});}});\n`;
 
-export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = null, beforeAuthored = null }) {
+export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = null, beforeAuthored = null, caseId='A' }) {
   const threads = new Map(), calls = [], operations = [];
   const startedWork = [];
   const automatic = true;
@@ -156,8 +156,12 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         auxiliary(); if (fault === 'aux-only') return;
       }
       if (operation === 'EXECUTE_SLICE' && fault !== 'premature-verification') {
-        await fs.copyFile(path.join(repo, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
-        await fs.writeFile(path.join(workspace, 'src/native-filter.test.mjs'), checkSource);
+        // Existing deterministic product fixtures, only for offline FULL
+        // orchestration tests. They never attest model authorship/semantics.
+        const source=caseId==='B'?'prioritized-cli.mjs':caseId==='C'?'archived-cli.mjs':'filtered-cli.mjs';
+        await fs.copyFile(path.join(repo, 'scripts/fixtures',source), path.join(workspace, 'src/cli.mjs'));
+        const checks=caseId==='A'?checkSource:checkSource.replace("'list','--completed'","'list'").replace('map(x=>x.id),[1]','map(x=>x.id),[1,2]');
+        await fs.writeFile(path.join(workspace, 'src/native-filter.test.mjs'), checks);
         if (['findings-cycle', 'findings-two-cycles','findings-format-corrections'].includes(fault)) {
           const file = path.join(workspace, 'src/cli.mjs');
           const original = await fs.readFile(file, 'utf8');

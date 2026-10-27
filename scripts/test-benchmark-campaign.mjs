@@ -70,14 +70,25 @@ async function fixture(t, options = {}) {
       const runRoot = path.join(scratch, runId);
       await fs.mkdir(runRoot);
       await fs.writeFile(path.join(runRoot, '.sentinel-benchmark-owned'), 'sentinel-todo-run-v2\n');
-      const status = options.blockRun === runs ? 'BLOCKED' : 'PASS';
+      const status = options.blockRun === runs ? 'BLOCKED' : options.pauseRun===runs?'FOCAL_STOP':'PASS';
       await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify({ runId, status, mode: 'full',
+        ...(status==='FOCAL_STOP'?{resumeCheckpoint:'sha256:'+'a'.repeat(64)}:{}),
         snapshot: { sourceFunctionalSha256: IDENTITY } }));
-      await fs.writeFile(path.join(runRoot, 'summary.json'), JSON.stringify({ runId, status,
-        cases: Object.fromEntries(['A', 'B', 'C'].map((key) => [key, { status: status === 'PASS' ? 'PASS' : 'BLOCKED', terminal: { blocker: status === 'PASS' ? null : 'FIXTURE_BLOCKER' } }])) }));
+      await fs.writeFile(path.join(runRoot, 'summary.json'), JSON.stringify({ runId, status,mode:'full',
+        cases: Object.fromEntries(['A', 'B', 'C'].map((key) => [key, { status: status === 'PASS' ? 'PASS' : status==='FOCAL_STOP'?'FOCAL_STOP':'BLOCKED', terminal: { blocker: status === 'PASS' ? null : 'FIXTURE_BLOCKER' } }])) }));
       if (options.cancelRun === runs) process.emit('SIGINT');
-      return { code: status === 'PASS' ? 0 : 1 };
+      return { code: ['PASS','FOCAL_STOP'].includes(status) ? 0 : 1 };
     },
+    resumeFull:async runId=>{
+      calls.push(`resume-${runId}`);const runRoot=path.join(scratch,runId);
+      const run=JSON.parse(await fs.readFile(path.join(runRoot,'run.json'))),summary=JSON.parse(await fs.readFile(path.join(runRoot,'summary.json')));
+      assert.equal(run.status,'FOCAL_STOP');run.status='PASS';delete run.resumeCheckpoint;
+      summary.status='PASS';for(const row of Object.values(summary.cases))row.status='PASS';
+      await fs.writeFile(path.join(runRoot,'run.json'),JSON.stringify(run));await fs.writeFile(path.join(runRoot,'summary.json'),JSON.stringify(summary));
+      return {code:0};
+    },
+    preflightFullResume:async runId=>{calls.push(`preflight-resume-${runId}`);},
+    exportMeasurement:async runId=>currentFixtureReport(baseline,configuration,runId),
     export: async (runId, output) => {
       calls.push(`export-${runId}`);
       const report = currentFixtureReport(baseline, configuration, runId);
@@ -96,6 +107,38 @@ async function fixture(t, options = {}) {
 async function campaign(f, options = {}) {
   return runCampaign({ root: f.root, hooks: f.hooks, campaignId: 'campaign-test-12345678', ...options });
 }
+
+test('campaign resumes its own FULL checkpoint, preserves accepted reports and promotes only N/N',async t=>{
+  const f=await fixture(t,{plannedRuns:3,pauseRun:2});
+  const stopped=await campaign(f);assert.equal(stopped.status,'FOCAL_STOP');assert.equal(stopped.completedRuns,1);
+  assert.equal(f.runs,2);assert.equal(await fs.stat(f.durable).then(()=>true,()=>false),false);
+  const root=path.join(f.scratch,'campaign-test-12345678'),stateFile=path.join(root,'state.json');
+  const stateBytes=await fs.readFile(stateFile),state=JSON.parse(stateBytes),accepted=await fs.readFile(path.join(root,'run-01.json'));
+  const attempts=()=>f.calls.filter(s=>/^run-|^resume-/u.test(s)).length;
+  const preflight=f.hooks.preflightFullResume;
+  for(const cause of ['uncertain ledger','denied case','altered evidence']){
+    f.hooks.preflightFullResume=async()=>{throw Error(cause);};const before=attempts();
+    try{await assert.rejects(campaign(f,{resumeId:stopped.campaignId}),new RegExp(cause));
+      assert.equal(attempts(),before);assert.deepEqual(await fs.readFile(stateFile),stateBytes,'controller refusal precedes ACTIVE');
+    }finally{f.hooks.preflightFullResume=preflight;}
+  }
+  for(const change of [x=>{x.freeze.plannedRuns=2;},x=>{x.freeze.head='foreign';},
+    x=>{x.pendingCheckpoint='sha256:'+'0'.repeat(64);},x=>{x.completed[0].reportSha256='foreign';},
+    x=>{delete x.freeze;}]){
+    const bad=structuredClone(state);change(bad);
+    // Reseal to exercise the authoritative bindings, not only a checksum.
+    const {stateSha256,...body}=bad;bad.stateSha256='sha256:'+(await import('node:crypto')).createHash('sha256').update(JSON.stringify(body)).digest('hex');
+    const bytes=Buffer.from(JSON.stringify(bad));await fs.writeFile(stateFile,bytes);const before=attempts();
+    try{await assert.rejects(campaign(f,{resumeId:stopped.campaignId}));assert.equal(attempts(),before);
+      assert.deepEqual(await fs.readFile(stateFile),bytes,'bad resume never rewrites original state');
+    }finally{await fs.writeFile(stateFile,stateBytes);}
+  }
+  const result=await campaign(f,{resumeId:stopped.campaignId});assert.equal(result.completedRuns,3);assert.equal(result.status,'CAMPAIGN_COMPLETE');
+  assert.equal(f.runs,3);assert.equal(f.calls.filter(x=>x==='resume-run-fixture-2').length,1);
+  assert.deepEqual(await fs.readFile(path.join(root,'run-01.json')),accepted);
+  assert.deepEqual(await fs.readFile(path.join(f.durable,'run-01.json')),accepted);
+  const before=attempts();await assert.rejects(campaign(f,{resumeId:stopped.campaignId}));assert.equal(attempts(),before);
+});
 
 for (const runs of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '3']) {
   test(`invalid run count ${String(runs)} is rejected before hooks/files/dispatch`, async t => {
