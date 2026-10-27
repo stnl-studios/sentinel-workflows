@@ -36,13 +36,13 @@ export async function startCompletedApply(f,{successor=false}={}) {
 // These identities and final responses are mechanical stimuli. Live transport
 // acceptance uses separate official agents after the final source freeze.
 export async function completedApplyRound(f,start,{status='TESTS_PASS',edit=null,invalid=false,head=null,agentId=null,
-  beforeVerify=null,beforeCapture=null}={}) {
+  beforeVerify=null,beforeCapture=null,responseMutation=null}={}) {
   if(edit!==null)await fs.writeFile(path.join(f.root,'other/greeting.mjs'),edit);
   const dispatch=await reserveDispatch(start.handle),id=agentId??`mechanical-completed-findings-${++serial}`;
   await bindNative(start.handle,id);if(beforeVerify)await beforeVerify({dispatch});
   const measured=await verifyNative(dispatch.originFile);
   const requestBytes=await fs.readFile(dispatch.requestFile),request=JSON.parse(requestBytes);
-  const result={status,automaticCheckRound:`${request.round}/3`,head:head??f.head,
+  const result={status,automaticCheckRound:`${request.round}/5`,head:head??f.head,
     discoverySources:'Approved task, implementation and prepared test.',discoveryActions:'Inspected the greeting export and assertion.',
     verificationTypesConsidered:'Prepared Node test.',nonApplicabilityRationale:'none',noVerificationCommandConfirmation:'An applicable check ran.',
     commands:measured.commands,resultOfEachCommandAndExitCode:'The official helper observed the prepared check.',
@@ -53,7 +53,8 @@ export async function completedApplyRound(f,start,{status='TESTS_PASS',edit=null
     failures:status==='TESTS_FAIL'?'The greeting still violates AC-001.':'none',evidenceOrFailureSummary:'Official helper observation retained.',
     affectedFilesOrBehaviors:'other/greeting.mjs',blockers:status==='BLOCKED'?'Controlled missing prerequisite.':'none',
     unexpectedWorkspaceEffects:'none',persistenceSummary:'Preserve captured bytes; no runner product edits.'};
-  const finalResponse=invalid?'INVALID_COMPLETED_APPLY_RESPONSE':JSON.stringify({format:'stnl-current-findings-response-v1',requestSha256:sha(requestBytes),result});
+  const response={format:'stnl-current-findings-response-v1',requestSha256:sha(requestBytes),result};
+  const finalResponse=invalid?'INVALID_COMPLETED_APPLY_RESPONSE':JSON.stringify(responseMutation?responseMutation(response):response);
   const tool=path.join(f.root,`mechanical-completed-tool-${++serial}.json`);
   await fs.writeFile(tool,JSON.stringify({agentId:id,status:'completed',finalResponse})+'\n');
   if(beforeCapture)await beforeCapture({dispatch,tool,measured});

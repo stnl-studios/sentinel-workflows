@@ -13,6 +13,67 @@ import {prepareCurrentLocalReview,finalizeCurrentLocalReview} from '../skills/wo
 import {publishCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/current-local-review.mjs';
 import {reserveDispatch,publish,normalizeSuccessor,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 
+for(const operation of ['EXECUTE_SLICE','APPLY_FINDINGS'])test(`operational producer recovery: ${operation} four corrected schema failures retain their lineage`,async t=>{
+  const f=operation==='EXECUTE_SLICE'?await completedPristineCase(t):await completedBlockingCase(t);
+  const owners=[];
+  for(let index=0;index<5;index++) {
+    const responseMutation=index<4?response=>{delete response.result[['coverage','selectionRationale','discoverySources','selectedChecks'][index]];return response;}:null;
+    let start;
+    if(operation==='EXECUTE_SLICE')start=(await execute(f,{successor:index>0,responseMutation})).start;
+    else {
+      start=await startCompletedApply(f,{successor:index>0});
+      await completedApplyRound(f,start,{edit:index===0?'export const greeting="hello";\n':null,responseMutation});
+    }
+    owners.push(start.owner.operationAttemptId);
+    let published;try{published=await publish(start.handle);}catch(error){error.message=`${operation}/producer-${index+1}: ${error.message}`;throw error;}
+    assert.equal(published.transition.outcome,index<4?'rejected':'recorded');
+    const image=await captureCurrentExecution(f.specPath);
+    const current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries.find(item=>item.slice===f.delivery.slice);
+    if(index<4){assert.equal(current.normalization.status,'settled');assert.equal(current.normalization.consumedInvocations,index+1);}
+    else {
+      assert.equal(current.normalization,null);
+      const bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path)));
+      assert.deepEqual(bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation===operation).map(item=>item.operationAttemptId),owners.slice(0,4));
+      await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
+    }
+  }
+});
+
+test('operational EXECUTE recurrence uses authenticated Initial authority without an absent request',async t=>{
+  const f=await completedPristineCase(t);
+  for(const [index,value]of [0,false].entries()){
+    const item=await execute(f,{successor:index>0,responseMutation:r=>{r.result.coverage=value;return r;}});
+    const published=await publish(item.start.handle);
+    assert.equal(published.transition.normalization.status,'settled');
+  }
+  const corrected=await execute(f,{successor:true});await publish(corrected.start.handle);
+  assert.equal((await captureCurrentExecution(f.specPath)).inspection.normalHandoff.operation,'VALIDATE_SLICE');
+});
+for(const operation of ['EXECUTE_SLICE','APPLY_FINDINGS'])test(`operational producer recovery forbids reused predecessor agent: ${operation}`,async t=>{
+  const f=operation==='EXECUTE_SLICE'?await completedPristineCase(t):await completedBlockingCase(t);
+  let prior;
+  if(operation==='EXECUTE_SLICE'){
+    const item=await execute(f,{invalid:true});await publish(item.start.handle);
+    prior=JSON.parse(await fs.readFile(path.join(path.dirname(item.rounds[0].dispatch.originFile),'round-1.agent.json'))).agentId;
+    await assert.rejects(()=>execute(f,{successor:true,agentIdOverride:prior}),error=>error.code==='OWNER_MISMATCH');
+  }else{
+    const start=await startCompletedApply(f),item=await completedApplyRound(f,start,{invalid:true});await publish(start.handle);
+    prior=JSON.parse(await fs.readFile(path.join(path.dirname(item.dispatch.originFile),'round-1.agent.json'))).agentId;
+    const next=await startCompletedApply(f,{successor:true});
+    await assert.rejects(()=>completedApplyRound(f,next,{agentId:prior}),error=>error.code==='OWNER_MISMATCH');
+  }
+});
+
+test('operational APPLY mixed owner preserves its first baseline through FAIL and correction',async t=>{
+  const f=await completedBlockingCase(t),first=await startCompletedApply(f);
+  await completedApplyRound(f,first,{invalid:true});await publish(first.handle);
+  const next=await startCompletedApply(f,{successor:true});
+  await completedApplyRound(f,next,{status:'TESTS_FAIL',edit:'export const greeting="broken-correction";\n'});
+  await completedApplyRound(f,next,{edit:'export const greeting="hello";\n'});
+  const published=await publish(next.handle);assert.equal(published.transition.outcome,'recorded');
+  const final=await captureCurrentExecution(f.specPath);assert.equal(final.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+});
+
 test('D1 N1 completed v3 publishes concluded rejection and admits only one inherited successor',async t=>{
   const f=await completedNativeCase(t),before=await captureCurrentExecution(f.specPath);
   const result=await normalizedFormal(f,{invalid:true});assert.equal(result.published.transition.outcome,'rejected');
@@ -169,9 +230,10 @@ test('D1 N5 typed recipe and SPEC/workspace/product paths with spaces use the no
 });
 
 
-test('D1 N2 second EXECUTE refusal exhausts its original episode without a third owner',async t=>{
-  const f=await completedPristineCase(t),first=await execute(f,{invalid:true});await publish(first.start.handle);
-  const second=await execute(f,{successor:true,invalid:true});await publish(second.start.handle);
+test('D1 N2 identical malformed EXECUTE response stops without a third owner',async t=>{
+  const sameInvalid=async({file})=>{const tool=JSON.parse(await fs.readFile(file));tool.finalResponse='IDENTICAL_INVALID_EXECUTE_RESPONSE';await fs.writeFile(file,JSON.stringify(tool)+'\n');};
+  const f=await completedPristineCase(t),first=await execute(f,{beforeCapture:sameInvalid});await publish(first.start.handle);
+  const second=await execute(f,{successor:true,beforeCapture:sameInvalid});await publish(second.start.handle);
   const image=await captureCurrentExecution(f.specPath),c=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
   assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,2);
   assert.equal(c.normalization.episodeId,first.start.owner.operationAttemptId);assert.equal(c.normalization.round,2);
@@ -179,10 +241,10 @@ test('D1 N2 second EXECUTE refusal exhausts its original episode without a third
   await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
 });
 
-test('D1 N2 refusal in invocation three consumes every call and forbids a successor',async t=>{
-  const f=await completedPristineCase(t),first=await execute(f,{statuses:['TESTS_FAIL','TESTS_FAIL','TESTS_PASS'],invalid:true,invalidAt:3});
+test('D1 N2 refusal in invocation five consumes the local margin and forbids a successor',async t=>{
+  const f=await completedPristineCase(t),first=await execute(f,{statuses:['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL','TESTS_FAIL','TESTS_PASS'],invalid:true,invalidAt:5});
   await publish(first.start.handle);const image=await captureCurrentExecution(f.specPath),c=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
-  assert.equal(c.counters.implementationChecks,2);assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,3);
+  assert.equal(c.counters.implementationChecks,4);assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,5);
   assert.equal(image.inspection.normalHandoff,null);
   await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
 });

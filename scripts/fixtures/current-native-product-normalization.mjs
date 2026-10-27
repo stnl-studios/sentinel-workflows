@@ -19,7 +19,7 @@ export async function productNormalizationCase(test,options={}) {
     await bindNative(start.handle,agentId);
     const measured=await verifyNative(dispatch.originFile);
     const request=await fs.readFile(dispatch.requestFile);
-    const result={status,automaticCheckRound:`${index}/3`,head:fixture.head,
+    const result={status,automaticCheckRound:`${index}/5`,head:fixture.head,
       discoverySources:'Approved task, product source and test.',
       discoveryActions:'Inspected approved source and prepared test.',
       verificationTypesConsidered:'Approved Node module test.',nonApplicabilityRationale:'none',

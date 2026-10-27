@@ -45,7 +45,7 @@ async function formalRunnerState({ product, specPath, operation, slice }) {
   // A validated reservation is an unresolved official dispatch, not proof that
   // every completed child is auxiliary. Binding it can still designate one.
   if (runner.status === 'reserved') {
-    if (runner.agentId !== null || ![1, 2, 3].includes(runner.round) || typeof runner.dispatchId !== 'string'
+    if (runner.agentId !== null || ![1, 2, 3, 4, 5].includes(runner.round) || typeof runner.dispatchId !== 'string'
       || !runner.dispatchId || runner.originFile !== path.join(root, `round-${runner.round}.origin.json`))
       fail('reserved formal dispatch is malformed');
     const origin = await read(runner.originFile);
@@ -71,7 +71,7 @@ async function formalRunnerState({ product, specPath, operation, slice }) {
     return { state: 'pending' };
   }
   if (!['running', 'captured'].includes(runner.status) || typeof runner.agentId !== 'string'
-    || ![1, 2, 3].includes(runner.round)) fail('formal designation is not an observable running binding');
+    || ![1, 2, 3, 4, 5].includes(runner.round)) fail('formal designation is not an observable running binding');
   const originFile = path.join(root, `round-${runner.round}.origin.json`);
   if (runner.originFile !== originFile) fail('formal origin path differs');
   const origin = await read(originFile), agent = await read(path.join(root, `round-${runner.round}.agent.json`));
@@ -94,6 +94,31 @@ export async function prepareFormalContinuation({ product,specPath,operation,sli
   if(!current||current.state==='pending')return null;
   if(current.designation.agentPath!==binding.agentPath)fail('continuation is not the designated runner');
   return product.prepareNativeContinuation(current.handle,{toolResultFile,binding,firstTurnId,commit});
+}
+
+export const operationalStage = operation => ['PLAN','REPLAN','REVIEW_PLAN'].includes(operation) ? 'PLAN'
+  : ['VALIDATE_SLICE','APPLY_FINDINGS'].includes(operation) ? 'VALIDATE_SLICE' : operation;
+// This is the caller's live/replayed accounting, not a durable product-history
+// assertion. Owner/agent/category never selects a fresh operational allowance.
+export function operationalCorrectionUsage(turns,{caseId,slice=null,operation}) {
+  const selected=turns.filter(row=>row.caseId===caseId && operationalStage(row.operation)===operationalStage(operation)
+    && row.state!=='not_dispatched');
+  if(selected.some(row=>!Number.isSafeInteger(row.sequence)||row.sequence<1||!Object.hasOwn(row,'slice')))
+    fail('operational stage history is incomplete; do not reset its correction count');
+  const unique=new Map();
+  for(const row of selected.filter(row=>row.slice===slice)) {
+    if(unique.has(row.number)&&JSON.stringify(unique.get(row.number))!==JSON.stringify(row))fail('operational stage history differs');
+    unique.set(row.number,row);
+  }
+  const rows=[...unique.values()],main=rows.filter(row=>row.role==='main');
+  const sequences=new Set(main.map(row=>row.sequence));
+  if(rows.some(row=>row.childKind==='formal'&&!sequences.has(row.sequence)))fail('formal turn has no operational stage owner');
+  const extras=[...sequences].reduce((total,sequence)=>total+Math.max(0,
+    rows.filter(row=>row.sequence===sequence&&row.childKind==='formal').length-1),0);
+  const count=op=>main.filter(row=>row.operation===op).length;
+  if(operationalStage(operation)==='PLAN')return Math.max(0,count('PLAN')+count('REPLAN')-1,count('REVIEW_PLAN')-1)+extras;
+  if(operationalStage(operation)==='VALIDATE_SLICE')return Math.max(0,count('APPLY_FINDINGS'),count('VALIDATE_SLICE')-1)+extras;
+  return Math.max(0,main.length-1)+extras;
 }
 
 export function validateNativeLedger(ledger, state, runId, { settled = false } = {}) {
@@ -152,19 +177,27 @@ export function assertNativeCaptures(image, captures, { restoreCaptureSources } 
       ...(bundle.findingsChecks ?? []), ...(bundle.support ?? [])].filter(Boolean);
     const current = records.filter(record => record.origin?.operationAttemptId === operationAttemptId);
     const allowed = new Set(current);
-    for (const record of current) if (record.origin?.operation === 'VALIDATE_SLICE') {
+    for (const record of current) if (['EXECUTE_SLICE','APPLY_FINDINGS','VALIDATE_SLICE'].includes(record.origin?.operation)) {
+      const operation=record.origin.operation;
+      const profile=operation==='EXECUTE_SLICE'?'initial-implementation':operation==='APPLY_FINDINGS'?'current-findings':'current-validation';
       if (typeof restoreCaptureSources !== 'function') fail('public product source verifier absent');
-      const source = restoreCaptureSources('current-validation', record, objects);
-      const origin = JSON.parse(Buffer.from(source.origin)), binding = origin.admission?.binding?.normalization;
-      if (!binding) continue;
-      if (binding.operation !== 'VALIDATE_SLICE' || binding.status !== 'settled' || binding.used !== 1
-        || binding.round !== 1 || binding.consumedInvocations !== 1
-        || binding.sourceOperationAttemptId === operationAttemptId) fail('formal normalization is not one bounded predecessor');
-      const predecessors = records.filter(item => item.kind === 'rejection'
-        && item.origin?.operation === 'VALIDATE_SLICE'
-        && item.origin.operationAttemptId === binding.sourceOperationAttemptId);
-      if (predecessors.length !== 1) fail('authenticated formal predecessor absent/ambiguous');
-      allowed.add(predecessors[0]);
+      let predecessor=record;
+      const seen=new Set([record.origin.operationAttemptId]);
+      for(let depth=0;depth<5;depth++) {
+        const source=restoreCaptureSources(profile,predecessor,objects);
+        const origin=JSON.parse(Buffer.from(source.origin)),binding=origin.admission?.binding?.normalization;
+        if(!binding)break;
+        if(binding.operation!==operation||binding.status!=='settled'||binding.used!==1
+          ||!Number.isSafeInteger(binding.round)||binding.round<1||binding.round>=5
+          ||!Number.isSafeInteger(binding.consumedInvocations)||binding.consumedInvocations<1||binding.consumedInvocations>=5
+          ||seen.has(binding.sourceOperationAttemptId))fail('formal normalization lineage is invalid');
+        const matches=records.filter(item=>item.kind==='rejection'&&item.origin?.operation===operation
+          &&item.origin.operationAttemptId===binding.sourceOperationAttemptId);
+        if(matches.length!==1)fail('authenticated formal predecessor absent/ambiguous');
+        predecessor=matches[0];seen.add(predecessor.origin.operationAttemptId);
+        for(const prior of records.filter(item=>item.origin?.operation===operation&&item.origin.operationAttemptId===predecessor.origin.operationAttemptId))allowed.add(prior);
+        if(depth===4)fail('formal normalization lineage exceeds its local bound');
+      }
     }
     for (const record of allowed) {
       if (record.sources?.transport !== 'native') continue;

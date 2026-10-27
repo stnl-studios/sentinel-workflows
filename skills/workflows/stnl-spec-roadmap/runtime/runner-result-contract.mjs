@@ -1,14 +1,23 @@
 // Pure semantic contract shared by canonical producers and rejection readback.
 function fail(message) { throw new Error(message); }
 
-// One correction belongs to the frozen formal target, not to a child/owner.
-// Initialization continuation and independent replacement spend the same slot.
+// Local bounded lineage; the caller owns its operational quota across stages.
+export const MAX_NATIVE_PRODUCER_TURNS = 5;
 export function formalRecoveryBudget(producerTurns, inherited = null) {
   if(![1,2].includes(producerTurns) || inherited && (inherited.operation!=='VALIDATE_SLICE'
-    ||inherited.status!=='settled'||inherited.round!==1||inherited.consumedInvocations!==1||producerTurns!==1))
+    || inherited.status!=='settled' || !Number.isSafeInteger(inherited.round) || inherited.round<1
+    || inherited.round>=MAX_NATIVE_PRODUCER_TURNS || !Number.isSafeInteger(inherited.consumedInvocations)
+    || inherited.consumedInvocations<inherited.round || inherited.consumedInvocations>=MAX_NATIVE_PRODUCER_TURNS))
     throw Object.assign(new Error('formal corrective credit is exhausted or its lineage is invalid'),{code:'FORMAL_RECOVERY_NOT_ELIGIBLE'});
   const consumedInvocations=(inherited?.consumedInvocations??0)+producerTurns;
-  return {consumedInvocations,resumable:consumedInvocations<2};
+  if(consumedInvocations>MAX_NATIVE_PRODUCER_TURNS)
+    throw Object.assign(new Error('formal corrective credit is exhausted'),{code:'FORMAL_RECOVERY_NOT_ELIGIBLE'});
+  return {consumedInvocations,resumable:consumedInvocations<MAX_NATIVE_PRODUCER_TURNS};
+}
+// Existing /3 captures remain readable. New contracts describe /5; neither
+// spelling can change the authenticated invocation ordinal or exceed five.
+export function nativeCheckRoundMatches(value, ordinal) {
+  return value===`${ordinal}/5` || ordinal<=3 && value===`${ordinal}/3`;
 }
 
 export class RunnerVerdictEvidenceError extends Error {
@@ -178,7 +187,7 @@ export function parseSemanticExecutionPayload(text, operation) {
   if (!["TESTS_PASS", "TESTS_FAIL", "TESTS_NOT_APPLICABLE", "BLOCKED"].includes(payload.status)) {
     fail("semantic execution payload Status is invalid");
   }
-  if (!["1/3", "2/3", "3/3"].includes(payload.automaticCheckRound)) {
+  if (!Array.from({length:MAX_NATIVE_PRODUCER_TURNS},(_,i)=>i+1).some(n=>nativeCheckRoundMatches(payload.automaticCheckRound,n))) {
     fail("semantic execution payload Automatic check round is invalid");
   }
   const allowed = new Set([...fields.map(([key]) => key), "filelessReason",
@@ -203,7 +212,7 @@ export function parseSemanticExecutionPayload(text, operation) {
   if (payload.commands.length === 0 && !new Set(["BLOCKED", "TESTS_NOT_APPLICABLE"]).has(payload.status)) {
     fail("non-blocked semantic execution payload requires executed commands");
   }
-  if (operation === "EXECUTE_SLICE" && payload.automaticCheckRound !== "1/3") {
+  if (operation === "EXECUTE_SLICE" && !["1/3","1/5"].includes(payload.automaticCheckRound)) {
     for (const key of ["priorRoundFailure", "correctionApplied", "inSliceRationale"]) {
       if (/^(?:none|pending|n\/a)$/iu.test(payload[key])) {
         fail(`${key} is required for automatic check rounds after 1/3`);
@@ -325,7 +334,7 @@ export function deriveCanonicalRunnerRejection({ receipt, response }) {
   });
   if (receipt.transport === "native") {
     if (JSON.stringify(payload.commands) !== JSON.stringify(commands)) fail("native response commands differ from reviewed recipe observation");
-    if (operation !== "VALIDATE_SLICE" && payload.automaticCheckRound !== `${receipt.attempt}/3`) fail("native semantic round differs from reserved invocation");
+    if (operation !== "VALIDATE_SLICE" && !nativeCheckRoundMatches(payload.automaticCheckRound,receipt.attempt)) fail("native semantic round differs from reserved invocation");
   }
   try {
     assertRunnerVerdictConsistency(operation, payload.status, commands);

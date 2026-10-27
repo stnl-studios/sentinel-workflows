@@ -264,7 +264,8 @@ function checkRunnerContract(contract, readmeFile, platform) {
   }
   for (const [operation, expected] of Object.entries(checkSchemas)) {
     const actual = extractSchema(contract, operation);
-    if (actual.length !== expected.length || actual.some((line, index) => line !== expected[index])) reject("R007_OUTPUT_SCHEMA", `${operation} output schema changed`);
+    const selected=platform==='codex'?expected.map(line=>line.replace('1/3 | 2/3 | 3/3','1/5 | 2/5 | 3/5 | 4/5 | 5/5')):expected;
+    if (actual.length !== selected.length || actual.some((line, index) => line !== selected[index])) reject("R007_OUTPUT_SCHEMA", `${operation} output schema changed`);
   }
   if(platform==='codex') {
     requirePattern(contract, /responseVariant:"stnl-current-native-judgment-v1"[\s\S]{0,900}omita.*`head` e `requestSha256`/u,
@@ -282,7 +283,7 @@ function checkRunnerContract(contract, readmeFile, platform) {
     requirePattern(contract, new RegExp(`^# ${heading}$`, "mu"), "R004_OPERATION_SCOPE", `missing runner section: ${heading}`);
   }
   forbidPattern(contract, /^# (?:CLOSE|REPLAN|FINALIZE_SLICE|PARALLELIZE_SLICES|RUN_TESTS)$/mu, "R004_OPERATION_SCOPE", "runner contains a forbidden operation");
-  requirePattern(contract, /`EXECUTE_SLICE` (?:and|e) `APPLY_FINDINGS`[\s\S]{0,180}rodada automática atual como `1\/3`, `2\/3` ou `3\/3`/u, "R004_OPERATION_SCOPE", "runner lacks the exact three-round input set");
+  requirePattern(contract, platform==='codex' ? /`EXECUTE_SLICE` (?:and|e) `APPLY_FINDINGS`[\s\S]{0,180}rodada automática atual como `1\/5`, `2\/5`, `3\/5`, `4\/5` ou `5\/5`/u : /`EXECUTE_SLICE` (?:and|e) `APPLY_FINDINGS`[\s\S]{0,180}rodada automática atual como `1\/3`, `2\/3` ou `3\/3`/u, "R004_OPERATION_SCOPE", "runner lacks its exact bounded input set");
   forbidPattern(contract, /(?:1\/4|2\/4|3\/4|4\/4)/u, "R004_OPERATION_SCOPE", "runner permits a fourth automatic round");
   requirePattern(contract, /conclusões do contexto principal como não verificadas/iu, "R014_INDEPENDENCE", "runner does not independently verify main-context claims");
   requirePattern(contract, /Leia somente o escopo necessário/iu, "R014_INDEPENDENCE", "runner read scope is not bounded");
@@ -297,7 +298,7 @@ function checkRunnerContract(contract, readmeFile, platform) {
   requirePattern(contract, /The machine-key schema is fixed[\s\S]{0,500}EXECUTE_SLICE[\s\S]{0,500}APPLY_FINDINGS[\s\S]{0,500}VALIDATE_SLICE/u, "R028_FIELD_SEQUENCE", "runner does not require the literal semantic field sequence at the final response gate");
   requirePattern(contract, /Field shape is strict at the JSON boundary:[\s\S]{0,500}every judgment property except `commands` is one scalar string[\s\S]{0,300}`commands` is an array of objects with exactly `command` and integer `exit`[\s\S]{0,300}payload is one raw JSON object/u, "R029_FIELD_SHAPE", "runner does not require scalar semantic fields outside Commands");
   if(platform==='codex') {
-    requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/3`, `2\/3`, or `3\/3`/u, 'R029_FIELD_SHAPE', 'native round requirement is missing');
+    requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/5`, `2\/5`, `3\/5`, `4\/5`, or `5\/5`/u, 'R029_FIELD_SHAPE', 'native round requirement is missing');
     requirePattern(contract, /No legacy `findingsCycle` diagnostic is supported/u, 'R029_FIELD_SHAPE', 'unsupported cycle diagnostics must not acquire authority');
     requirePattern(contract,/Only native transport is supported/u,'R029_FIELD_SHAPE','native-only transport contract is missing');
   } else {

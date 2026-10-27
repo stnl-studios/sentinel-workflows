@@ -14,6 +14,11 @@ const fail = message => { throw Object.assign(new Error(`execution publication: 
 const inside = (child, parent) => { const relative = path.relative(parent, child); return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)); };
 async function stat(file) { return fs.lstat(file).catch(error => { if (['ENOENT', 'ENOTDIR'].includes(error.code)) return null; throw error; }); }
 const identity = metadata => ({ dev: String(metadata.dev), ino: String(metadata.ino) });
+// The existing terminal envelope repeats the verified inventory for binding
+// and retirement. The 1,024-role bound stays unchanged; bounded corrective
+// lineages need room beyond the former 64 KiB envelope (146 roles already
+// produce two 36 KiB manifests). This cap covers the envelope, not file data.
+const MAX_TERMINAL_RECORD_BYTES=1024*1024;
 const TERMINAL_SETTLED=Symbol('terminal retirement settled by its owner');
 
 async function ancestry(file) {
@@ -117,12 +122,30 @@ export function validateCurrentOperationRetirementRecord(record){
   const rejected=record.terminalTransition.outcome==='rejected';
   const normalization=record.terminalTransition.normalization;
   if(rejected){
+    const inherited=binding.normalization??null;
+    const continuation=record.preVerificationContinuation;
+    if(continuation&&(!isDeepStrictEqual(continuation.owner,owner)||continuation.operationId!==binding.operationId
+      ||continuation.dispatchId!==record.runner.dispatchId||continuation.round!==record.runner.round
+      ||continuation.binding?.agentPath!==record.runner.agentId))
+      fail('terminal refusal continuation is not bound to its owning capture');
+    // CLOSE also authenticates the exact grant against the retained tool result
+    // and origin before retiring any allocation; this is only its structural sum.
+    if(inherited&&(inherited.operation!==owner?.operation||inherited.status!=='settled'
+      ||!Number.isSafeInteger(inherited.round)||inherited.round<1||inherited.round>=5
+      ||!Number.isSafeInteger(inherited.consumedInvocations)
+      ||inherited.consumedInvocations<inherited.round||inherited.consumedInvocations>=5))
+      fail('terminal refusal has an invalid inherited normalization');
     closed(normalization,['episodeId','operation','causeSha256','sourceOperationAttemptId','used','consumedInvocations','round','status'],'terminal refusal normalization');
-    if(normalization.episodeId!==owner?.operationAttemptId||normalization.sourceOperationAttemptId!==owner.operationAttemptId
-      ||normalization.operation!==owner.operation||normalization.used!==1||normalization.round!==1
+    if(normalization.episodeId!==(inherited?.episodeId??owner?.operationAttemptId)
+      ||inherited&&normalization.causeSha256!==inherited.causeSha256
+      ||normalization.sourceOperationAttemptId!==owner?.operationAttemptId
+      ||normalization.operation!==owner.operation||normalization.used!==1
+      ||normalization.round!==(inherited?.round??0)+1||normalization.round>=5
       ||normalization.status!=='settled'||!/^sha256:[a-f0-9]{64}$/u.test(normalization.causeSha256)
-      ||normalization.consumedInvocations!==record.runner.consumedInvocations
-      ||normalization.consumedInvocations>=(owner.operation==='VALIDATE_SLICE'?2:3))fail('terminal refusal is not bounded and settled');
+      ||normalization.consumedInvocations!==(inherited?.consumedInvocations??0)+record.runner.consumedInvocations
+        +(owner.operation==='VALIDATE_SLICE'&&record.preVerificationContinuation?1:0)
+      ||!Number.isSafeInteger(normalization.consumedInvocations)
+      ||normalization.consumedInvocations<normalization.round||normalization.consumedInvocations>=5)fail('terminal refusal is not bounded and settled');
   }
   closed(record.runner,['dispatchId','agentId','status','round','consumedInvocations','originFile','requestFile','responseFile','captureClass',...(rejected&&!Object.hasOwn(record.runner,'resultStatus')?[]:['resultStatus'])],'terminal operation runner');
   if(record.phase!=='committed'||record.normalization!==null||(!rejected&&(normalization!==null||record.terminalTransition.outcome!=='recorded'))
@@ -133,7 +156,7 @@ export function validateCurrentOperationRetirementRecord(record){
     ||record.expectedInstalledActivation.lastAttempt?.operationAttemptId!==owner?.operationAttemptId
     ||record.expectedInstalledActivation.lastAttempt?.operationRef?.operationId!==binding.operationId
     ||record.expectedInstalledActivation.lastAttempt?.operationRef?.allocationSha256!==currentOperationBindingSha256(binding)
-    ||record.runner.status!=='captured'||!Number.isSafeInteger(record.runner.round)||record.runner.round<1||record.runner.round>3
+    ||record.runner.status!=='captured'||!Number.isSafeInteger(record.runner.round)||record.runner.round<1||record.runner.round>5
     ||record.runner.consumedInvocations!==record.runner.round)fail('operation is not a closed supported terminal record');
   if(Object.hasOwn(record,'responseVariant')&&record.responseVariant!=='stnl-current-native-judgment-v1')fail('unsupported terminal response variant');
   const same=isDeepStrictEqual,intermediate=record.preparation.intermediateActivation,terminal=record.expectedInstalledActivation;
@@ -681,7 +704,7 @@ export function validateLifecycleTerminalRetirement(value) {
     ||value.targetIdentity.dev!==value.materialRootIdentity.dev||value.targetIdentity.dev!==context.leaseParentIdentity.dev)fail('terminal retirement roots or devices differ');
   validateLifecycleRetirementManifest(value.roles);
   validateLifecycleRetirementManifest(value.targetRoles);
-  if(Buffer.byteLength(JSON.stringify(value))>64*1024)fail('terminal retirement exceeds the bounded record limit');
+  if(Buffer.byteLength(JSON.stringify(value))>MAX_TERMINAL_RECORD_BYTES)fail('terminal retirement exceeds the bounded record limit');
   return value;
 }
 export function validateLifecycleCloseBinding(binding){
@@ -726,9 +749,10 @@ export async function inspectLifecycleTerminalRetirement(workspace){
   if(names.some(name=>!prefixes.some(prefix=>name.startsWith(prefix))))fail('terminal retirement claim alias differs');
   const files=[...(await stat(location.lockPath)?[location.lockPath]:[]),...names.sort().map(name=>path.join(location.parent,name))];
   const records=[];
-  for(const file of files){const observed=await readFileWithLinks(file,[1,2],64*1024);const text=new TextDecoder('utf-8',{fatal:true}).decode(observed.bytes),payload=parseStrictJson(text);
+  for(const file of files){const observed=await readFileWithLinks(file,[1,2],MAX_TERMINAL_RECORD_BYTES);const text=new TextDecoder('utf-8',{fatal:true}).decode(observed.bytes),payload=parseStrictJson(text);
     if(payload.format==='stnl-execution-lock-v2')validateTerminalHeader(payload,location);
     else if(payload.format==='stnl-execution-lock-v1'){
+      if(observed.bytes.length>64*1024)fail('normal common lease exceeds its bounded record limit');
       closed(payload,['format','token','executionRoot','pid'],'normal common lease');
     }else fail('unbound retirement/recovery claim cannot authorize terminal cleanup');
     if(file!==location.lockPath&&!prefixes.some(prefix=>path.basename(file)===prefix+payload.token))fail('terminal claim token differs from its exact role');
@@ -786,14 +810,14 @@ export async function acquireLifecycleTerminalRetirementLock(workspace,expected)
   const role=roles.find(file=>!current.records.some(record=>record.file===file));
   if(!role)fail('terminal claims are occupied without a safe recovery transition; preserve and diagnose');
   const value=terminalLeasePayload({...current.location,token},current.intent,current.tip.binding),bytes=Buffer.from(JSON.stringify(value)+'\n');
-  if(bytes.length>64*1024)fail('terminal common record exceeds the bounded record limit');
+  if(bytes.length>MAX_TERMINAL_RECORD_BYTES)fail('terminal common record exceeds the bounded record limit');
   const owned=await writeNew(role,bytes);await syncLockParent(current.location.parent);
   try{
-    for(const record of current.records){const observed=await readFileWithLinks(record.file,[record.observed.links],64*1024);if(!equal(observed.identity,record.observed.identity)||!observed.bytes.equals(record.observed.bytes))fail('terminal predecessor changed during recovery claim');}
+    for(const record of current.records){const observed=await readFileWithLinks(record.file,[record.observed.links],MAX_TERMINAL_RECORD_BYTES);if(!equal(observed.identity,record.observed.identity)||!observed.bytes.equals(record.observed.bytes))fail('terminal predecessor changed during recovery claim');}
     await assertTerminalFilesystem(current.location,current.intent);
     const canonical=current.records.find(record=>record.file===current.location.lockPath);
     for(const previous of current.records.filter(record=>record.file!==current.location.lockPath)){
-      const observed=await readFileWithLinks(previous.file,[previous.observed.links],64*1024);if(!equal(observed.identity,previous.observed.identity)||!observed.bytes.equals(previous.observed.bytes))fail('terminal predecessor role changed before cleanup');
+      const observed=await readFileWithLinks(previous.file,[previous.observed.links],MAX_TERMINAL_RECORD_BYTES);if(!equal(observed.identity,previous.observed.identity)||!observed.bytes.equals(previous.observed.bytes))fail('terminal predecessor role changed before cleanup');
       await fs.unlink(previous.file);await syncLockParent(current.location.parent);
     }
     const quarantine=roles.find(file=>file!==role);
@@ -804,7 +828,7 @@ export async function acquireLifecycleTerminalRetirementLock(workspace,expected)
       const moved=await readOwnedFile(quarantine);if(!equal(moved.identity,canonical.observed.identity)||!moved.bytes.equals(canonical.observed.bytes))fail('terminal canonical changed during retirement; preserving quarantine');
     }else if(await stat(current.location.lockPath))fail('foreign canonical appeared during terminal recovery');
     await fs.link(role,current.location.lockPath);await syncLockParent(current.location.parent);
-    const installed=await readFileWithLinks(current.location.lockPath,[2],64*1024),claimed=await readFileWithLinks(role,[2],64*1024);
+    const installed=await readFileWithLinks(current.location.lockPath,[2],MAX_TERMINAL_RECORD_BYTES),claimed=await readFileWithLinks(role,[2],MAX_TERMINAL_RECORD_BYTES);
     if(!equal(installed.identity,owned.identity)||!equal(claimed.identity,owned.identity)||!installed.bytes.equals(bytes)||!claimed.bytes.equals(bytes))fail('terminal recovery claim changed at promotion');
     if(canonical){const moved=await readOwnedFile(quarantine);if(!equal(moved.identity,canonical.observed.identity)||!moved.bytes.equals(canonical.observed.bytes))fail('terminal quarantine changed before retirement');await fs.unlink(quarantine);await syncLockParent(current.location.parent);}
     await fs.unlink(role);await syncLockParent(current.location.parent);
@@ -825,7 +849,7 @@ export async function beginLifecycleTerminalRetirement(lease,intent) {
     ||!equal(bound.targetParentIdentity,roots.targetParentIdentity)||!equal(bound.leaseParentIdentity,roots.leaseParentIdentity)||!equal(intent.materialRootIdentity,roots.materialRootIdentity))fail('terminal retirement physical context differs');
   await assertNoRecoveryClaim(lease);
   const value=terminalLeasePayload(lease,intent),bytes=Buffer.from(JSON.stringify(value)+'\n');
-  if(bytes.length>64*1024)fail('terminal common record exceeds the bounded record limit');
+  if(bytes.length>MAX_TERMINAL_RECORD_BYTES)fail('terminal common record exceeds the bounded record limit');
   const role=`${lease.lockPath}.retired-${lease.token}`;
   const previousRole=`${lease.lockPath}.recovery-${lease.token}`;
   const staged=await writeNew(role,bytes);
@@ -837,8 +861,8 @@ export async function beginLifecycleTerminalRetirement(lease,intent) {
     await fs.rename(lease.lockPath,previousRole);await syncLockParent(lease.parent);
     const previous=await readOwnedFile(previousRole);if(!equal(previous.identity,lease.owned.identity)||!previous.bytes.equals(lease.owned.bytes))fail('terminal source lease changed during quarantine; preserving evidence');
     await fs.link(role,lease.lockPath);await syncLockParent(lease.parent);
-    const moved=await readFileWithLinks(lease.lockPath,[2],64*1024);
-    const linked=await readFileWithLinks(role,[2],64*1024);
+    const moved=await readFileWithLinks(lease.lockPath,[2],MAX_TERMINAL_RECORD_BYTES);
+    const linked=await readFileWithLinks(role,[2],MAX_TERMINAL_RECORD_BYTES);
     if(!equal(moved.identity,staged.identity)||!equal(linked.identity,staged.identity)||!moved.bytes.equals(bytes)||!linked.bytes.equals(bytes))fail('terminal witness changed during CAS');
     const priorRecord=await readOwnedFile(previousRole);if(!equal(priorRecord.identity,lease.owned.identity)||!priorRecord.bytes.equals(lease.owned.bytes))fail('terminal source quarantine changed before cleanup');
     await fs.unlink(previousRole);await syncLockParent(lease.parent);

@@ -453,7 +453,7 @@ function currentDelivery(value, label) {
     object(n, ['episodeId', 'operation', 'causeSha256', 'sourceOperationAttemptId', 'used', 'consumedInvocations', 'round', 'status'], `${label}.normalization`);
     uuid(n.episodeId, label); oneOf(n.operation, OPERATIONS, label); hash(n.causeSha256, label); uuid(n.sourceOperationAttemptId, label);
     if (n.used !== 1) invalid(`${label}: normalization reservation`);
-    nat(n.consumedInvocations, label); oneOf(n.round, [1, 2, 3], label);
+    nat(n.consumedInvocations, label); oneOf(n.round, [1, 2, 3, 4, 5], label);
     oneOf(n.status, ['reserved', 'running', 'settled', 'exhausted'], label);
   }
   optional(value.lastDiagnostic, diagnostic, `${label}.lastDiagnostic`);
@@ -664,7 +664,7 @@ function record(value, label, rejection = false) {
   else object(value, ['kind', 'recordFormat', 'id', 'origin', 'contract', 'recordUtf8', 'testedWork', 'sources'], label);
   if (rejection) {
     if (value.kind !== 'rejection') invalid(`${label}: invalid support kind`);
-    uuid(value.operationAttemptId, label); string(value.diagnostic, label); nat(value.consumedInvocations, label, true); oneOf(value.round, [1, 2, 3], label);
+    uuid(value.operationAttemptId, label); string(value.diagnostic, label); nat(value.consumedInvocations, label, true); oneOf(value.round, [1, 2, 3, 4, 5], label);
   } else {
     oneOf(value.kind, ['implementation-check', 'findings-check', 'validation'], label);
     oneOf(value.recordFormat, ['stnl-task-record-v2'], label);
@@ -792,14 +792,14 @@ function validateCurrentContent(files) {
       && (current.normalization===null || current.normalization?.operation
         ===bundle.support.filter(item=>item.kind==='rejection').at(-1)?.origin.operation
         && ['settled','exhausted'].includes(current.normalization.status))
-      && bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE').length<=2
+      && bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE').length<=5
       && bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='APPLY_FINDINGS').length
-        <=(bundle.support.some(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE')?1:2)
-      && bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE').length<=1;
+        <=5
+      && bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE').length<5;
     if(convertedRejection && approvedDelivery) {
       // A rejected judgment retains the literal reviewed predecessor. Recover
       // only trailing formal refusals; full native proof is checked by readers.
-      for(let count=1;count<=2 && count<=bundle.support.length;count+=1) {
+      for(let count=1;count<=5 && count<=bundle.support.length;count+=1) {
         if(bundle.support.slice(-count).some(item=>item.kind!=='rejection'
           || item.origin.operation!=='VALIDATE_SLICE'))break;
         const support=bundle.support.slice(0,-count);
@@ -825,7 +825,7 @@ function validateCurrentContent(files) {
       && same(record.contract?.recipe,leaf.verificationRecipe);
     if(decision.disposition==='revalidate' && validConvertedRecord
       && bundle.implementation.length>0 && bundle.findingsChecks.length===0
-      && bundle.support.length<=1&&bundle.support.every(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE')
+      && bundle.support.length<5&&bundle.support.every(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE')
       && bundle.openDivergences.length===0
       && bundle.implementation.every(item=>item.recordFormat==='stnl-task-record-v2'
         && item.origin.operation==='EXECUTE_SLICE' && item.origin.deliveryId===current.deliveryId
@@ -843,7 +843,7 @@ function validateCurrentContent(files) {
     const implementationRefusals=bundle?.support?.filter(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE')??[];
     const historicalPrior=approvedDelivery?.localRevision>1
       && decision.disposition==='revalidate'
-      && historicalFormals.length>=1&&implementationRefusals.length<=1
+      && historicalFormals.length>=1&&implementationRefusals.length<5
       && historicalFormals.at(-1)?.recordFormat==='stnl-task-record-v2'
       && historicalFormals.at(-1)?.origin?.localRevision===approvedDelivery.localRevision-1
       && record?.recordFormat==='stnl-task-record-v2'
@@ -874,10 +874,10 @@ function validateCurrentContent(files) {
     // Structural admission only; the reader authenticates every historical
     // operational capture independently before exposing current validity.
     const retainedRemoval=bundle?.support?.length>0
-      &&implementationRefusals.length<=1&&[...bundle.support,...bundle.findingsChecks].every(item=>
+      &&implementationRefusals.length<5&&[...bundle.support,...bundle.findingsChecks].every(item=>
         item.kind==='rejection'?(item.origin.operation==='EXECUTE_SLICE'
           &&bundle.support.some(record=>record.kind==='implementation-check')
-          ||item.origin.operation==='APPLY_FINDINGS'&&bundle.support.filter(record=>record.kind==='rejection'&&record.origin.operation==='APPLY_FINDINGS').length===1&&[...bundle.support,...bundle.findingsChecks].some(record=>record.kind==='findings-check')
+          ||item.origin.operation==='APPLY_FINDINGS'&&bundle.support.filter(record=>record.kind==='rejection'&&record.origin.operation==='APPLY_FINDINGS').length<=5&&[...bundle.support,...bundle.findingsChecks].some(record=>record.kind==='findings-check')
           ||item.origin.operation==='VALIDATE_SLICE'&&convertedRejection)
           &&item.origin.transport==='native'&&item.origin.deliveryId===current.deliveryId
           &&item.origin.slice===current.slice&&item.origin.localRevision<=current.localRevision

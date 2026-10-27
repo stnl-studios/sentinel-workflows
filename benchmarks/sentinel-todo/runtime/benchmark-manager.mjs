@@ -10,7 +10,7 @@ import { assertSnapshotIntegrity, createSnapshot } from './benchmark-snapshot.mj
 import { createReporter } from './benchmark-ui.mjs';
 import { budgetViolation, artifactMetrics } from './benchmark.mjs';
 import { contextPolicy, preparationHandoff, assertNativeCaptures,
-  retainBeforeClose, finishCloseEvidence, validateNativeLedger, observeFormalRunner,prepareFormalContinuation } from './native-evidence.mjs';
+  retainBeforeClose, finishCloseEvidence, validateNativeLedger, observeFormalRunner,prepareFormalContinuation, operationalCorrectionUsage } from './native-evidence.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNS = path.join(ROOT, 'benchmark-temp');
@@ -152,30 +152,39 @@ async function updateLedger(runRoot, mutator, limit) {
   return job;
 }
 function availableTurns(ledger) { return ledger.limit - ledger.total - ledger.reservations.length; }
-export async function admitOperation({ runRoot, runId, caseId, operation, runnerRequired, runnerSlots = runnerRequired ? 1 : 0, auxiliaryLimit = 0, limit, beforeAdmission = null }) {
+export { operationalCorrectionUsage } from './native-evidence.mjs';
+const MAX_OPERATIONAL_CORRECTIONS = 4;
+function assertOperationalCorrections(turns,scope) {
+  if(operationalCorrectionUsage(turns,scope)>MAX_OPERATIONAL_CORRECTIONS)
+    throw Object.assign(new Error('operational stage correction limit exhausted'),{code:'STAGE_CORRECTIONS_EXHAUSTED'});
+}
+export async function admitOperation({ runRoot, runId, caseId, operation, slice=null, sequence=null, runnerRequired, runnerSlots = runnerRequired ? 1 : 0, auxiliaryLimit = 0, limit, beforeAdmission = null }) {
   return updateLedger(runRoot, (ledger) => {
     // Recheck after queued ledger I/O, in the synchronous reservation mutation.
     beforeAdmission?.();
-    if (!Number.isSafeInteger(runnerSlots) || runnerSlots < 0 || runnerSlots > 3) fail('invalid native child margin');
-    if (availableTurns(ledger) < 1 + runnerSlots) throw budgetPause();
+    if (!Number.isSafeInteger(runnerSlots) || runnerSlots < 0 || runnerSlots > 5) fail('invalid native child margin');
+    const scope=sequence===null?{}:{slice,sequence};
+    if(sequence!==null)assertOperationalCorrections([...ledger.turns,{number:ledger.nextNumber+1,caseId,operation,role:'main',state:'dispatched',...scope}],{caseId,slice,operation});
+    if (availableTurns(ledger) < 1 + (runnerRequired?1:0)) throw budgetPause();
+    runnerSlots=Math.min(runnerSlots,availableTurns(ledger)-1);
     const main = randomUUID();
     if (![0, 8].includes(auxiliaryLimit)) fail('invalid auxiliary limit');
     const auxiliaryUsed = ledger.turns.filter(item => item.childKind && item.childKind !== 'formal' && item.state !== 'not_dispatched').length;
     const margin = Math.min(Math.max(0, auxiliaryLimit - auxiliaryUsed), availableTurns(ledger) - 1 - runnerSlots);
     const runners = Array.from({ length: runnerSlots + margin }, () => randomUUID());
-    ledger.reservations.push({ id: main, runId, caseId, role: 'main', operation,
+    ledger.reservations.push({ id: main, runId, caseId, role: 'main', operation,...scope,
       reservedAt: new Date().toISOString() });
     for (const runner of runners) ledger.reservations.push({ id: runner, runId, caseId,
-      role: 'runner', operation, reservedAt: new Date().toISOString() });
+      role: 'runner', operation,...scope, reservedAt: new Date().toISOString() });
     return { main, runner: runners[0] ?? null, runners };
   }, limit);
 }
-export async function reserveExtraRunner({ runRoot, runId, caseId, operation, limit,continuationBinding=null }) {
+export async function reserveExtraRunner({ runRoot, runId, caseId, operation, slice=null,sequence=null,limit,continuationBinding=null }) {
   return updateLedger(runRoot, (ledger) => {
     if (availableTurns(ledger) < 1) throw budgetPause();
     if(continuationBinding&&ledger.preVerificationContinuation)fail('pre-verification continuation already reserved for this run');
     const id = randomUUID();
-    ledger.reservations.push({ id, runId, caseId, role: 'runner', operation,
+    ledger.reservations.push({ id, runId, caseId, role: 'runner', operation,...(sequence===null?{}:{slice,sequence}),
       reservedAt: new Date().toISOString() });
     if(continuationBinding)ledger.preVerificationContinuation={binding:continuationBinding,reservation:id};
     return id;
@@ -189,7 +198,7 @@ export async function startReservedTurn(runRoot, id, limit) {
     const number = ++ledger.nextNumber;
     ledger.total += 1;
     ledger.turns.push({ number, runId: reservation.runId, caseId: reservation.caseId,
-      role: reservation.role, operation: reservation.operation, startedAt: new Date().toISOString(),
+      role: reservation.role, operation: reservation.operation,...(reservation.sequence==null?{}:{slice:reservation.slice,sequence:reservation.sequence}), startedAt: new Date().toISOString(),
       state: 'dispatched' });
     return number;
   }, limit);
@@ -270,7 +279,7 @@ export function nativeRunnerContext(operation, bundle, eventsFile) {
     + `Transport captures the complete public child response without interpreting it. After the child completes, wait within the existing operation deadline for its complete native.child.completed record in ${eventsFile}; match binding.agentPath to that child and pass toolResultFile unchanged to the official capture-native command. Do not author an envelope or copy/strip mailbox text. A missing record is not permission to synthesize evidence or start another turn. Bind before verification and perform capture/publication yourself through the existing controller.\n`
     + 'If the controller issues native.child.continuation.admitted in that same event file, the first result is retained initialization, not a judgment. While this principal is still active, follow up once with the same agent to complete the unchanged request through its verificationHelper/originFile; do not spawn a replacement, repeat a started recipe, or capture the initialization. Wait for the later native.child.completed and use its distinct toolResultFile. No admission event means no continuation permission.\n'
     + (['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation)
-      ? 'The selected operation includes the approved implementation/corrections and preparation of reusable tests. The controller nextAction names its next command; it does not replace that work. Complete the approved work and test preparation before delegating read-only verification. The child must not implement.\n' : 'The independent child judges the complete canonical criteria; tests alone are not the authority. For the explicitly requested integral judgment reserve-dispatch --terminal before spawn. For a rejected or incomplete review follow the Formal corrective credit section of the selected skill runner-invocation guide and the public controller handoff; preserve all literal responses and its separate triage when required. The manager does not decide recovery eligibility.\n');
+      ? 'The selected operation includes the approved implementation/corrections and preparation of reusable tests. The controller nextAction names its next command; it does not replace that work. Complete the approved work and test preparation before delegating read-only verification. The child must not implement.\n' : 'The independent child judges the complete canonical criteria; tests alone are not the authority. For the explicitly requested integral judgment reserve-dispatch --terminal before spawn. For a rejected or incomplete review follow the Formal corrective credit section of the selected skill runner-invocation guide and the public controller handoff; preserve all literal responses and its separate triage when required. The manager does not decide recovery eligibility. The caller permits up to four corrections across this stage, not four per agent or error category. Stop when the same obligation remains unmet without demonstrated correction; a changed generic error message alone is not progress. Preserve every response and let the controller admit only an eligible correction.\n');
 }
 
 export function assertNativeLauncher(prompt, context) {
@@ -463,6 +472,8 @@ function argsForJournal({ journal, operation, route, outcome, slice, readback, r
     '--duration-ms', String(durationMs), '--input-bytes', String(Buffer.byteLength(turn.prompt)),
     '--output-bytes', String(Buffer.byteLength(turn.response ?? ''))];
   if (slice) args.push('--slice', slice);
+  if(turn.corrected===true)args.push('--retry','true');
+  if(turn.mechanicalRejection===true)args.push('--mechanical-rejection','true');
   const state = operation === 'SPEC_READINESS' ? readinessResult?.verdict === 'READY' ? 'GLOBAL_READY'
     : readinessResult?.verdict === 'FINDINGS' ? 'GLOBAL_FINDINGS' : null
     : operation === 'SPEC_CLOSE' ? null
@@ -603,16 +614,19 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       const temporaryDirectory = await fs.realpath(path.join(caseRoot, 'tmp'));
       const { role, prior, text: invocation } = invocationContext(operation, workflowSkill, policy, state.authorThread, temporaryDirectory);
       const operationId = `${caseId}-${String(sequence).padStart(2, '0')}-${operation}`;
+      const stageLedger=await readJson(ledgerPath(runRoot));
+      const correctionMargin=pending?.correctionMargin??MAX_OPERATIONAL_CORRECTIONS-operationalCorrectionUsage([...stageLedger.turns,{number:stageLedger.nextNumber+1,caseId,slice,sequence,operation,role:'main',state:'dispatched'}],{caseId,slice,operation});
       const prompt = `$${workflowSkill}\n` + renderLauncher(template, { SPEC_PATH: specPath, REQUIREMENTS_SOURCE: requirementsPath,
         SLICE: slice ?? '', READINESS_SCOPE: 'GLOBAL', READINESS_FOCUS: 'not-applicable',
         NEW_INFORMATION: operation === 'SPEC_PROMOTE' ? `GLOBAL READY ${readiness.snapshotSha256}; promote status only.`
           : readiness?.verdict === 'FINDINGS' ? JSON.stringify(readiness.findings) : '',
         REPLAN_REASON: 'Follow the exact current public requirements and handoff.' })
         + (operation === 'REVIEW_PLAN' || correctingPreparation ? `\nCANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}\n` : '')
-        + (correctingPreparation ? '\nThis is the single author correction of the existing unapproved Initial candidate, whose ownership and source were checked by the caller. Reuse that allocation; do not allocate another PLAN root or use REPLAN. Inspect the canonical authority and justify corrections from the prior review feedback below. Run the existing prepare-plan-candidate.mjs and serialize-plan-paths.mjs producers, then publish without a review decision to return AWAITING_REVIEW. No approval is inherited; return control for a new independent REVIEW_PLAN.\nPrior review feedback (not an approval or a replacement authority):\n'
+        + (correctingPreparation ? '\nThis is a bounded author correction of the existing unapproved Initial candidate, whose ownership and source were checked by the caller. Reuse that allocation; do not allocate another PLAN root or use REPLAN. Inspect the canonical authority and justify corrections from the prior review feedback below. Run the existing prepare-plan-candidate.mjs and serialize-plan-paths.mjs producers, then publish without a review decision to return AWAITING_REVIEW. No approval is inherited; return control for a new independent REVIEW_PLAN.\nPrior review feedback (not an approval or a replacement authority):\n'
           + refusedReview.turn.response + '\n' : '')
         + (operation === 'VALIDATE_SLICE' ? '\nSolicito validação integral terminal do estado atual quando admissível pelo contrato normal; se não for admissível, reporte o bloqueio. Não certifique COMPLETE com julgamento apenas local.\n' : '')
         + invocation
+        + `\nOperational correction margin after this admission: ${correctionMargin}. This caller limit is shared across categories and identities; it grants no product authority or phase advancement. Preserve all returns, stop on proved recurrence without correction, and explain semantic progress from the actual obligation/evidence rather than a generic message.\n`
         + `\nProject working directory: ${workspace}\nOriginal requirements input: ${requirementsPath}\n`
         + nativeRunnerContext(operation, provider.bundle, path.join(caseRoot, `${operationId}.events.jsonl`));
       const promptFile = path.join(prompts, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}.md`);
@@ -622,11 +636,11 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       // Reserve the legal maximum before the principal starts. Native events
       // cannot retroactively prevent a spawn; unexpected children block rather
       // than being called free. No promise of a financial/HTTP limit is made.
-      const runnerSlots = ['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation) ? 3 : operation === 'VALIDATE_SLICE' ? 2 : 0;
+      const runnerSlots = RUNNER_OPERATIONS.has(operation) ? 5 : 0;
       // The serialized admission rechecks the sibling barrier after ledger I/O.
       // An operation admitted earlier keeps its original observation and deadline.
       const admission = pending?.admission ?? await admitOperation({ runRoot, runId: path.basename(runRoot), caseId,
-        operation, runnerRequired: runnerSlots > 0, runnerSlots, auxiliaryLimit: 8, limit: turnLimit,
+        operation, slice, sequence, runnerRequired: runnerSlots > 0, runnerSlots, auxiliaryLimit: 8, limit: turnLimit,
         beforeAdmission: () => beforeOperation?.(caseId) });
       const reserved = [...(pending?.reserved ?? admission.runners)], startedChildren = new Map(pending?.startedChildren ?? []);
       let mainNumber = pending?.mainNumber ?? null, turn = null;
@@ -635,7 +649,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         if (pending === null) mainNumber = await startReservedTurn(runRoot, admission.main, turnLimit);
         const checkpoint = async dispatch => {
           state.pendingObservation = { sequence, operation, slice, admission, reserved: [...reserved],
-            startedChildren: [...startedChildren], mainNumber, dispatch, preClose };
+            startedChildren: [...startedChildren], mainNumber, dispatch, preClose, correctionMargin };
           await atomicJson(stateFile, state);
         };
         turn = await provider.runTurn({ prompt, workflowSkill, model: route.model,
@@ -656,7 +670,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
               return prior.grant;
             }
             await validateInitialization();
-            const reservation=await reserveExtraRunner({runRoot,runId:path.basename(runRoot),caseId,operation,limit:turnLimit,continuationBinding:binding});
+            const reservation=await reserveExtraRunner({runRoot,runId:path.basename(runRoot),caseId,operation,slice,sequence,limit:turnLimit,continuationBinding:binding});
             reserved.push(reservation);
             state.preVerificationContinuation={binding,firstTurnId,reservation,grant:null};
             await checkpoint(state.pendingObservation.dispatch);
@@ -717,6 +731,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
                 Object.assign(entry, { threadId: binding.agentThreadId, agentPath: binding.agentPath,
                   turnId: childTurn.id, childKind: original?.childKind??entry.childKind??'pending',
                   ...(original?{designation:original.designation}:{}) });
+                if(original)assertOperationalCorrections(value.turns,{caseId,slice,operation});
               });
               await checkpoint(state.pendingObservation.dispatch);
             }
@@ -740,6 +755,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
               if(entry.designation&&JSON.stringify(entry.designation)!==JSON.stringify(designation))fail('formal ledger designation changed');
               Object.assign(entry,{childKind:'formal',designation});
             }
+            assertOperationalCorrections(ledger.turns,{caseId,slice,operation});
             if(new Set(ledger.turns.filter(item=>item.operation===operation&&item.childKind==='formal'
               &&startedChildren.has(item.threadId)).map(item=>item.threadId)).size>runnerSlots)fail('formal call limit exceeded');
           }),
@@ -793,12 +809,18 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         outcome = decideOutcome(operation, { ...readback, preparation }, true, readiness);
         if (operation === 'REVIEW_PLAN' && outcome.blocker === 'PREPARATION_REVIEW_NOT_APPROVED') {
           const priorReviews = state.operations.slice(0, sequence - 1).filter(item => item.operation === 'REVIEW_PLAN');
-          if (priorReviews.length !== 0 || typeof turn.response !== 'string' || !turn.response.trim()) {
+          if (priorReviews.length >= MAX_OPERATIONAL_CORRECTIONS || typeof turn.response !== 'string' || !turn.response.trim()) {
             outcome = { result: 'BLOCKED', blocker: 'PREPARATION_REVIEW_NOT_APPROVED' };
           } else {
             await product.assertPreparationCandidate(preparation.candidateExecutionRoot, specPath);
             const current = await product.serializePlanPathClaims({ specPath, candidateExecutionRoot: preparation.candidateExecutionRoot });
             if (current.authority.requirementsAuthority !== preparation.authority.requirementsAuthority) fail('requirements changed during preparation review');
+            const previous=priorReviews.at(-1);
+            if(previous) {
+              const prior=await readJson(previous.evidencePath);
+              if(prior.turn?.response===turn.response&&hash(JSON.stringify(prior.preparation?.authority))===hash(JSON.stringify(current.authority)))
+                outcome={result:'BLOCKED',blocker:'PREPARATION_NO_CORRECTION_PROGRESS'};
+            }
             preparation = { ...preparation, authority: current.authority };
           }
         }
@@ -813,7 +835,18 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           return { exitCode: 0, retainedEvent: previousEvent.index };
         })() : command(argsForJournal({ journal, operation, route, outcome, slice,
         readback: { ...readback, preparation }, readinessResult: readiness,
-        turn: { ...turn, prompt }, durationMs: Date.now() - startedMs, runnerCount: turn.captures.length }));
+        turn: { ...turn, prompt, corrected: correctingPreparation || operationalCorrectionUsage((await readJson(ledgerPath(runRoot))).turns,{caseId,slice,operation})>0,
+          mechanicalRejection: (captureProof?.rejectedResponses?.length??0)>0 }, durationMs: Date.now() - startedMs, runnerCount: turn.captures.length }));
+      if(journalResult.exitCode===0&&turn.completed&&!(previousEvent&&pending!==null)) {
+        const rows=(await readJson(ledgerPath(runRoot))).turns.filter(row=>row.caseId===caseId&&row.sequence===sequence&&row.childKind==='formal');
+        const actors=new Set(rows.map(row=>row.threadId));
+        if(actors.size) {
+          const saved=await readJson(journal),event=saved.events[sequence-1];
+          if(!event||event.operation!==operation)fail('journal operation changed before child accounting');
+          event.childDispatches=Array.from(actors,()=>({role:'stnl_validation_runner',model:'GPT-6-Luna',effort:'medium'}));
+          await atomicJson(journal,saved);
+        }
+      }
       if (journalResult.exitCode !== 0) outcome = { result: 'BLOCKED', blocker: 'JOURNAL_REJECTED',
         diagnostic: journalResult.stderr, priorOutcome: outcome };
       const evidencePath = path.join(caseRoot, `${String(sequence).padStart(2, '0')}-${operation.toLowerCase()}${pending === null ? '' : `.observation-${randomUUID()}`}.json`);

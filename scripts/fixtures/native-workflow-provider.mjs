@@ -81,7 +81,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
     } else if (operation === 'PLAN') {
       if (preparation && fault?.startsWith('review-correction')) {
         if (!prompt.includes(`CANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}`)
-          || !prompt.includes('single author correction') || !prompt.includes('Offline preparation review declined')) throw new Error('author correction lacks exact candidate/feedback');
+          || !prompt.includes('bounded author correction') || !prompt.includes('Offline preparation review declined')) throw new Error('author correction lacks exact candidate/feedback');
         await assertPreparationCandidate(preparation.candidateExecutionRoot, specPath);
         for (const name of ['plans/slice-01.md', 'tasks/slice-01.md']) {
           const file = path.join(preparation.candidateExecutionRoot, name), text = await fs.readFile(file, 'utf8');
@@ -121,7 +121,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
     } else if (operation === 'REVIEW_PLAN') {
       if (!prompt.includes(`CANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}`)) throw new Error('fixture root was not passed to the independent review');
       if (fault?.startsWith('review-correction') && (operations.filter(item => item.operation === 'REVIEW_PLAN').length === 1
-        || fault === 'review-correction-twice')) {
+        || fault === 'review-correction-twice'||fault==='review-correction-four'&&operations.filter(item=>item.operation==='REVIEW_PLAN').length<=4)) {
         turn.items.push({ id: randomUUID(), type: 'agentMessage', phase: 'final_answer',
           text: 'Offline preparation review declined: author must correct the recipe dependency review; no approval or publication.' });
         return;
@@ -158,7 +158,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       if (operation === 'EXECUTE_SLICE' && fault !== 'premature-verification') {
         await fs.copyFile(path.join(repo, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
         await fs.writeFile(path.join(workspace, 'src/native-filter.test.mjs'), checkSource);
-        if (['findings-cycle', 'findings-two-cycles'].includes(fault)) {
+        if (['findings-cycle', 'findings-two-cycles','findings-format-corrections'].includes(fault)) {
           const file = path.join(workspace, 'src/cli.mjs');
           const original = await fs.readFile(file, 'utf8');
           if (!original.includes('todo.completed === false')) throw new Error('offline mutant did not reach its pending branch');
@@ -172,7 +172,12 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         await fs.writeFile(path.join(workspace, 'src/native-filter.test.mjs'), corrected);
       }
       const coverageRounds = operation === 'EXECUTE_SLICE' && fault === 'test-coverage-correction';
-      const formalRounds = coverageRounds ? 3 : operation === 'VALIDATE_SLICE' && ['formal-successor','formal-exhausted','formal-incomplete','formal-incomplete-exhausted'].includes(fault) ? 2 : 1;
+      const validationOrdinal=operations.filter(item=>item.operation==='VALIDATE_SLICE').length;
+      const mixedFinal=fault==='findings-format-corrections'&&operation==='VALIDATE_SLICE'&&validationOrdinal===2;
+      const expanded=operation==='VALIDATE_SLICE'&&['formal-four-corrections','formal-exhausted','formal-continuation-exhausted'].includes(fault);
+      const producerCorrections=fault==='execute-producer-corrections'&&operation==='EXECUTE_SLICE'?4:fault==='findings-producer-corrections'&&operation==='APPLY_FINDINGS'?3:0;
+      const mixedApply=fault==='findings-producer-mixed'&&operation==='APPLY_FINDINGS';
+      const formalRounds=mixedApply?3:producerCorrections?producerCorrections+1:coverageRounds?3:mixedFinal?4:expanded?(fault==='formal-continuation-exhausted'?4:5):operation==='VALIDATE_SLICE'&&['formal-successor','formal-incomplete','formal-incomplete-exhausted','formal-continuation-correction'].includes(fault)?2:1;
       for(let formalRound=0;formalRound<formalRounds;formalRound++){
       if(coverageRounds) {
         const file=path.join(workspace,'src/native-filter.test.mjs');
@@ -180,9 +185,10 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         await fs.writeFile(file,formalRound===0?checkSource.replace('assert.equal(code,0);','assert.equal(code,1);'):formalRound===1?checkSource:corrected);
         if(formalRound)dispatch=await reserveDispatch(admitted.handle,{responseVariant:'stnl-current-native-judgment-v1'});
       }
+      else if(mixedApply&&formalRound===2)dispatch=await reserveDispatch(admitted.handle,{responseVariant:'stnl-current-native-judgment-v1'});
       else if(formalRound){const next=await inspectCurrentExecution(specPath);
         admitted=await normalizeSuccessor({specPath,operation,slice,expectedActivationId:next.activationId});
-        dispatch=await reserveDispatch(admitted.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal:true});}
+        dispatch=await reserveDispatch(admitted.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal:operation==='VALIDATE_SLICE'});}
       const agentPath = `/root/check-${randomUUID()}`, childId = randomUUID();
       const child = { id: childId, cwd: workspace, cliVersion: '0.163.0', historyMode: 'paginated', parentThreadId: thread.id,
         forkedFromId: null, agentRole: 'default', model: 'gpt-6-luna', reasoningEffort: 'medium', turns: [] };
@@ -193,7 +199,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       if (operation === 'EXECUTE_SLICE' && fault === 'aux-after-formal') auxiliary();
       if (operation === 'EXECUTE_SLICE' && fault === 'aux-followup-twelve') auxiliary(thread, turn, { turns: 12 });
       const continuing=fault==='pre-verification-continuation'&&operation==='EXECUTE_SLICE'
-        ||fault==='formal-continuation-exhausted'&&operation==='VALIDATE_SLICE';
+        ||['formal-continuation-exhausted','formal-continuation-correction'].includes(fault)&&operation==='VALIDATE_SLICE'&&formalRound===0;
       const contractCommand=/^cat -- .+$/mu.exec(prompt)?.[0];
       if(!contractCommand)throw Error('canonical full-contract read command absent from public context');
       const contractRead=()=>({id:randomUUID(),type:'commandExecution',command:contractCommand,cwd:workspace,status:'completed',exitCode:0,aggregatedOutput:null});
@@ -213,19 +219,25 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         const second={id:randomUUID(),status:'inProgress',error:null,itemsView:'full',items:[]};child.turns.push(second);
         turn.items.push({id:randomUUID(),type:'subAgentActivity',kind:'interacted',agentPath,agentThreadId:childId});
       }
+      if(mixedApply){
+        const file=path.join(workspace,'src/cli.mjs'),source=await fs.readFile(path.join(repo,'scripts/fixtures/filtered-cli.mjs'),'utf8');
+        await fs.writeFile(file,formalRound===1?source.replace('todo.completed === false','todo.completed === true'):source);
+      }
       const measured = await verifyNative(dispatch.originFile);
-      const findingsCycles = fault === 'findings-two-cycles' ? 2 : fault === 'findings-cycle' ? 1 : 0;
+      const findingsCycles = fault === 'findings-two-cycles' ? 2 : ['findings-cycle','findings-format-corrections','findings-producer-corrections','findings-producer-mixed'].includes(fault) ? 1 : 0;
       const validationRound = operations.filter(item => item.operation === 'VALIDATE_SLICE').length;
       const needsFix = findingsCycles > 0 && operation === 'VALIDATE_SLICE' && validationRound <= findingsCycles;
       const corrected = findingsCycles > 0 && operation === 'VALIDATE_SLICE' && !needsFix;
       const findingIds = validationRound > findingsCycles ? [`finding-${String(findingsCycles).padStart(2, '0')}`]
         : Array.from({ length: validationRound }, (_, i) => `finding-${String(i + 1).padStart(2, '0')}`);
-      const result = operation === 'EXECUTE_SLICE' ? (({ head, ...rest }) => rest)(payload(coverageRounds?formalRound+1:1))
-        : operation === 'APPLY_FINDINGS' ? (({ head, ...rest }) => rest)(applyPayload(1, 'TESTS_PASS', 0, [fault === 'findings-two-cycles' && operations.filter(item => item.operation === 'APPLY_FINDINGS').length === 2 ? 'finding-02' : 'finding-01']))
+      const result = operation === 'EXECUTE_SLICE' ? (({ head, ...rest }) => rest)(payload(coverageRounds||producerCorrections?formalRound+1:1))
+        : operation === 'APPLY_FINDINGS' ? (({ head, ...rest }) => rest)(applyPayload(producerCorrections||mixedApply?formalRound+1:1, mixedApply&&formalRound===1?'TESTS_FAIL':'TESTS_PASS', mixedApply&&formalRound===1?1:0, [fault === 'findings-two-cycles' && operations.filter(item => item.operation === 'APPLY_FINDINGS').length === 2 ? 'finding-02' : 'finding-01']))
         : { status: 'PASS', commands: measured.commands, evidence: 'OFFLINE semantic judgment fixture only.',
           findingReferences: needsFix || corrected ? findingIds.join(', ') : 'none', findingDispositions: needsFix || corrected ? findingIds.map((id, i) => `${id}=${needsFix && i === validationRound - 1 ? 'active' : 'resolved'}`).join(', ') : 'none', blockers: 'none',
           unexpectedWorkspaceEffects: 'none', persistenceSummary: 'No runner edits.' };
       result.commands = measured.commands;
+      if(operation!=='VALIDATE_SLICE')result.automaticCheckRound=`${formalRound+1}/5`;
+      if(producerCorrections&&formalRound<producerCorrections)delete result[['coverage','selectionRationale','discoverySources','selectedChecks'][formalRound]];
       if(coverageRounds) {
         result.status=formalRound===0?'TESTS_FAIL':formalRound===1?'BLOCKED':'TESTS_PASS';
         if(formalRound===1) {
@@ -240,14 +252,18 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       const incomplete=operation==='VALIDATE_SLICE'&&['formal-incomplete','formal-incomplete-exhausted'].includes(fault)
         &&(formalRound===0||fault==='formal-incomplete-exhausted');
       if(incomplete){result.status='BLOCKED';result.blockers='Independent inspection of the prepared assertions against the canonical AC-001 obligation is incomplete.';}
-      const invalid = !coverageRounds && (fault==='formal-continuation-exhausted'&&operation==='VALIDATE_SLICE'
-        || ['formal-successor','formal-exhausted'].includes(fault)&&formalRounds===2 && (formalRound===0 || fault==='formal-exhausted'));
-      const text = JSON.stringify({ format: 'stnl-current-native-judgment-v1', result,
+      const invalid = !coverageRounds && (['formal-continuation-exhausted','formal-exhausted'].includes(fault)&&operation==='VALIDATE_SLICE'
+        || ['formal-successor','formal-continuation-correction'].includes(fault)&&formalRounds===2&&formalRound===0);
+      if((fault==='formal-four-corrections'&&operation==='VALIDATE_SLICE'||mixedFinal)&&formalRound<formalRounds-1) {
+        const [field,value]=[['status','INVALID'],['commands',[]],['evidence',0],['findingReferences',{}]][formalRound];result[field]=value;
+      }
+      const text = (['findings-producer-corrections','findings-producer-mixed'].includes(fault)&&operation==='APPLY_FINDINGS'||fault==='execute-producer-corrections'&&operation==='EXECUTE_SLICE')&&formalRound===0?'{invalid Initial APPLY result':JSON.stringify({ format: 'stnl-current-native-judgment-v1', result,
         ...(operation === 'VALIDATE_SLICE' && !invalid ? { newFindings: findings } : {}) })
         +(invalid?'\nCanonical task identity: `'+agentPath+'`':'');
       if(continuing)Object.assign(child.turns.at(-1),{status:'completed',items:[{id:randomUUID(),type:'commandExecution',command:'node verificationHelper verify-native --origin-file originFile',cwd:workspace,status:'completed',exitCode:0,aggregatedOutput:JSON.stringify(measured)},{id:randomUUID(),type:'agentMessage',phase:'final_answer',text}]});
       else child.turns.push({ id: randomUUID(), status: 'completed', error: null, itemsView: 'full',
         items: [{ id: randomUUID(), type: 'commandExecution', command: `cat -- '${path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml').replaceAll("'", "'\\''")}'`, cwd: workspace, status: 'completed', exitCode: 0, aggregatedOutput: await fs.readFile(path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml'), 'utf8') }, { id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text }] });
+      if(fault==='formal-observe-inventory'&&operation==='EXECUTE_SLICE')child.turns[0].items.splice(1,0,{id:randomUUID(),type:'collabAgentToolCall',tool:'listAgents',status:'completed',senderThreadId:childId,receiverThreadIds:[],prompt:null,agentsStates:{}});
       if (fault === 'grandchildren' && operation === 'EXECUTE_SLICE') child.turns[0].items.push(...[1, 2].map(index => ({
         id: randomUUID(), type: 'subAgentActivity', kind: 'started', agentPath: `${agentPath}/extra-${index}`, agentThreadId: randomUUID() })));
       let file = path.join(caseRoot, `${operation}.normal-tool-result.json`);
@@ -281,7 +297,9 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
           if (!(await fs.readFile(path.join(directory, name))).equals(originals[index])) throw Error('APPLY replay changed captured sources');
         if (calls.filter(call => call.method === 'turn/start').length !== turnCount) throw Error('APPLY replay admitted a turn');
       }
-      if(coverageRounds && formalRound<2) {
+      if(mixedApply&&formalRound===1){
+        if(captured.nextAction!=='reserve-dispatch')throw Error('failed APPLY prefix lost its correction handoff');
+      } else if(coverageRounds && formalRound<2) {
         if(captured.nextAction!=='reserve-dispatch')throw Error('coverage correction did not retain the existing correction handoff');
         if(formalRound===1)try {await publish(admitted.handle);throw Error('intermediate omission unexpectedly published');}catch(error){if(error.code!=='EVIDENCE_INCOMPLETE')throw error;}
       } else command(turn.items, await publish(admitted.handle));

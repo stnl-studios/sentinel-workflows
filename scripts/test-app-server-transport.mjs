@@ -26,6 +26,36 @@ const refuses = (message, code='NATIVE_TRANSPORT_UNPROVEN') => error => {
   assert.equal(error.code,code); assert.equal(error.message,message); return true;
 };
 
+test('formal runner may observe its scoped agent inventory without a message or turn effect',async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root});
+  const activity={id:'inventory',type:'collabAgentToolCall',tool:'listAgents',status:'completed',senderThreadId:child,receiverThreadIds:[],agentsStates:{}};
+  s.state.items.splice(1,0,activity);s.state.turns[0].items=structuredClone(s.state.items);
+  const binding=await bindAppServerChild(s.rpc,identity),before=JSON.stringify(s.state);
+  for(const initialization of [false,true]) {
+    const result=await readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root,initialization});
+    assert.equal(result.finalResponse,s.state.items.at(-1).text);
+  }
+  assert.equal(JSON.stringify(s.state),before);assert.ok(s.calls.every(call=>call.method.startsWith('thread/')));
+});
+
+for(const [name,change,reason] of [['sender absent',{senderThreadId:undefined},'SENDER'],['foreign sender',{senderThreadId:parent},'SENDER'],
+  ['target foreign',{receiverThreadIds:[parent]},'RECEIVERS'],['receivers absent',{receiverThreadIds:undefined},'RECEIVERS'],
+  ['status unknown',{status:'unknown'},'STATUS'],['not concluded',{status:'inProgress'},'STATUS'],
+  ['message payload',{prompt:'untrusted-text-secret'},'PROMPT'],['state foreign',{agentsStates:{foreign:{status:'completed'}}},'AGENTS_STATES_EMPTY'],
+  ['state absent',{agentsStates:undefined},'AGENTS_STATES_OBJECT'],['state array',{agentsStates:[]},'AGENTS_STATES_OBJECT'],
+  ['model foreign',{model:'foreign'},'MODEL'],['effort foreign',{reasoningEffort:'foreign'},'EFFORT'],
+  ['unknown tool',{tool:'unknown'},'ITEM_TYPE'],['send action',{tool:'sendMessage'},'ITEM_TYPE']])
+test(`observational collaboration is not permission for ${name}`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root});
+  s.state.items.splice(1,0,{id:'inventory',type:'collabAgentToolCall',tool:'listAgents',status:'completed',senderThreadId:child,receiverThreadIds:[],agentsStates:{},...change});
+  s.state.turns[0].items=structuredClone(s.state.items);
+  const binding=await bindAppServerChild(s.rpc,identity);
+  await assert.rejects(readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root}),error=>{
+    assert.ok(blocked(error));assert.ok(error.message.includes(reason));assert.doesNotMatch(error.message,/untrusted-text-secret/);return true;
+  });
+  assert.ok(s.calls.every(call=>call.method.startsWith('thread/')));
+});
+
 for(const operation of ['bundle','capture','process-metadata'])test(`direct adapter I/O has safe stage and code (${operation})`,async t=>{
   const f=await fixture(t);let run;
   if(operation==='bundle')run=()=>describeAppServerBundle({skillsRoot:path.join(f.root,'private-path-secret'),runnerFile:f.bundle.runner.path});
@@ -602,7 +632,7 @@ for (const [name, changes, expected] of [
   const binding = await bindAppServerChild(s.rpc, identity);
   const check = error => {
     assert.equal(error.code, 'NATIVE_TRANSPORT_UNPROVEN');
-    assert.match(error.message, /itemIndex=1; failed=ITEM_TYPE; itemType=collabAgentToolCall; origin=runnerHistory; variant=v1;/u);
+    assert.match(error.message, activity.tool==='listAgents'?/itemIndex=1; failed=RECEIVERS,PROMPT,AGENTS_STATES_EMPTY; itemType=collabAgentToolCall; origin=runnerHistory; variant=v1;/u:/itemIndex=1; failed=ITEM_TYPE; itemType=collabAgentToolCall; origin=runnerHistory; variant=v1;/u);
     for (const detail of expected) assert.ok(error.message.includes(detail), error.message);
     assert.ok(Buffer.byteLength(error.message) < 512);
     assert.doesNotMatch(error.message, /private-|019a|\/root|\/Users\//u);

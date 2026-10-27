@@ -5,7 +5,7 @@ import {
   RunnerSemanticResultError, assertRunnerVerdictConsistency, assertExecutionResultScope,
   deriveCanonicalRunnerRejection, recoverableRunnerResultDiagnostic,
   parseSemanticExecutionPayload, serializeMarkdownScalar, serializeCommand,
-  executionFields, isExplanatoryExecutionField,
+  executionFields, isExplanatoryExecutionField, MAX_NATIVE_PRODUCER_TURNS, nativeCheckRoundMatches,
 } from './runner-result-contract.mjs';
 import { verifyCapturedInvocation, verifyWorkObservation, packCaptureSources, restoreCaptureSources,
   closeEvidenceObjects, projectNativeJudgment, NATIVE_JUDGMENT_VARIANT, findingsRoundCaptureSha256 } from './execution-evidence-proof.mjs';
@@ -245,7 +245,7 @@ function guard(input, validating = false) {
   // Canonical serialization also rejects descriptors, malformed strings and non-JSON nested values.
   canonical(input.context); canonical(input.authority); canonical(input.owner);
   if (validating) bytes(input.bundleBytes, 'bundleBytes');
-  else dense(input.rounds, 'rounds', 1, 3);
+  else dense(input.rounds, 'rounds', 1, MAX_NATIVE_PRODUCER_TURNS);
   return verifyWorkObservation('initial-implementation',{context:input.context,delivery,slice:input.owner.slice});
 }
 function relativeTask(context, absolutePath, slice) {
@@ -352,7 +352,7 @@ function renderRecord(id, owner, payload, entries, commands, correctionPaths) {
     ...['Discovery sources','Discovery actions','Verification types considered','Non-applicability rationale','No verification-command confirmation','Selected checks','Selection rationale','Coverage','Failures','Blockers','Unexpected workspace effects','Persistence summary']
       .map(label => `- ${label}: ${scalar(label, fields[label])}`),
   ];
-  if (payload.automaticCheckRound !== '1/3') lines.push(
+  if (!['1/3','1/5'].includes(payload.automaticCheckRound)) lines.push(
     `- Prior-round failure: ${scalar('Prior-round failure', fields['Prior-round failure'])}`,
     `- Correction applied: ${scalar('Correction applied', fields['Correction applied'])}`,
     `- Correction paths: ${correctionPaths.length ? correctionPaths.join(', ') : 'none'}`,
@@ -463,7 +463,7 @@ function implementationPredecessor(input) {
     mismatch('implementation successor needs a new owner');
   const verified=validateInitialImplementationEvidence({context:input.context,authority:input.authority,owner,currentEvidence:null,
     counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},bundleBytes:input.currentEvidence});
-  if(verified.outcome!=='rejected' || prior.support.length!==1 || verified.consumedInvocations>=3)
+  if(verified.outcome!=='rejected' || (!prior.support.length||prior.support.length>=MAX_NATIVE_PRODUCER_TURNS) || verified.consumedInvocations>=MAX_NATIVE_PRODUCER_TURNS)
     invalid('implementation predecessor has no legal successor budget');
   expectEqual(input.counters,verified.counters,'INVALID_CURRENT_IMAGE','implementation successor counters');
   return {...verified,owner};
@@ -474,18 +474,19 @@ function compose(input, info) {
   if (transport!=='native') fail('UNSUPPORTED_FORMAT', 'round 1: unknown transport');
   const store = closeEvidenceObjects();
   const predecessor=implementationPredecessor(input),offset=predecessor?.consumedInvocations??0;
-  if(offset+input.rounds.length>3)invalid('implementation total invocation budget exceeds three');
+  if(offset+input.rounds.length>MAX_NATIVE_PRODUCER_TURNS)invalid('implementation total invocation budget exceeds five');
   const implementation = [...(predecessor?.bundle.implementation??[])]; const support = [...(predecessor?.bundle.support??[])];
   for(const item of predecessor?.bundle.objects??[])store.add(Buffer.from(item.bytesBase64,'base64'));
-  const inherited=predecessor?{episodeId:predecessor.owner.operationAttemptId,operation:'EXECUTE_SLICE',
-    causeSha256:predecessor.sha256,sourceOperationAttemptId:predecessor.owner.operationAttemptId,
-    used:1,consumedInvocations:offset,round:1,status:'settled',sourceEvidenceSha256:predecessor.sha256,
+  const priorNormalization=predecessor?jsonBytes(implementationRounds(predecessor.bundle).at(-1).cap.origin,'predecessor normalization').value.admission?.binding?.normalization:null;
+  const inherited=predecessor?{episodeId:priorNormalization?.episodeId??predecessor.owner.operationAttemptId,operation:'EXECUTE_SLICE',
+    causeSha256:priorNormalization?.causeSha256??predecessor.sha256,sourceOperationAttemptId:predecessor.owner.operationAttemptId,
+    used:1,consumedInvocations:offset,round:(priorNormalization?.round??0)+1,status:'settled',sourceEvidenceSha256:predecessor.sha256,
     sourceActivationId:input.owner.originActivationId}:null;
   let previousAfter = predecessor?jsonBytes(implementationRounds(predecessor.bundle).at(-1).cap.verificationObservation,'rejected predecessor observation').value.after:null, previousStatus = null, dispatchId = null;
   const retainedRemovals=new Set(predecessor?implementationRounds(predecessor.bundle).flatMap(({cap})=>
     cap.removalProofs.map(blob=>jsonBytes(blob,'verified predecessor removal').value.path))
     .filter(name=>previousAfter.entries.some(entry=>entry.path===name&&entry.kind==='absent')):[]);
-  const runners = new Set();
+  const runners = new Set(predecessor?implementationRounds(predecessor.bundle).map(({record})=>record.origin.runnerId):[]);
   const receipts = [];
   let productBytes = 0, productDrift=null, previousCoverageCorrection=null;
   for (const [index, cap] of input.rounds.entries()) {
@@ -619,7 +620,7 @@ function compose(input, info) {
     }
     previousAfter = observed.after;
     let rejection = null;
-    if (transport === 'native' && (payload.automaticCheckRound !== `${globalRound}/3` || !same(payload.commands, commands))) rejection = semanticError('native response round/commands contradict observed execution');
+    if (transport === 'native' && (!nativeCheckRoundMatches(payload.automaticCheckRound,globalRound) || !same(payload.commands, commands))) rejection = semanticError('native response round/commands contradict observed execution');
     if (!rejection) rejection = recordGrammarRejection(payload, entries, globalRound);
     if (!rejection && payload.status === 'TESTS_FAIL' && !commands.some(command => command.exit !== 0)) rejection = semanticError('TESTS_FAIL requires an observed nonzero exit');
     if (!rejection && payload.status === 'TESTS_NOT_APPLICABLE') rejection = semanticError('TESTS_NOT_APPLICABLE contradicts the reviewed nonempty recipe');
@@ -668,7 +669,7 @@ function compose(input, info) {
   return {bundle:parseCurrentJson(resultBytes.toString('utf8')), bytes:Uint8Array.from(resultBytes), sha256:raw(resultBytes),
     counters:{implementationChecks:implementation.length,findingsChecks:0,validationAttempts:0,findings:0},
     consumedInvocations:offset+input.rounds.length, outcome:previousStatus==='rejected' ? 'rejected' : 'recorded',
-    ...(previousStatus==='BLOCKED' && previousCoverageCorrection && offset+input.rounds.length<3 ? {testCoverageCorrection:previousCoverageCorrection} : {})};
+    ...(previousStatus==='BLOCKED' && previousCoverageCorrection && offset+input.rounds.length<MAX_NATIVE_PRODUCER_TURNS ? {testCoverageCorrection:previousCoverageCorrection} : {})};
 }
 
 export function composeInitialImplementationEvidence(input) {
@@ -684,10 +685,10 @@ export function validateInitialImplementationEvidence(input) {
   if (parsed.deliveryId !== input.owner.deliveryId || parsed.slice !== input.owner.slice
     || parsed.currentAuthoritySha256 !== projected('delivery', input.authority.delivery)
     || parsed.findingsChecks.length || parsed.validation !== null || parsed.openFindings.length || parsed.openDivergences.length
-    || parsed.support.length > 2 || parsed.support.some(item => item.kind !== 'rejection')) invalid('bundle outside initial implementation scope');
+    || parsed.support.length > MAX_NATIVE_PRODUCER_TURNS || parsed.support.some(item => item.kind !== 'rejection')) invalid('bundle outside initial implementation scope');
   const objects = new Map(parsed.objects.map(item => [item.id,Buffer.from(item.bytesBase64,'base64')]));
   const records = [...parsed.implementation,...parsed.support];
-  if (!records.length || records.length > 3) invalid('bundle initial round count');
+  if (!records.length || records.length > MAX_NATIVE_PRODUCER_TURNS) invalid('bundle initial round count');
   for (const [index, record] of parsed.implementation.entries()) {
     if (record.id !== `implementation-check-${String(index + 1).padStart(2,'0')}`) invalid('bundle implementation ID sequence');
   }
@@ -695,13 +696,13 @@ export function validateInitialImplementationEvidence(input) {
   const sequence=implementationRounds(parsed);
   if(sequence.some((item,index)=>item.globalRound!==index+1))invalid('implementation global invocation sequence');
   const owners=[...new Set(sequence.map(item=>item.owner.operationAttemptId))];
-  if(owners.length>2 || sequence.at(-1).owner.operationAttemptId!==input.owner.operationAttemptId)
+  if(owners.length>MAX_NATIVE_PRODUCER_TURNS || sequence.at(-1).owner.operationAttemptId!==input.owner.operationAttemptId)
     mismatch('implementation successor owner order');
   let currentEvidence=null,currentCounters={implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0};
   let selected=sequence;
-  if(owners.length===2) {
-    const split=sequence.findIndex(item=>item.owner.operationAttemptId!==owners[0]);
-    if(sequence.slice(split).some(item=>item.owner.operationAttemptId!==owners[1]))mismatch('implementation owner interleaving');
+  if(owners.length>1) {
+    const split=sequence.findIndex(item=>item.owner.operationAttemptId===owners.at(-1));
+    if(sequence.slice(split).some(item=>item.owner.operationAttemptId!==owners.at(-1)))mismatch('implementation owner interleaving');
     const priorRecords=sequence.slice(0,split).map(item=>item.record);
     const prior={...parsed,implementation:parsed.implementation.filter(item=>priorRecords.includes(item)),
       support:parsed.support.filter(item=>priorRecords.includes(item)),objects:implementationObjects(parsed,priorRecords)};

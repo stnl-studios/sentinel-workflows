@@ -17,7 +17,7 @@ export async function normalizedFormal(fixture,{successor=false,invalid=false,pa
   candidateMutation=null,beforeCapture=null,beforePublish=null,captureOnly=false,
   invalidText='INVALID_FORMAL_RESPONSE',headOverride=null,terminalFault=false,
   references='none',dispositions='none',responseVariant=null,terminal=false,reviewTriage=null,
-  status='PASS',blockers='none',
+  status='PASS',blockers='none',responseMutation=null,agentIdOverride=null,
   evidence='The prepared AC-001 test passed under the official native verification helper.'}={}) {
   const number=++next;
   const activation=JSON.parse(await fs.readFile(path.join(fixture.image?.f?.execution??fixture.view.execution,'activation.json'),'utf8'));
@@ -25,7 +25,7 @@ export async function normalizedFormal(fixture,{successor=false,invalid=false,pa
     expectedActivationId:activation.activationId};
   const start=successor?await normalizeSuccessor(options):await begin(options);
   const dispatch=await reserveDispatch(start.handle,{responseVariant,terminal});
-  const agentId=`mechanical-normalization-${number}`;
+  const agentId=agentIdOverride??`mechanical-normalization-${number}`;
   await bindNative(start.handle,agentId);
   const measured=await verifyNative(dispatch.originFile);
   const request=await fs.readFile(dispatch.requestFile);
@@ -40,6 +40,7 @@ export async function normalizedFormal(fixture,{successor=false,invalid=false,pa
     const envelope=JSON.parse(finalResponse);delete envelope.requestSha256;delete envelope.result.head;
     envelope.format=responseVariant;finalResponse=JSON.stringify(envelope);
   }
+  if(responseMutation)finalResponse=JSON.stringify(responseMutation(JSON.parse(finalResponse)));
   const tool=path.join(fixture.root,`mechanical-normalization-${number}.json`);
   await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
   if(beforeCapture) await beforeCapture({start,dispatch,tool,finalResponse});

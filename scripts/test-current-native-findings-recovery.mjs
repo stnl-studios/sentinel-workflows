@@ -16,14 +16,14 @@ const run=promisify(execFile);
 const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 async function findingsRound(fixture,start,{status=null,invalid=false,edit=null,
   headOverride=null,requestShaOverride=null,beforeCapture=null,responseVariant=null,
-  semanticInvalid=false}={}) {
+  semanticInvalid=false,responseMutation=null}={}) {
   if(edit!==null) await fs.writeFile(path.join(fixture.root,'src/greeting.mjs'),edit);
   const dispatch=await reserveDispatch(start.handle,responseVariant?{responseVariant}:undefined);
   const request=JSON.parse(await fs.readFile(dispatch.requestFile));
   const agentId=`mechanical-recovery-agent-${++nativeNumber}`;
   await bindNative(start.handle,agentId);
   const measured=await verifyNative(dispatch.originFile);
-  const result={status,automaticCheckRound:`${request.round}/3`,head:headOverride??fixture.head,
+  const result={status,automaticCheckRound:`${request.round}/5`,head:headOverride??fixture.head,
     discoverySources:'Approved task and source.',discoveryActions:'Inspected approved check.',
     verificationTypesConsidered:'Approved Node module test.',nonApplicabilityRationale:'none',
     noVerificationCommandConfirmation:'An applicable check ran.',commands:measured.commands,
@@ -39,7 +39,7 @@ async function findingsRound(fixture,start,{status=null,invalid=false,edit=null,
   if(semanticInvalid) semantic.coverage='none';
   const response=invalid?'{"invalid":':responseVariant
     ?JSON.stringify({format:'stnl-current-native-judgment-v1',result:semantic})
-    :JSON.stringify({format:'stnl-current-findings-response-v1',
+    :JSON.stringify(responseMutation?responseMutation({format:'stnl-current-findings-response-v1',requestSha256:requestShaOverride??digest(await fs.readFile(dispatch.requestFile)),result}):{format:'stnl-current-findings-response-v1',
       requestSha256:requestShaOverride??digest(await fs.readFile(dispatch.requestFile)),result});
   const tool=path.join(fixture.root,`mechanical-recovery-tool-${nativeNumber}.json`);
   await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',finalResponse:response})+'\n');
@@ -47,13 +47,13 @@ async function findingsRound(fixture,start,{status=null,invalid=false,edit=null,
   const captured=await captureNative(start.handle,tool);
   return {dispatch,request,captured,tool,response};
 }
-async function rejectedFirst(test,{priorFailures=0}={}) {
+async function rejectedFirst(test,{priorFailures=0,progressing=false}={}) {
   const {fixture}=await blockingFormalCase(test);
   const activation=JSON.parse(await fs.readFile(path.join(fixture.image.f.execution,'activation.json')));
   const first=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
     expectedActivationId:activation.activationId,operation:'APPLY_FINDINGS'});
   for(let index=0;index<priorFailures;index+=1) {
-    const failed=await findingsRound(fixture,first,{status:'TESTS_FAIL'});
+    const failed=await findingsRound(fixture,first,{status:'TESTS_FAIL',...(progressing?{edit:`export const greeting="broken-${index}";\n`}:{})});
     assert.equal(failed.captured.status,'TESTS_FAIL');
   }
   const rejected=await findingsRound(fixture,first,{invalid:true,
@@ -65,6 +65,43 @@ async function rejectedFirst(test,{priorFailures=0}={}) {
   assert.equal(current.inspection.deliveries[0].counters.findingsChecks,priorFailures);
   return {fixture,first,rejected,published,current};
 }
+
+test('operational converted APPLY recovery retains four distinct schema errors and the correction',async t=>{
+  const {fixture}=await blockingFormalCase(t);
+  let prior=null;
+  for(let index=0;index<5;index++){
+    const image=await captureCurrentExecution(fixture.specPath);
+    assert.equal(image.inspection.normalHandoff?.operation,'APPLY_FINDINGS');
+    const input={specPath:fixture.specPath,slice:fixture.delivery.slice,expectedActivationId:image.inspection.activationId,operation:'APPLY_FINDINGS'};
+    const start=index?await normalizeSuccessor(input):await begin(input);
+    const result=await findingsRound(fixture,start,{status:'TESTS_PASS',edit:index===0?'export const greeting="hello";\n':null,
+      responseMutation:index<4?response=>{delete response.result[['coverage','selectionRationale','discoverySources','selectedChecks'][index]];return response;}:null});
+    assert.equal((await captureNative(start.handle,result.tool)).replayed,true);
+    const published=await publish(start.handle);
+    assert.equal(published.transition.outcome,index<4?'rejected':'recorded');
+    if(index<4){
+      assert.equal(published.transition.normalization.status,'settled');
+      assert.equal(published.transition.normalization.consumedInvocations,index+1);
+      const ready=await captureCurrentExecution(fixture.specPath);
+      assert.equal(ready.inspection.normalHandoff?.operation,'APPLY_FINDINGS');
+      if(index===1){
+        const source=path.join(fixture.root,'src/greeting.mjs'),before=await fs.readFile(source);
+        await fs.writeFile(source,'export const greeting="changed-after-refusal";\n');
+        try {
+          const drifted=await captureCurrentExecution(fixture.specPath);
+          assert.equal(drifted.inspection.normalHandoff,null);
+          await assert.rejects(()=>normalizeSuccessor({...input,expectedActivationId:drifted.inspection.activationId}),
+            error=>error?.code==='UNSUPPORTED_FORMAT');
+        } finally {await fs.writeFile(source,before);}
+      }
+    }
+    if(prior)assert.notEqual(start.owner.operationAttemptId,prior.owner.operationAttemptId);
+    prior=start;
+  }
+  const final=await captureCurrentExecution(fixture.specPath);
+  assert.equal(final.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  assert.equal(final.inspection.deliveries[0].counters.findingsChecks,1);
+});
 
 test('EC-1 APPLY refusal resumes a partial publication in a new process with the original budget',async t=>{
   const {fixture}=await blockingFormalCase(t);
@@ -195,25 +232,25 @@ test('EC-1 APPLY concluded invalid response publishes a bounded refusal',async t
   assert.equal(final.publication,'confirmed');
 });
 
-test('EC-1 rejection at global 3 consumes the final call without a fourth or successor',async t=>{
-  const {fixture,published,current}=await rejectedFirst(t,{priorFailures:2});
-  assert.equal(published.transition.normalization.consumedInvocations,3);
+test('EC-1 rejection at global 5 consumes the local margin without a sixth or successor',async t=>{
+  const {fixture,published,current}=await rejectedFirst(t,{priorFailures:4,progressing:true});
+  assert.equal(published.transition.normalization.consumedInvocations,5);
   assert.equal(published.transition.normalization.status,'exhausted');
   assert.equal(current.inspection.normalHandoff,null);
-  assert.equal(current.inspection.deliveries[0].counters.findingsChecks,2);
+  assert.equal(current.inspection.deliveries[0].counters.findingsChecks,4);
   await assert.rejects(()=>normalizeSuccessor({specPath:fixture.specPath,
     slice:fixture.delivery.slice,expectedActivationId:current.inspection.activationId}),
   error=>['UNSUPPORTED_FORMAT','NORMALIZATION_NOT_ELIGIBLE'].includes(error?.code));
 });
 
-test('EC-1 native judgment at APPLY 3/3 remains terminal across restart and denies new work',async t=>{
+test('EC-1 native judgment at APPLY 5/5 remains terminal across restart and denies new work',async t=>{
   const {fixture}=await blockingFormalCase(t);
   const activation=JSON.parse(await fs.readFile(path.join(fixture.image.f.execution,'activation.json')));
   const first=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
     expectedActivationId:activation.activationId,operation:'APPLY_FINDINGS'});
   const variant='stnl-current-native-judgment-v1';
-  for(const round of [1,2]) {
-    const failed=await findingsRound(fixture,first,{status:'TESTS_FAIL',responseVariant:variant});
+  for(const round of [1,2,3,4]) {
+    const failed=await findingsRound(fixture,first,{status:'TESTS_FAIL',responseVariant:variant,edit:`export const greeting="broken-${round}";\n`});
     assert.equal(failed.dispatch.responseVariant,variant);
     assert.equal(failed.request.format,'stnl-current-findings-request-v1');
     assert.equal(failed.request.round,round);
@@ -221,7 +258,7 @@ test('EC-1 native judgment at APPLY 3/3 remains terminal across restart and deni
   }
   const rejected=await findingsRound(fixture,first,{status:'TESTS_PASS',semanticInvalid:true,
     responseVariant:variant,edit:'export const greeting="hello";\n'});
-  assert.equal(rejected.request.round,3);
+  assert.equal(rejected.request.round,5);
   assert.equal(rejected.captured.captureClass,'findings-rejection');
   assert.equal(rejected.captured.rawResponseSha256,digest(Buffer.from(rejected.response)));
   const replay=await captureNative(first.handle,rejected.tool);
@@ -233,8 +270,8 @@ test('EC-1 native judgment at APPLY 3/3 remains terminal across restart and deni
     finalResponse:originalTool.finalResponse+' '})+'\n');
   await assert.rejects(()=>captureNative(first.handle,changedTool),error=>error?.code==='OWNER_MISMATCH');
   const ownerRoot=path.dirname(rejected.dispatch.originFile);
-  const responseBefore=await fs.readFile(path.join(ownerRoot,'round-3.response.json'));
-  const observationBefore=await fs.readFile(path.join(ownerRoot,'round-3.verification.json'));
+  const responseBefore=await fs.readFile(path.join(ownerRoot,'round-5.response.json'));
+  const observationBefore=await fs.readFile(path.join(ownerRoot,'round-5.verification.json'));
   await assert.rejects(()=>publish(first.handle,{checkpoint:async phase=>{
     if(phase==='after-candidate-file') throw new Error('controlled terminal candidate failure');
   }}),/controlled terminal candidate failure/u);
@@ -252,17 +289,17 @@ test('EC-1 native judgment at APPLY 3/3 remains terminal across restart and deni
   assert.equal(published.publication,'confirmed');
   assert.equal(published.cleanup,'complete');
   assert.equal(published.transition.outcome,'rejected');
-  assert.equal(published.transition.normalization.consumedInvocations,3);
+  assert.equal(published.transition.normalization.consumedInvocations,5);
   assert.equal(published.transition.normalization.status,'exhausted');
-  assert.deepEqual(await fs.readFile(path.join(ownerRoot,'round-3.response.json')),responseBefore);
-  assert.deepEqual(await fs.readFile(path.join(ownerRoot,'round-3.verification.json')),observationBefore);
-  await assert.rejects(fs.lstat(path.join(ownerRoot,'round-4.origin.json')),error=>error.code==='ENOENT');
+  assert.deepEqual(await fs.readFile(path.join(ownerRoot,'round-5.response.json')),responseBefore);
+  assert.deepEqual(await fs.readFile(path.join(ownerRoot,'round-5.verification.json')),observationBefore);
+  await assert.rejects(fs.lstat(path.join(ownerRoot,'round-6.origin.json')),error=>error.code==='ENOENT');
   assert.equal((await separate('resume')).phase,'committed');
   const a=await captureCurrentExecution(fixture.specPath);
   const b=await captureQualityExecution(fixture.specPath);
   assert.deepEqual(a.inspection,b.inspection);
   assert.equal(a.inspection.normalHandoff,null);
-  assert.equal(a.inspection.deliveries[0].counters.findingsChecks,2);
+  assert.equal(a.inspection.deliveries[0].counters.findingsChecks,4);
   const imageBefore=await fs.readFile(path.join(fixture.image.f.execution,'activation.json'));
   const continuityBefore=await fs.readFile(path.join(fixture.image.f.execution,'continuity.json'));
   const productBefore=await fs.readFile(path.join(fixture.root,'src/greeting.mjs'));
@@ -296,19 +333,19 @@ test('EC-1 rejection at global 2 leaves exactly one successor invocation',async 
   error=>['UNSUPPORTED_FORMAT','NORMALIZATION_NOT_ELIGIBLE'].includes(error?.code));
 });
 
-test('EC-1 inherited global round 3 TESTS_FAIL publishes Q13 without round 4',async t=>{
+test('EC-1 inherited global round 5 TESTS_FAIL publishes Q13 without round 6',async t=>{
   const {fixture,current}=await rejectedFirst(t,{priorFailures:1});
   const successor=await normalizeSuccessor({specPath:fixture.specPath,slice:fixture.delivery.slice,
     expectedActivationId:current.inspection.activationId});
-  const failed=await findingsRound(fixture,successor,{status:'TESTS_FAIL',
-    edit:'export const greeting="broken";\n'});
-  assert.equal(failed.request.round,3);
-  assert.equal(failed.request.invocation,1);
+  let failed;
+  for(const round of [3,4,5])failed=await findingsRound(fixture,successor,{status:'TESTS_FAIL',
+    edit:`export const greeting="broken-${round}";\n`});
+  assert.equal(failed.request.round,5);assert.equal(failed.request.invocation,3);
   assert.equal(failed.captured.nextAction,'publish');
   assert.equal((await resume(successor.handle)).nextAction,'publish');
   await assert.rejects(()=>reserveDispatch(successor.handle),error=>error?.code==='OWNER_UNCERTAIN');
   const closed=await publish(successor.handle);
-  assert.equal(closed.transition.counters.findingsChecks,2);
+  assert.equal(closed.transition.counters.findingsChecks,4);
   const quiet=await captureCurrentExecution(fixture.specPath);
   assert.equal(quiet.inspection.normalHandoff.operation,'VALIDATE_SLICE');
 });

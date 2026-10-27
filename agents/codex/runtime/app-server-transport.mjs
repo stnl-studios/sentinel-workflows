@@ -23,6 +23,8 @@ const failureStages=new Set(['physical','bundle','process','contract','capture',
   'onPrepareContinuation','observeFormalBinding','validateRetainedCaptures','onUnadmittedChildren']);
 export function nativeFailure(error,stage='operation') {
   if(nativeDiagnostics.has(error))return error;
+  if(error?.code==='STAGE_CORRECTIONS_EXHAUSTED'&&['onFormalObserved','onChildTurns'].includes(stage))
+    return fail('operational stage correction limit exhausted','STAGE_CORRECTIONS_EXHAUSTED');
   stage=failureStages.has(stage)?stage:'operation';
   const code=ioCodes.has(error?.code)?error.code:'other';
   const kind=code!=='other'?'IO':error instanceof SyntaxError?'PARSE'
@@ -596,6 +598,17 @@ function contractReadForms(file) {
 // Self-addressing cannot turn outgoing communication into harmless metadata.
 // The containing thread/turn and its parent binding are checked independently.
 function runnerMetadataFailures(item,binding) {
+  // rust-v0.163.0 multi_agents_v2/list_agents.rs only lists scoped names/status.
+  // No send/turn/spawn call: authenticate its explicit actor and empty targets.
+  if(item.type==='collabAgentToolCall' && item.tool==='listAgents') {
+    const statesObject=item.agentsStates!==null&&typeof item.agentsStates==='object'&&!Array.isArray(item.agentsStates);
+    return [['STATUS',item.status==='completed'],['SENDER',item.senderThreadId===binding.agentThreadId],
+      ['RECEIVERS',Array.isArray(item.receiverThreadIds)&&item.receiverThreadIds.length===0],
+      ['PROMPT',item.prompt==null],['MODEL',item.model==null||item.model===binding.model],
+      ['EFFORT',item.reasoningEffort==null||item.reasoningEffort===binding.effort],
+      ['AGENTS_STATES_OBJECT',statesObject],['AGENTS_STATES_EMPTY',statesObject&&Object.keys(item.agentsStates).length===0]]
+      .filter(([,valid])=>!valid).map(([label])=>label);
+  }
   if(item.type!=='subAgentActivity')return ['ITEM_TYPE'];
   if(item.kind==='interacted')return ['OUTGOING_COMMUNICATION'];
   return [['KIND',item.kind==='completed'],

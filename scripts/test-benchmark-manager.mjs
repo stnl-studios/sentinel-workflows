@@ -20,6 +20,41 @@ const MANAGER = path.join(ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-mana
 const RECOVERY_BUDGETS = JSON.parse(await fs.readFile(path.join(ROOT,
   'benchmarks/sentinel-todo/benchmark.json'), 'utf8')).cases.find((item) => item.id === 'A').budgets;
 
+test('operational corrections share a stage across categories, owners and replay',()=>{
+  const rows=[];
+  const main=(sequence,operation)=>rows.push({number:rows.length+1,caseId:'A',slice:'slice-01',sequence,operation,role:'main',state:'completed'});
+  const formal=(sequence,operation,threadId)=>rows.push({number:rows.length+1,caseId:'A',slice:'slice-01',sequence,operation,role:'runner',childKind:'formal',threadId,turnId:'turn-'+rows.length,state:'completed'});
+  assert.equal(typeof manager.operationalCorrectionUsage,'function');
+  main(1,'VALIDATE_SLICE');formal(1,'VALIDATE_SLICE','reviewer-one');
+  assert.equal(manager.operationalCorrectionUsage(rows,{caseId:'A',slice:'slice-01',operation:'VALIDATE_SLICE'}),0);
+  formal(1,'VALIDATE_SLICE','format-successor');
+  main(2,'APPLY_FINDINGS');formal(2,'APPLY_FINDINGS','check-one');
+  main(3,'VALIDATE_SLICE');formal(3,'VALIDATE_SLICE','reviewer-two');
+  formal(3,'VALIDATE_SLICE','incomplete-successor');
+  main(4,'APPLY_FINDINGS');formal(4,'APPLY_FINDINGS','check-two');
+  assert.equal(manager.operationalCorrectionUsage(rows,{caseId:'A',slice:'slice-01',operation:'VALIDATE_SLICE'}),4);
+  assert.equal(manager.operationalCorrectionUsage([...rows,rows.at(-1)],{caseId:'A',slice:'slice-01',operation:'VALIDATE_SLICE'}),4,'replay is not another correction');
+  formal(4,'APPLY_FINDINGS','fifth-correction');
+  assert.equal(manager.operationalCorrectionUsage(rows,{caseId:'A',slice:'slice-01',operation:'VALIDATE_SLICE'}),5);
+  assert.equal(manager.operationalCorrectionUsage(rows,{caseId:'B',slice:'slice-01',operation:'VALIDATE_SLICE'}),0);
+});
+
+test('operational correction allowance survives ledger readback and blocks a fifth correction before dispatch',async t=>{
+  const root=await fs.mkdtemp(path.join(process.env.TMPDIR,'sentinel-stage-budget-'));
+  t.after(()=>fs.rm(root,{recursive:true,force:true}));await initializeTurnBudget(root,48);
+  const file=path.join(root,'.turn-ledger.json'),ledger=JSON.parse(await fs.readFile(file));
+  ledger.turns=[{number:1,runId:'run',caseId:'A',slice:'slice-01',sequence:1,operation:'EXECUTE_SLICE',role:'main',state:'completed'},
+    ...Array.from({length:5},(_,i)=>({number:i+2,runId:'run',caseId:'A',slice:'slice-01',sequence:1,operation:'EXECUTE_SLICE',role:'runner',childKind:'formal',state:'completed',threadId:'agent-'+i,turnId:'turn-'+i}))];
+  ledger.total=6;ledger.nextNumber=6;await fs.writeFile(file,JSON.stringify(ledger));
+  const before=await fs.readFile(file);
+  await assert.rejects(admitOperation({runRoot:root,runId:'run',caseId:'A',slice:'slice-01',sequence:2,operation:'EXECUTE_SLICE',runnerRequired:true,runnerSlots:5,limit:48}),error=>error.code==='STAGE_CORRECTIONS_EXHAUSTED');
+  assert.deepEqual(await fs.readFile(file),before,'no new reservation, actor or refund');
+  const reloaded=JSON.parse(await fs.readFile(file));
+  assert.equal(manager.operationalCorrectionUsage(reloaded.turns,{caseId:'A',slice:'slice-01',operation:'EXECUTE_SLICE'}),4);
+  delete reloaded.turns[0].sequence;
+  assert.throws(()=>manager.operationalCorrectionUsage(reloaded.turns,{caseId:'A',slice:'slice-01',operation:'EXECUTE_SLICE'}),/history is incomplete/u,'legacy missing scope cannot silently reset a resumed quota');
+});
+
 for(const exhausted of [false,true])test(`public normalized formal retains only its authenticated predecessor (${exhausted?'exhausted':'valid'})`,async t=>{
   const f=await nativeOperationCase(t),carrier={...f,view:{execution:f.image.f.execution}};
   const captures=[];

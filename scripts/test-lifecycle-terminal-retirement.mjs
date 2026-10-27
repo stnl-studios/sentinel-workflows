@@ -101,12 +101,23 @@ test('terminal operation subobjects do not admit unknown diagnostic or sole-sour
  for(const relative of ['a/../foreign','a//foreign','a/./foreign','C:\\foreign','../foreign','/foreign'])assert.throws(()=>validateLifecycleRetirementManifest([{path:relative,kind:'directory',identity:{dev:'1',ino:'1'},mode:0o700,sha256:null,linkTarget:null}]),/retirement role/u);
 });
 
+test('terminal retirement represents a bounded corrective inventory above the old byte cap',async t=>{
+ const source=await closed(t),intent=structuredClone(source.record.terminalRetirement);
+ intent.roles=Array.from({length:1024},(_,i)=>({path:`role-${String(i).padStart(4,'0')}-${'a'.repeat(64)}`,kind:'file',identity:{dev:'1',ino:String(i+1)},mode:0o600,sha256:'sha256:'+'0'.repeat(64),linkTarget:null}));
+ intent.closeBinding.operationalInventory=structuredClone(intent.roles);
+ const size=Buffer.byteLength(JSON.stringify(intent));assert.ok(size>64*1024&&size<1024*1024);
+ assert.doesNotThrow(()=>validateLifecycleTerminalRetirement(intent));
+ const tooMany=structuredClone(intent);tooMany.roles.push({...tooMany.roles[0],path:'zz-extra'});assert.throws(()=>validateLifecycleTerminalRetirement(tooMany),/bounded entry limit/);
+ const tooLarge=structuredClone(intent);tooLarge.roles[0].path+='x'.repeat(1024*1024);
+ assert.throws(()=>validateLifecycleTerminalRetirement(tooLarge),/bounded record limit/);
+});
+
 test('the complete common record size is checked before writing a terminal role or unlinking v1',async t=>{
  const source=await closed(t),f=await fixture(t);await fs.mkdir(f.roots.materialRoot,{recursive:true});f.roots=await resolveExecutionFilesystemRoots(f.workspace);
  await withExecutionPublicationLock(f.workspace,async lease=>{
    const intent=structuredClone(source.record.terminalRetirement);intent.sourceCommonLease=await lifecycleCommonLeaseBinding(lease);intent.filesystemContext={specRoot:f.target,productRoot:f.roots.productRoot,temporaryRoot:f.roots.temporaryRoot,excludedRoots:f.roots.excludedRoots,targetParentIdentity:f.roots.targetParentIdentity,leaseParentIdentity:f.roots.leaseParentIdentity};intent.materialRootIdentity=f.roots.materialRootIdentity;const meta=await fs.lstat(f.target);intent.targetIdentity={dev:String(meta.dev),ino:String(meta.ino)};
    intent.roles=[{path:'a',kind:'file',identity:{dev:'1',ino:'1'},mode:0o600,sha256:'sha256:'+'0'.repeat(64),linkTarget:null}];
-   const gap=64*1024-16-Buffer.byteLength(JSON.stringify(intent));intent.roles[0].path+='a'.repeat(gap);assert.doesNotThrow(()=>validateLifecycleTerminalRetirement(intent));
+   const gap=1024*1024-16-Buffer.byteLength(JSON.stringify(intent));intent.roles[0].path+='a'.repeat(gap);assert.doesNotThrow(()=>validateLifecycleTerminalRetirement(intent));
    const before=await fs.readFile(f.roots.lockPath);await assert.rejects(beginLifecycleTerminalRetirement(lease,intent),/common record exceeds/u);assert.deepEqual(await fs.readFile(f.roots.lockPath),before);assert.deepEqual((await fs.readdir(f.roots.leaseParent)).filter(name=>name.includes('.retired-')),[]);
  });
 });

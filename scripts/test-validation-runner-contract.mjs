@@ -266,7 +266,7 @@ test("native generic spawn loads the complete selected runner contract in an ind
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
   const guide = await fs.readFile(path.join(canonical, "README.md"), "utf8");
   const contract = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
-  assert.match(contract, /name = "stnl_validation_runner"[\s\S]*developer_instructions = """\nCONTRATO_CANONICO=stnl-validation-runner\/v13/u);
+  assert.match(contract, /name = "stnl_validation_runner"[\s\S]*developer_instructions = """\nCONTRATO_CANONICO=stnl-validation-runner\/v14/u);
   for (const [owner, skill] of [['stnl-slice-executor', executor], ['stnl-slice-quality-manager', quality]]) {
     const invocation = await fs.readFile(path.join(repository, 'skills/workflows', owner, 'references/runner-invocation.md'), 'utf8');
     assertIndependentNativeInvocation(skill, invocation);
@@ -301,7 +301,7 @@ test('native invocation rejects missing independence, selected identity and no-w
 test("Initial EC-1 native test selects one complete candidate contract before dispatch", async () => {
   const contract = await fs.readFile(path.join(canonical, 'codex/.codex/agents/stnl_validation_runner.toml'), 'utf8');
   const operation = await fs.readFile(path.join(repository, 'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs'), 'utf8');
-  assert.match(contract, /CONTRATO_CANONICO=stnl-validation-runner\/v13/u);
+  assert.match(contract, /CONTRATO_CANONICO=stnl-validation-runner\/v14/u);
   assert.match(contract, /stnl-current-validation-response-v1/u);
   assert.match(contract, /stnl-current-findings-response-v1/u);
   assert.match(contract, /origin\.workspace/u);
@@ -424,7 +424,7 @@ test("prepared check defects use bounded execution failures while unclassified f
     const contract = await fs.readFile(path.join(canonical, relative), "utf8");
     assert.match(contract, /Em `EXECUTE_SLICE` e `APPLY_FINDINGS`,[^\n]*teste, fixture ou asserção preparado pelo executor[^\n]*correção possível dentro do escopo aprovado[^\n]*retorne `TESTS_FAIL`/u);
     assert.match(contract, /Não é necessário demonstrar defeito da implementação[^\n]*diagnóstico[^\n]*evidência/u);
-    assert.match(contract, /O runner permanece read-only[^\n]*contexto principal[^\n]*três rodadas/u);
+    assert.match(contract, relative.startsWith('codex/')?/O runner permanece read-only[^\n]*contexto principal[^\n]*cinco invocações locais/u:/O runner permanece read-only[^\n]*contexto principal[^\n]*três rodadas/u);
     assert.match(contract, /Fora dessa exceção, defeito do próprio script, fixture, quoting ou asserção[^\n]*`BLOCKED`/u);
     assert.match(contract, /Negação de sandbox ou permissão[^\n]*insumo realmente indisponível[^\n]*`BLOCKED`/u);
     assert.doesNotMatch(contract, /Se a falha é do próprio script, fixture, quoting ou asserção do check, retorne `BLOCKED`/u);
@@ -433,14 +433,14 @@ test("prepared check defects use bounded execution failures while unclassified f
   assert.match(executor, /executor-prepared test, fixture or assertion[^\n]*`TESTS_FAIL`[^\n]*approved slice/u);
   assert.match(executor, /Sandbox or permission denial[^\n]*genuinely unavailable[^\n]*`BLOCKED`/u);
   assert.match(executor, /Build fixtures from the existing input and persistence contracts[^\n]*do not expand those contracts/u);
-  assert.match(executor, /Additional automatic rounds occur after `TESTS_FAIL` in round one or two and an authorized correction, or after an EXECUTE `BLOCKED` whose optional `testCoverageOmissions` proof the current-operation producer admits/u);
+  assert.match(executor, /Additional automatic rounds occur after `TESTS_FAIL` in an admitted nonterminal round and an authorized correction, or after an EXECUTE `BLOCKED` whose optional `testCoverageOmissions` proof the current-operation producer admits/u);
   assert.match(executor, /No implementation, recipe or authority changes belong to that correction/u);
   assert.match(executor, /Other blockers, absent proof, uncertainty and exhausted calls grant no coverage correction or first-preparation Initial publication/u);
   const native = await fs.readFile(path.join(canonical, 'codex/.codex/agents/stnl_validation_runner.toml'),'utf8');
   assert.match(native,/mantenha `BLOCKED`[^\n]*`testCoverageOmissions`/u);
   assert.match(native,/a omissão identificada for a única causa do bloqueio/u);
   assert.match(native,/não reclassifique comandos verdes como `TESTS_FAIL`/u);
-  assert.match(executor, /Never make a fourth automatic invocation/u);
+  assert.match(executor, /Never make a sixth automatic invocation/u);
 });
 
 test("contract gate rejects losing prepared-check taxonomy or environmental and formal boundaries", async (t) => {
@@ -513,14 +513,14 @@ test('quality manager preserves captured bytes and uncertain ownership',async()=
  assert.match(quality,/Preserve the returned handle and all uncertain effects/u);
  assert.match(quality,/No manual format continuation replaces those bytes/u);
  assert.match(quality,/same bytes without another agent or recipe/u);
- assert.match(quality,/three-call budget/u);
+ assert.match(quality,/Honor the supplied remaining margin across correction categories and identities/u);
 });
 
 test('native execution schemas require their literal admitted round and cannot use a broker override',async()=>{
  const runtime=path.join(repository,'skills/workflows/stnl-slice-executor/runtime');
  for(const file of ['runner-execute-response.schema.json','runner-apply-findings-response.schema.json','runner-semantic-response.schema.json']){
   const schema=JSON.parse(await fs.readFile(path.join(runtime,file),'utf8'));let found=0;
-  const visit=value=>{if(!value||typeof value!=='object')return;if(value.properties?.automaticCheckRound){found++;assert.ok(value.required.includes('automaticCheckRound'));assert.equal(value.properties.automaticCheckRound.type,'string');assert.deepEqual(value.properties.automaticCheckRound.enum,['1/3','2/3','3/3']);}for(const child of Object.values(value))if(typeof child==='object')visit(child);};visit(schema);assert.ok(found>0);assert.doesNotMatch(JSON.stringify(schema),/managed|broker/u);
+  const visit=value=>{if(!value||typeof value!=='object')return;if(value.properties?.automaticCheckRound){found++;assert.ok(value.required.includes('automaticCheckRound'));assert.equal(value.properties.automaticCheckRound.type,'string');assert.deepEqual(value.properties.automaticCheckRound.enum,['1/3','2/3','3/3','1/5','2/5','3/5','4/5','5/5']);}for(const child of Object.values(value))if(typeof child==='object')visit(child);};visit(schema);assert.ok(found>0);assert.doesNotMatch(JSON.stringify(schema),/managed|broker/u);
  }
  const {parseSemanticExecutionPayload}=await import('../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs');const {payload}=await import('./fixtures/current-initial-evidence.mjs');
  const raw=payload(1);assert.equal(parseSemanticExecutionPayload(JSON.stringify(raw),'EXECUTE_SLICE').automaticCheckRound,'1/3');delete raw.automaticCheckRound;
@@ -542,11 +542,11 @@ test('Codex native findings explicitly separate envelope and canonical attempt t
 
 test('post-first EXECUTE history distinguishes author correction from the read-only runner', async () => {
   const contract=await fs.readFile(path.join(canonical,'codex/.codex/agents/stnl_validation_runner.toml'),'utf8');
-  assert.match(contract,/EXECUTE_SLICE[^\n]*`2\/3`[^\n]*`3\/3`[^\n]*`priorRoundFailure`[^\n]*`correctionApplied`[^\n]*`inSliceRationale`/u);
+  assert.match(contract,/EXECUTE_SLICE[^\n]*posteriores a `1\/5`[^\n]*`priorRoundFailure`[^\n]*`correctionApplied`[^\n]*`inSliceRationale`/u);
   assert.match(contract,/`correctionApplied`[^\n]*contexto principal[^\n]*runner permanece read-only/u);
   for(const skill of ['stnl-slice-executor','stnl-slice-quality-manager']) {
     const guide=await fs.readFile(path.join(repository,'skills/workflows',skill,'references/runner-invocation.md'),'utf8');
-    assert.match(guide,/whose admitted global check round is `2\/3` or `3\/3`/u);
+    assert.match(guide,/whose admitted global check round is later than `1\/5`/u);
     assert.match(guide,/previous literal response[^\n]*actual author correction/u);
     assert.match(guide,/`previousCheck: null`[^\n]*does not mean[^\n]*no previous invocation/u);
   }

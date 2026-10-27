@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runDoctor, runProbeDoctor } from './benchmark-environment.mjs';
 import { checkProductAcceptance, validateProductAcceptance, productCandidateIdentity } from './product-acceptance.mjs';
-import { validateTerminalEvidence, contextPolicy } from './native-evidence.mjs';
+import { validateTerminalEvidence, contextPolicy, validateNativeLedger, operationalCorrectionUsage, operationalStage } from './native-evidence.mjs';
 import { assertDiagnosticDestination } from './benchmark-measurement.mjs';
 
 const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -527,8 +527,11 @@ function assertV2Sequence(events) {
       continue;
     }
     if (phase === 'EXPECT_PREPARATION_REVIEW') {
+      if(event.operation==='REVIEW_PLAN'&&event.result==='NEEDS_FIX'&&event.resultingState==='NO_EXECUTION'){
+        phase='EXPECT_PREPARATION_CORRECTION';continue;
+      }
       if (event.operation !== 'REVIEW_PLAN' || event.result !== 'PASS' || event.resultingState !== 'MATERIALIZED_PRISTINE') {
-        throw new CliError('v2 author correction requires a fresh approved Initial review');
+        throw new CliError('v2 author correction requires a fresh concluded Initial review');
       }
       phase = 'EXECUTION';
       continue;
@@ -537,8 +540,8 @@ function assertV2Sequence(events) {
       && event.resultingState === 'NO_EXECUTION') {
       const previous = events[index - 1];
       if (previous.operation !== 'PLAN' || previous.result !== 'PASS' || previous.resultingState !== 'NO_EXECUTION'
-        || events.slice(0, index).some(item => item.operation === 'REVIEW_PLAN')) {
-        throw new CliError('v2 only the first Initial review may return to authorship');
+) {
+        throw new CliError('v2 refused Initial review must address its current author candidate');
       }
       phase = 'EXPECT_PREPARATION_CORRECTION';
       continue;
@@ -1088,6 +1091,27 @@ async function finalize(options) {
   else if (effectiveBlocked) status = 'BLOCKED';
   else status = 'FAIL';
 
+  const measuredOperations=operationMetrics(journal.events,journal.schemaVersion);
+  const nativeStateFile=path.join(path.dirname(realJournal),'case-state.json');
+  if(await fs.lstat(nativeStateFile).catch(()=>null)) {
+    const nativeState=await readJson(nativeStateFile,'case state');
+    if(nativeState.protocol==='native-app-server-v1') {
+      const ledger=await readJson(path.join(path.dirname(path.dirname(realJournal)),'.turn-ledger.json'),'native ledger');
+      validateNativeLedger(ledger,nativeState,path.basename(path.dirname(path.dirname(realJournal))),{settled:status==='PASS'});
+      const stages=new Map();
+      for(const row of ledger.turns.filter(row=>row.caseId===item.id&&row.role==='main'&&row.state!=='not_dispatched'))
+        stages.set(JSON.stringify([operationalStage(row.operation),row.slice]),{caseId:item.id,slice:row.slice,operation:row.operation});
+      measuredOperations.retries=[...stages.values()].reduce((count,scope)=>count+operationalCorrectionUsage(ledger.turns,scope),0);
+      const refusals=new Set();
+      for(const operation of nativeState.operations) {
+        if(path.dirname(operation.evidencePath)!==path.dirname(realJournal)||await fs.realpath(operation.evidencePath)!==operation.evidencePath)
+          throw new CliError('native metric evidence is outside its owned case');
+        const evidence=await readJson(operation.evidencePath,'native operation evidence');
+        for(const refusal of evidence.captureProof?.rejectedResponses??[])refusals.add(JSON.stringify([refusal.operationAttemptId,refusal.finalResponseSha256]));
+      }
+      measuredOperations.mechanicalRejections=refusals.size;
+    }
+  }
   const workspaceMetrics = await gitWorkspaceMetrics(realWorkspace);
   const result = {
     schemaVersion: journal.schemaVersion,
@@ -1103,7 +1127,7 @@ async function finalize(options) {
     finalTestsPassed,
     productAcceptance,
     decomposition: { slices: artifacts.slices, tasks: artifacts.tasks, tasksPerSlice: artifacts.tasksPerSlice },
-    operations: operationMetrics(journal.events, journal.schemaVersion),
+    operations: measuredOperations,
     modelUse: modelMetrics(journal.events, configuration.productionProfile.cases[item.id]),
     contextCost: contextMetrics(journal.events, artifacts),
     workspace: {

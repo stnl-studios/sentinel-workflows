@@ -104,8 +104,8 @@ test('EC-1 keeps one product episode through PASS, recheck FAIL and a third PASS
   assert.equal(image.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
 });
 
-test('EC-1 refuses drift normalization when the third call is consumed',async t=>{
-  const c=await applyRoundsCase(t,['TESTS_FAIL','TESTS_FAIL','TESTS_PASS']);
+test('EC-1 refuses drift normalization when the fifth call is consumed',async t=>{
+  const c=await applyRoundsCase(t,['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL','TESTS_FAIL','TESTS_PASS'],{progressing:true});
   await fs.appendFile(path.join(c.fixture.root,'src/greeting.mjs'),'// late drift\n');
   await assert.rejects(()=>normalize(c.start.handle),error=>error?.code==='NORMALIZATION_EXHAUSTED');
 });

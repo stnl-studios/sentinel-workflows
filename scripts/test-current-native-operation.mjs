@@ -46,7 +46,7 @@ test('EC-1 distributed runtime sources are byte-identical',async()=>{
   const workflows=['stnl-execution-planner','stnl-plan-reviewer','stnl-slice-executor',
     'stnl-slice-quality-manager','stnl-spec-roadmap','stnl-spec-test-runbook',
     'stnl-spec-lifecycle-manager'];
-  for(const module of ['execution-current.mjs','execution-publication.mjs']) {
+  for(const module of ['execution-current-reader.mjs','execution-current.mjs','execution-publication.mjs','current-evidence-state.mjs','execution-evidence-current.mjs','runner-result-contract.mjs']) {
     const copies=await Promise.all(workflows.map(async workflow=>fs.readFile(path.join(repo,
       'skills/workflows',workflow,workflow==='stnl-spec-lifecycle-manager'?'runtime/lib':'runtime',module))));
     for(const copy of copies.slice(1)) assert.ok(copy.equals(copies[0]),`${module} copy differs`);
@@ -502,7 +502,7 @@ test('native pre-verification continuation preserves initialization, publishes o
   assert.deepEqual(await fs.readFile(f.input.toolResultFile),first);
   assert.deepEqual(await fs.readFile(path.join(f.operationRoot,'round-1.verification.json')),producer);
 });
-test('formal continuation spends the same correction credit and cannot grant a successor after invalid judgment',async t=>{
+test('formal continuation consumes its original and correction turns without resetting the remaining lineage',async t=>{
   const f=await unstartedContinuation(t);
   const admission=await prepareNativeContinuation(f.start.handle,f.input);
   await verifyNative(f.dispatch.originFile);
@@ -514,8 +514,8 @@ test('formal continuation spends the same correction credit and cannot grant a s
   assert.equal((await captureNative(f.start.handle,file)).replayed,true);
   await publish(f.start.handle);
   const image=await captureCurrentExecution(f.specPath),continuity=JSON.parse(Buffer.from(image.files.get('continuity.json'))),current=continuity.deliveries.find(x=>x.slice===f.delivery.slice);
-  assert.equal(current.normalization.consumedInvocations,2);assert.equal(current.normalization.status,'exhausted');
-  assert.equal(image.inspection.normalHandoff,null);
+  assert.equal(current.normalization.consumedInvocations,2);assert.equal(current.normalization.status,'settled');
+  assert.equal(image.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
   assert.deepEqual(await fs.readFile(file),raw);assert.deepEqual(await fs.readFile(path.join(f.operationRoot,'round-1.verification.json')),observation);
 });
 for(const fault of ['started','observed','foreign-control','changed-work','identity','first-bytes'])test(`native continuation refuses ${fault}`,async t=>{
@@ -556,4 +556,17 @@ test('continuation refuses work drift after admission before replay or verificat
   await assert.rejects(prepareNativeContinuation(f.start.handle,f.input),/bound work changed/);
   await assert.rejects(verifyNative(f.dispatch.originFile),/bound work changed/);
   await assert.rejects(fs.lstat(path.join(f.operationRoot,'round-1.verification.json')),{code:'ENOENT'});
+});
+
+test('native continuation probe declines a verified capture before judging later author edits',async t=>{
+  const f=await unstartedContinuation(t);await verifyNative(f.dispatch.originFile);
+  const file=path.join(f.operationRoot,'round-1.verification.json'),before=await fs.readFile(file);
+  await fs.appendFile(path.join(f.root,'src/greeting.mjs'),'// correction after concluded check\n');
+  assert.equal(await prepareNativeContinuation(f.start.handle,{...f.input,commit:false}),null);
+  assert.deepEqual(await fs.readFile(file),before);
+  const owner=JSON.parse(await fs.readFile(path.join(f.operationRoot,'owner.json')));
+  assert.equal(owner.preVerificationContinuation??null,null);
+  const claimFile=path.join(f.operationRoot,'round-1.claim.json'),claim=JSON.parse(await fs.readFile(claimFile));
+  claim.agentId='foreign';await fs.writeFile(claimFile,JSON.stringify(claim)+'\n');
+  await assert.rejects(prepareNativeContinuation(f.start.handle,{...f.input,commit:false}),/authority|bound work|claim|identity/);
 });

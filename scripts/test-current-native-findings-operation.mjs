@@ -147,8 +147,8 @@ test('EC-1/S2 resumes FAIL then publishes PASS on the second findings round',asy
   assert.equal(after.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
 });
 
-test('EC-1/S2 publishes three failures and refuses a fourth dispatch',async t=>{
-  const cycle=await applyRoundsCase(t,['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL']);
+test('EC-1/S2 publishes five failures with changed work and refuses a sixth dispatch',async t=>{
+  const cycle=await applyRoundsCase(t,Array(5).fill('TESTS_FAIL'),{progressing:true});
   for(const round of cycle.rounds)
     assert.equal(round.measured.commands.some(item=>item.exit!==0),true);
   await assert.rejects(()=>reserveDispatch(cycle.start.handle),
@@ -170,3 +170,10 @@ test('EC-1/S2 preserves two failure rounds before third-round PASS',async t=>{
   assert.equal(after.inspection.deliveries[0].auxiliaryStatus,'TESTS_PASS');
   assert.equal(after.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
 });
+
+ test('EC-1/S2 repeated failed verification on unchanged work blocks another producer',async t=>{
+  const cycle=await applyRoundsCase(t,['TESTS_FAIL','TESTS_FAIL']);
+  const before=await fs.readFile(path.join(path.dirname(cycle.rounds.at(-1).dispatch.originFile),'owner.json'));
+  await assert.rejects(reserveDispatch(cycle.start.handle),error=>error.code==='EVIDENCE_INCOMPLETE'&&/no demonstrated author correction/u.test(error.message));
+  assert.deepEqual(await fs.readFile(path.join(path.dirname(cycle.rounds.at(-1).dispatch.originFile),'owner.json')),before);
+ });

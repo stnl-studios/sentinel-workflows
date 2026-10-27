@@ -2409,8 +2409,10 @@ async function captureCloseOperationalInventory(target,transactionId){
       ||(record.runner.resultStatus??null)!==receipt.semanticResponseStatus||(record.responseVariant??null)!==(last.origin.responseVariant??null))fail('CLOSE terminal runner is not replicated by official conclusion',file);
     if(refusal){
       const normalization=record.terminalTransition.normalization;
-      const successor=proofs.find(item=>item.record.kind!=='rejection'
-        &&item.origin.owner.operation===binding.owner.operation
+      // Every retained refusal must have its next verified edge. That edge may
+      // itself be a refusal; the current image separately proves the complete
+      // bounded chain and final accepted result before CLOSE.
+      const successor=proofs.find(item=>item.origin.owner.operation===binding.owner.operation
         &&item.origin.owner.operationAttemptId!==binding.owner.operationAttemptId
         &&same(item.origin.admission.baseActivation,record.expectedInstalledActivation)
         &&Object.entries(normalization).every(([key,value])=>same(item.origin.admission.binding.normalization?.[key],value)));

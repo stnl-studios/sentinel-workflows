@@ -140,7 +140,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'findings-two-cycles'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','test-coverage-correction'],['fresh','formal-successor'],['fresh','formal-exhausted'],['fresh','formal-incomplete'],['fresh','formal-incomplete-exhausted'],['fresh','formal-continuation-exhausted'], ['fresh','review-correction'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'findings-two-cycles'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','test-coverage-correction'],['fresh','formal-successor'],['fresh','formal-four-corrections'],['fresh','findings-format-corrections'],['fresh','formal-observe-inventory'],['fresh','execute-producer-corrections'],['fresh','findings-producer-corrections'],['fresh','findings-producer-mixed'],['fresh','formal-exhausted'],['fresh','formal-incomplete'],['fresh','formal-incomplete-exhausted'],['fresh','formal-continuation-exhausted'],['fresh','formal-continuation-correction'], ['fresh','review-correction'],['fresh','review-correction-four'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
   t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
@@ -220,7 +220,14 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     } };
     const provider = await actualFactory({ ...args, rpc, pollMs: 1 });
     const runTurn = provider.runTurn.bind(provider);
-    provider.runTurn = input => runTurn({ ...input, observeFormalBinding: async () => {
+    provider.runTurn = input => runTurn({ ...input, onPrepareContinuation: input.onPrepareContinuation===null?null:async args=>{
+      try{return await input.onPrepareContinuation(args);}catch(error){
+        const locations=[...String(error?.stack??'').matchAll(/\/([^/\s:]+\.mjs):(\d+):(\d+)/gu)]
+          .filter(match=>['native-evidence.mjs','execution-current-operation.mjs'].includes(match[1]))
+          .map(match=>({file:match[1],line:Number(match[2])}));
+        t.diagnostic(`TEST_ONLY_CONTINUATION_GUARD ${JSON.stringify({code:error?.code??'unclassified',message:/^[a-zA-Z /-]{1,120}$/u.test(error.message)?error.message:'redacted',locations})}`);throw error;
+      }
+    }, observeFormalBinding: async () => {
       try { return await input.observeFormalBinding(); }
       catch (error) {
         const code = ['NATIVE_EVIDENCE_UNPROVEN','ENOENT','UNSAFE_PATH','INVALID_STATE'].includes(error?.code) ? error.code : 'unclassified';
@@ -249,9 +256,9 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
       const firstEvidence = await fs.readFile(prior.operations.at(-1).evidencePath);
       const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
       assert.ok(ledger.turns.some(turn => turn.state === 'uncertain'));
-      if (fault === 'interrupt-execute') assert.equal(ledger.reservations.length, 10,
+      if (fault === 'interrupt-execute') assert.equal(ledger.reservations.length, 12,
         'uncertain parent retains all unused formal and auxiliary credits');
-      if (fault === 'aux-followup-interrupt') assert.equal(ledger.reservations.length, 8,
+      if (fault === 'aux-followup-interrupt') assert.equal(ledger.reservations.length, 10,
         'both auxiliary turns and the formal first turn consume their distinct credits before interruption');
       result = await manager.runCase({ ...args, resume: true });
       assert.ok(firstEvidence.equals(await fs.readFile(prior.operations.at(-1).evidencePath)), 'first failed observation stays byte-identical');
@@ -279,18 +286,19 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     assert.equal(backend.operations.some(item=>item.operation==='SPEC_CLOSE'),false);
     const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json')));
     const formal=JSON.parse(await fs.readFile(state.operations.at(-1).evidencePath));
-    assert.equal(formal.captureProof.matched,fault==='formal-continuation-exhausted'?1:2);assert.equal(formal.captureProof.rejectedResponses.length,fault==='formal-continuation-exhausted'?1:2);
+    const rejected=fault==='formal-exhausted'?5:fault==='formal-continuation-exhausted'?4:2;
+    assert.equal(formal.captureProof.matched,rejected);assert.equal(formal.captureProof.rejectedResponses.length,rejected);
     const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
-    assert.equal(ledger.total,8);assert.equal(ledger.reservations.length,0);
+    assert.equal(ledger.total,fault==='formal-incomplete-exhausted'?8:11);assert.equal(ledger.reservations.length,0);
     return;
   }
   if (['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].includes(fault)) {
     assert.equal(result.status, 'BLOCKED');
     const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
     const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
-    const count = fault === 'review-correction-twice' ? 5 : 3;
+    const count = fault === 'review-correction-twice' ? 11 : 3;
     assert.equal(backend.calls.filter(call=>call.method==='turn/start').length, count,
-      'invalid source/ownership blocks before admitting author correction; a second refusal never starts a third review');
+      'invalid source/ownership blocks before admitting author correction; the bounded author return preserves every independent review');
     assert.equal(ledger.total, count); assert.equal(ledger.reservations.length, 0);
     assert.equal(backend.operations.some(item=>['EXECUTE_SLICE','SPEC_CLOSE'].includes(item.operation)), false);
     const refused = JSON.parse(await fs.readFile(state.operations[2].evidencePath));
@@ -307,6 +315,21 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     assert.equal(ledger.total,9);assert.equal(ledger.reservations.length,0);
   }
   assert.equal(result.status, 'PASS', JSON.stringify({result,evidenceHistory,errors:[...backend.threads.values()].flatMap(thread=>thread.turns.filter(turn=>turn.error).map(turn=>turn.error))}));
+  if(['formal-four-corrections','findings-format-corrections'].includes(fault)) {
+    const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json')));
+    const raw=JSON.parse(await fs.readFile(state.finalizer.rawPath));
+    assert.equal(raw.operations.retries,4);assert.equal(raw.operations.mechanicalRejections,fault==='formal-four-corrections'?4:3);
+    assert.equal(raw.finalExecutionState,'SPEC_CLOSED');
+    const scope=state.operations.filter(op=>op.operation==='VALIDATE_SLICE').at(-1);
+    const evidence=JSON.parse(await fs.readFile(scope.evidencePath));
+    assert.equal(evidence.turn.captures.length,fault==='formal-four-corrections'?5:4);
+    assert.ok((await fs.readFile(evidence.promptFile,'utf8')).includes(`Operational correction margin after this admission: ${fault==='formal-four-corrections'?4:3}.`));
+  }
+  if(['execute-producer-corrections','findings-producer-corrections','findings-producer-mixed','formal-continuation-correction'].includes(fault)){
+    const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json'))),raw=JSON.parse(await fs.readFile(state.finalizer.rawPath));
+    const counts={'execute-producer-corrections':[4,4],'findings-producer-corrections':[4,3],'findings-producer-mixed':[3,1],'formal-continuation-correction':[2,1]}[fault];
+    assert.equal(raw.operations.retries,counts[0]);assert.equal(raw.operations.mechanicalRejections,counts[1]);
+  }
   const starts = backend.calls.filter(call => call.method === 'turn/start');
   assert.ok(starts.length > 0);
   for (const { params } of starts) {
@@ -347,16 +370,16 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
         'launcher must not label the original input as the canonical authority source');
     }
   }
-  const findingsCycles = fault === 'findings-two-cycles' ? 2 : fault === 'findings-cycle' ? 1 : 0;
+  const findingsCycles = fault === 'findings-two-cycles' ? 2 : ['findings-cycle','findings-format-corrections','findings-producer-corrections','findings-producer-mixed'].includes(fault) ? 1 : 0;
   const extra = 2 * findingsCycles;
-  const preparationExtra = fault?.startsWith('review-correction') ? 2 : 0;
-  const refusalChild=['formal-successor','formal-incomplete'].includes(fault)?1:0;
-  const continuationChild=fault==='pre-verification-continuation'?1:0;
+  const preparationExtra = fault==='review-correction-four'?8:fault?.startsWith('review-correction') ? 2 : 0;
+  const refusalChild=fault==='findings-producer-mixed'?2:['formal-four-corrections','execute-producer-corrections'].includes(fault)?4:['findings-format-corrections','findings-producer-corrections','findings-producer-mixed'].includes(fault)?3:['formal-successor','formal-incomplete','formal-continuation-correction'].includes(fault)?1:0;
+  const continuationChild=['pre-verification-continuation','formal-continuation-correction'].includes(fault)?1:0;
   const coverageChildren=fault==='test-coverage-correction'?2:0;
   const auxiliaryCalls = fault === 'review-correction-aux' ? 3 : fault === 'aux-run-eight' ? 8
     : ['aux-followup', 'aux-followup-interrupt', 'aux-descendant'].includes(fault) ? 2 : fault?.startsWith('aux-') ? 1 : 0;
   assert.deepEqual(backend.operations.map(item => item.operation), ['SPEC_INIT', 'PLAN', 'REVIEW_PLAN',
-    ...(preparationExtra ? ['PLAN', 'REVIEW_PLAN'] : []),
+    ...Array.from({length:preparationExtra/2},()=>['PLAN','REVIEW_PLAN']).flat(),
     'EXECUTE_SLICE', 'VALIDATE_SLICE', ...Array.from({ length: findingsCycles }, () => ['APPLY_FINDINGS', 'VALIDATE_SLICE']).flat(), 'SPEC_CLOSE'],
   'the manager follows each public handoff once, retaining the separate independent review');
   assert.equal(result.operations, 6 + extra + preparationExtra); assert.equal(result.runnerTurns, 2 + extra + refusalChild + auxiliaryCalls + continuationChild + coverageChildren); assert.equal(result.mainTurns, 6 + extra + preparationExtra);
@@ -385,9 +408,9 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
   }
   if(continuationChild) {
     const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
-    assert.equal(ledger.total,9);assert.equal(ledger.preVerificationContinuation.grantId,state.preVerificationContinuation.grant.id);
-    const op=JSON.parse(await fs.readFile(state.operations.find(x=>x.operation==='EXECUTE_SLICE').evidencePath));
-    assert.equal(op.turn.captures.length,1);
+    assert.equal(ledger.total,9+refusalChild);assert.equal(ledger.preVerificationContinuation.grantId,state.preVerificationContinuation.grant.id);
+    const op=JSON.parse(await fs.readFile(state.operations.find(x=>x.operation===(fault==='formal-continuation-correction'?'VALIDATE_SLICE':'EXECUTE_SLICE')).evidencePath));
+    assert.equal(op.turn.captures.length,1+refusalChild);
     const cap=op.turn.captures[0],grant=cap.toolResult.preVerificationContinuation;
     const initialization=backend.threads.get(cap.binding.agentThreadId).turns[0];
     assert.equal(initialization.items[0].type,'reasoning');
@@ -402,7 +425,7 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
   }
   if (preparationExtra) {
     const read = async index => JSON.parse(await fs.readFile(state.operations[index].evidencePath));
-    const first = await read(2), correction = await read(3), second = await read(4);
+    const first = await read(2), correction = await read(3), second = await read(2+preparationExtra);
     assert.deepEqual(first.outcome, { result: 'NEEDS_FIX', blocker: 'PREPARATION_REVIEW_NOT_APPROVED' });
     assert.match(first.turn.response, /Offline preparation review declined/u);
     assert.equal(first.officialReadback.execution.state, 'NO_EXECUTION');
@@ -458,9 +481,9 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
   await assert.rejects(fs.lstat(path.join(state.specPath, 'execution')), { code: 'ENOENT' });
   assert.equal(backend.calls.some(call => /account|login|config\/value/.test(call.method)), false);
   const authors = backend.operations.filter(item => ['SPEC_INIT', 'PLAN', 'EXECUTE_SLICE', 'SPEC_CLOSE'].includes(item.operation));
-  assert.equal(new Set(authors.map(item => item.threadId)).size, regime === 'fresh' ? 4 + (preparationExtra ? 1 : 0) : 1);
+  assert.equal(new Set(authors.map(item => item.threadId)).size, regime === 'fresh' ? 4 + preparationExtra/2 : 1);
   const reviews = backend.operations.filter(item => ['REVIEW_PLAN', 'VALIDATE_SLICE'].includes(item.operation));
-  assert.equal(new Set(reviews.map(item => item.threadId)).size, 2 + findingsCycles + (preparationExtra ? 1 : 0));
+  assert.equal(new Set(reviews.map(item => item.threadId)).size, 2 + findingsCycles + preparationExtra/2);
   assert.ok(reviews.every(item => !authors.some(author => author.threadId === item.threadId)));
   const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
   assert.equal(ledger.total, 8 + 2 * extra + preparationExtra + refusalChild + auxiliaryCalls + continuationChild + coverageChildren); assert.equal(ledger.reservations.length, 0);
@@ -638,7 +661,7 @@ for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-c
       assert.match(evidence.turn.error, /observation deadline exceeded/u);
       assert.equal(evidence.outcome.blocker, 'NATIVE_TRANSPORT_UNPROVEN');
       assert.match(evidence.officialReadback.execution.error, /activeAttempt declares an unresolved or different owner/u);
-      assert.equal(ledger.total, 5); assert.equal(ledger.reservations.length, 10);
+      assert.equal(ledger.total, 5); assert.equal(ledger.reservations.length, 12);
       assert.equal(ledger.turns.filter(turn => turn.childKind === 'auxiliary').length, 0);
       assert.equal(ledger.turns.filter(turn => turn.childKind === 'pending' && turn.state === 'dispatched').length, 1);
       assert.equal(ledger.turns.filter(turn => turn.role === 'main' && turn.state === 'uncertain').length, 1);
@@ -655,13 +678,20 @@ for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-c
       assert.equal(ledger.reservations.length, 0);
     } else if (fault === 'aux-followup-twelve') {
       assert.equal(ledger.total, 17, 'all twelve auxiliary turns plus the observed formal child count');
-      assert.equal(ledger.turns.filter(turn => turn.unadmitted).length, 2);
+      assert.equal(ledger.turns.filter(turn => turn.unadmitted).length, 0,
+        'five formal reservations plus eight auxiliary reservations cover the thirteen observed child turns');
+      assert.equal(ledger.turns.filter(turn => turn.childKind === 'pending').length, 12,
+        'reserved turns exceeding the separate auxiliary limit remain unresolved and charged');
+      assert.equal(ledger.turns.filter(turn => turn.childKind === 'formal').length, 1);
+      const evidence = JSON.parse(await fs.readFile(state.operations.at(-1).evidencePath));
+      assert.equal(evidence.captureProof, null);
+      assert.match(evidence.turn.error, /stage=onAuxiliaryCompleted/u);
       assert.equal(ledger.reservations.length, 0);
     } else if (fault === 'budget') {
       assert.equal(ledger.total,3); assert.equal(ledger.reservations.length,0);
     } else {
       assert.ok(ledger.turns.some(turn => turn.state === 'uncertain'));
-      assert.equal(ledger.reservations.length, fault === 'grandchildren' ? 8 : 10);
+      assert.equal(ledger.reservations.length, fault === 'grandchildren' ? 10 : 12);
       await assert.rejects(manager.main(['clean','--run',runId]),/pending\/uncertain/);
       if (fault === 'grandchildren') {
         assert.equal(ledger.turns.filter(turn => turn.childKind === 'formal').length,1);

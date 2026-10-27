@@ -70,7 +70,7 @@ export async function completedFindingsCycle(test,{terminal=false}={}) {
   return {fixture,first,apply,formal,operation:(ordinal,options)=>operation(fixture,ordinal,options)};
 }
 
-export async function applyRoundsCase(test,statuses) {
+export async function applyRoundsCase(test,statuses,{progressing=false}={}) {
   const {fixture}=await blockingFormalCase(test);
   const activation=JSON.parse(await fs.readFile(path.join(fixture.image.f.execution,'activation.json')));
   const start=await begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
@@ -78,6 +78,7 @@ export async function applyRoundsCase(test,statuses) {
   const rounds=[];
   for(const [index,status] of statuses.entries()) {
     const round=index+1;
+    if(progressing&&round>1&&status==='TESTS_FAIL')await fs.writeFile(path.join(fixture.root,'src/greeting.mjs'),`export const greeting="broken-${round}";\n`);
     if(status==='TESTS_PASS') await fs.writeFile(path.join(fixture.root,'src/greeting.mjs'),
       'export const greeting="hello";\n');
     const dispatch=await reserveDispatch(start.handle);
@@ -85,7 +86,7 @@ export async function applyRoundsCase(test,statuses) {
     await bindNative(start.handle,agentId);
     const measured=await verifyNative(dispatch.originFile);
     const request=await fs.readFile(dispatch.requestFile);
-    const result={status,automaticCheckRound:`${round}/3`,head:fixture.head,
+    const result={status,automaticCheckRound:`${round}/${statuses.length>3?5:3}`,head:fixture.head,
       discoverySources:'Approved task, source and test.',
       discoveryActions:'Inspected approved source and test.',
       verificationTypesConsidered:'Approved Node module test.',nonApplicabilityRationale:'none',

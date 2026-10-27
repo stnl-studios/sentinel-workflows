@@ -13,6 +13,53 @@ import {begin,normalizeSuccessor,publish,resume} from '../skills/workflows/stnl-
 
 const run=promisify(execFile);
 const operationRoot=dispatch=>path.dirname(dispatch.originFile);
+
+test('operational recovery: four schema corrections retain all refusals before PASS',async t=>{
+  const fixture=await nativeOperationCase(t),responses=[];
+  for(const [index,[field,value]] of [['status','INVALID'],['commands',[]],['evidence',0],['findingReferences',{}]].entries()) {
+    const result=await normalizedFormal(fixture,{successor:index>0,responseMutation:response=>{response.result[field]=value;return response;}});
+    responses.push(result.finalResponse);
+    assert.equal(result.published.transition.normalization.consumedInvocations,index+1);
+    assert.equal(result.published.transition.normalization.status,'settled');
+  }
+  const passed=await normalizedFormal(fixture,{successor:true});
+  const image=await captureCurrentExecution(fixture.specPath);
+  assert.equal(image.inspection.deliveries[0].formalStatus,'PASS');
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const evidence=JSON.parse(Buffer.from(image.files.get(continuity.deliveries[0].evidence.path)));
+  assert.equal(evidence.support.filter(item=>item.kind==='rejection').length,4);
+  for(const response of responses)assert.ok(evidence.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')===response));
+  assert.equal(passed.published.transition.outcome,'recorded');
+});
+
+test('operational recovery: equal generic errors do not imply equal missing work',async t=>{
+  const fixture=await nativeOperationCase(t);
+  const first=await normalizedFormal(fixture,{responseMutation:response=>{delete response.result.commands;return response;}});
+  const second=await normalizedFormal(fixture,{successor:true,responseMutation:response=>{delete response.result.evidence;return response;}});
+  assert.equal(first.published.transition.normalization.status,'settled');
+  assert.equal(second.published.transition.normalization.status,'settled');
+  assert.notEqual(first.finalResponse,second.finalResponse);
+});
+
+test('operational recovery: fifth producer failure stops and cannot reset through a new owner',async t=>{
+  const fixture=await nativeOperationCase(t);
+  for(const [index,field] of ['commands','evidence','findingReferences','findingDispositions','persistenceSummary'].entries()) {
+    const responseMutation=response=>{response.result[field]=null;return response;};
+    const result=await normalizedFormal(fixture,{successor:index>0,responseMutation});
+    assert.equal(result.published.transition.normalization.status,index===4?'exhausted':'settled');
+  }
+  const image=await captureCurrentExecution(fixture.specPath);
+  assert.equal(image.inspection.normalHandoff,null);
+  await assert.rejects(normalizedFormal(fixture,{successor:true}),error=>['UNSUPPORTED_FORMAT','NORMALIZATION_NOT_ELIGIBLE'].includes(error.code));
+});
+
+test('operational recovery: every prior producer remains in the independence boundary',async t=>{
+  const fixture=await nativeOperationCase(t);
+  const first=await normalizedFormal(fixture,{responseMutation:response=>{response.result.status='INVALID';return response;}});
+  const prior=JSON.parse(await fs.readFile(path.join(operationRoot(first.dispatch),'round-1.agent.json'))).agentId;
+  await normalizedFormal(fixture,{successor:true,responseMutation:response=>{response.result.commands=[];return response;}});
+  await assert.rejects(normalizedFormal(fixture,{successor:true,agentIdOverride:prior}),error=>error.code==='OWNER_MISMATCH');
+});
 async function changeJson(file,change) {
   const value=JSON.parse(await fs.readFile(file,'utf8'));
   change(value);
@@ -85,13 +132,13 @@ test('EC-1 normalization: quiet rejection and successor read without temporary a
   });
 });
 
-test('EC-1 normalization: second rejected formal exhausts inherited episode',async t=>{
+test('EC-1 normalization: repeated unchanged invalid response exhausts inherited episode',async t=>{
   const fixture=await nativeOperationCase(t);
   const first=await normalizedFormal(fixture,{invalid:true,
     invalidText:'INVALID_FORMAL_RESPONSE: first description'});
   const second=await normalizedFormal(fixture,{successor:true,invalid:true,
-    invalidText:'INVALID_FORMAL_RESPONSE: rewritten description'});
-  assert.notEqual(first.captured.rawResponseSha256,second.captured.rawResponseSha256);
+    invalidText:'INVALID_FORMAL_RESPONSE: first description'});
+  assert.equal(first.captured.rawResponseSha256,second.captured.rawResponseSha256);
   assert.equal(first.published.transition.normalization.round,1);
   assert.equal(second.published.transition.normalization.round,2);
   assert.equal(second.published.transition.normalization.status,'exhausted');

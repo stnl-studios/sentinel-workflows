@@ -22,7 +22,7 @@ export async function completedPristineCase(t,options={}) {
   return {...f,delivery:b,image};
 }
 
-async function execute(f,{statuses=['TESTS_PASS'],invalid=false,invalidAt=null,headOverride=null,successor=false,beforeReserve=null,beforeCapture=null}={}) {
+async function execute(f,{statuses=['TESTS_PASS'],invalid=false,invalidAt=null,headOverride=null,successor=false,beforeReserve=null,beforeCapture=null,responseMutation=null,agentIdOverride=null}={}) {
   const before=await captureCurrentExecution(f.specPath);
   const options={specPath:f.specPath,slice:f.delivery.slice,operation:'EXECUTE_SLICE',expectedActivationId:before.inspection.activationId};
   const start=successor?await normalizeSuccessor(options):await begin(options);
@@ -32,13 +32,14 @@ async function execute(f,{statuses=['TESTS_PASS'],invalid=false,invalidAt=null,h
   for(let i=0;i<statuses.length;i++) {
     await fs.writeFile(path.join(f.root,f.productFile??'other/greeting.mjs'),`export const greeting=${statuses[i]==='TESTS_FAIL'?'"broken"':'"hello"'}; // current implementation ${i+1}\n`);
     if(beforeReserve)await beforeReserve({start,round:i+1});
-    const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'}),agentId=`controlled-pristine-${start.owner.operationAttemptId}-${i+1}`;
+    const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'}),agentId=agentIdOverride??`controlled-pristine-${start.owner.operationAttemptId}-${i+1}`;
     await bindNative(start.handle,agentId);const observation=await verifyNative(dispatch.originFile);
-    const {head,...result}=payload(offset+i+1,statuses[i],observation.commands[0].exit);result.commands=observation.commands;
+    const {head,...result}=payload(offset+i+1,statuses[i],observation.commands[0].exit);result.commands=observation.commands;result.automaticCheckRound=`${offset+i+1}/5`;
     if(invalid&&(invalidAt===null||invalidAt===i+1))result.coverage='none';
     if(headOverride!==null)result.head=headOverride;
     if(statuses[i]==='BLOCKED')result.blockers='Controlled semantic blocker requires a human acceptance decision before further execution.';
-    const raw=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+    const response={format:'stnl-current-native-judgment-v1',result};
+    const raw=JSON.stringify(responseMutation?responseMutation(response):response);
     const file=path.join(f.root,`controlled-pristine-${i+1}.json`);await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:raw}));
     if(beforeCapture)await beforeCapture({start,dispatch,observation,raw,file});
     await captureNative(start.handle,file);rounds.push({dispatch,observation,raw});
