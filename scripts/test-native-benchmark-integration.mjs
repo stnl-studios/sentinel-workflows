@@ -577,6 +577,17 @@ test('literal manager entry parses ordinary run --case A and retains its normal 
     runId = (await fs.readdir(path.join(fixture.root,'benchmark-temp'))).find(name => name.startsWith('run-'));
     const stopped = JSON.parse(await fs.readFile(path.join(fixture.root,'benchmark-temp',runId,'run.json')));
     assert.equal(stopped.status,'FOCAL_STOP');
+    const managerFile = path.join(fixture.root, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs');
+    const controller = await fs.readFile(managerFile), root = path.join(fixture.root, 'benchmark-temp', runId);
+    const frozenLedger = await fs.readFile(path.join(root, '.turn-ledger.json'));
+    const calls = backends.flatMap(backend => backend.calls).length;
+    try {
+      await fs.appendFile(managerFile, '\n// Different controller version cannot resume this frozen run.\n');
+      await assert.rejects(manager.main(['run', '--resume', runId, '--json'], { offline }), /functional source changed/u);
+      assert.deepEqual(await fs.readFile(path.join(root, '.turn-ledger.json')), frozenLedger);
+      assert.deepEqual(JSON.parse(await fs.readFile(path.join(root, 'run.json'))), stopped);
+      assert.equal(backends.flatMap(backend => backend.calls).length, calls);
+    } finally { await fs.writeFile(managerFile, controller); }
     assert.equal(await manager.main(['run','--resume',runId,'--json'], { offline }),0);
   }
   finally { if (context !== undefined) process.env.NODE_TEST_CONTEXT = context; }
@@ -589,6 +600,87 @@ test('literal manager entry parses ordinary run --case A and retains its normal 
   assert.equal(backends.length,2);
   assert.equal(backends.flatMap(backend => backend.calls).filter(call => call.method === 'turn/start').length,6);
   await assert.rejects(fs.lstat(path.join(fixture.root,'benchmark-temp/.active-run.json')),{code:'ENOENT'});
+});
+
+for (const fault of ['findings-cycle', 'review-correction']) test(`focal resume preserves a valid ${fault} correction through close without resetting its ledger`, async t => {
+  const fixture = await allocateOfflineFixture(repo);
+  let backend;
+  t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
+  const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
+  const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
+  const actual = (await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
+  const sdk = await describeOfflineSdk(await fs.realpath(path.join(repo, 'agents/codex/node_modules')), fixture.root);
+  const offline = { mode: 'OFFLINE_TEST_ONLY', sdk, createNativeProvider: async args => {
+    backend ??= offlineNativeWorkflow({ ...args, caseRoot: args.evidenceRoot, fault });
+    return actual({ ...args, rpc: backend.rpc, pollMs: 1 });
+  } };
+  const context = process.env.NODE_TEST_CONTEXT; delete process.env.NODE_TEST_CONTEXT;
+  try {
+    const initialOperations = fault === 'findings-cycle' ? 5 : 3;
+    assert.equal(await manager.main(['run', '--case', 'A', '--max-operations', String(initialOperations), '--json'], { offline }), 0);
+    const runId = (await fs.readdir(path.join(fixture.root, 'benchmark-temp'))).find(name => name.startsWith('run-'));
+    const root = path.join(fixture.root, 'benchmark-temp', runId), stateFile = path.join(root, 'case-a/case-state.json');
+    const stopped = JSON.parse(await fs.readFile(stateFile));
+    assert.equal(stopped.status, 'FOCAL_STOP'); assert.equal(stopped.operations.at(-1).outcome.result, 'NEEDS_FIX');
+    const originalRaw = await fs.readFile(stopped.finalizer.rawPath), journalFile = path.join(root, 'case-a/journal.json');
+    const originalJournal = JSON.parse(await fs.readFile(journalFile)), originalLedger = JSON.parse(await fs.readFile(path.join(root, '.turn-ledger.json')));
+    const originalSnapshot = await fs.readFile(path.join(root, 'snapshot.json'));
+    const evidence = await Promise.all(stopped.operations.map(async operation => [operation.evidencePath, await fs.readFile(operation.evidencePath)]));
+    if (fault === 'findings-cycle') {
+      const runFile = path.join(root, 'run.json'), ledgerFile = path.join(root, '.turn-ledger.json');
+      const runBytes = await fs.readFile(runFile), stateBytes = await fs.readFile(stateFile), ledgerBytes = await fs.readFile(ledgerFile);
+      const calls = backend.calls.length;
+      for (const tamper of [
+        value => { value.protocol = 'foreign-protocol'; },
+        value => { value.workspace += '-foreign'; },
+        value => { value.specPath += '-foreign'; },
+        value => { value.contextPolicy = { regime: 'foreign', authorContinuityOperations: [] }; },
+        value => { value.operations.at(-1).outcome = { result: 'BLOCKED', blocker: 'DENIED' }; },
+        value => { value.mainTurns++; },
+        value => { value.operations.at(-1).evidencePath = path.join(root, 'foreign.json'); },
+      ]) {
+        const invalid = structuredClone(stopped); tamper(invalid);
+        try {
+          await fs.writeFile(stateFile, JSON.stringify(invalid));
+          await assert.rejects(manager.main(['run', '--resume', runId, '--max-operations', '2', '--json'], { offline }));
+          assert.deepEqual(await fs.readFile(runFile), runBytes, 'refusal does not strand run metadata in ACTIVE');
+          assert.deepEqual(await fs.readFile(ledgerFile), ledgerBytes);
+          assert.equal(backend.calls.length, calls, 'invalid resume admits no call');
+        } finally { await fs.writeFile(stateFile, stateBytes); }
+      }
+      const journalBytes = await fs.readFile(journalFile);
+      try {
+        await fs.writeFile(journalFile, JSON.stringify({ ...originalJournal, runMode: 'full' }));
+        await assert.rejects(manager.main(['run', '--resume', runId, '--max-operations', '2', '--json'], { offline }), /measured scope/u);
+        assert.deepEqual(await fs.readFile(runFile), runBytes);
+        assert.deepEqual(await fs.readFile(ledgerFile), ledgerBytes);
+        assert.equal(backend.calls.length, calls);
+      } finally { await fs.writeFile(journalFile, journalBytes); }
+      for (const [file, bytes] of evidence) assert.deepEqual(await fs.readFile(file), bytes);
+    }
+    assert.equal(await manager.main(['run', '--resume', runId, '--max-operations', '2', '--json'], { offline }), 0);
+    const continued = JSON.parse(await fs.readFile(stateFile));
+    assert.equal(continued.status, 'FOCAL_STOP'); assert.equal(continued.operations.length, initialOperations + 2);
+    assert.deepEqual(continued.operations.slice(-2).map(operation => operation.operation),
+      fault === 'findings-cycle' ? ['APPLY_FINDINGS', 'VALIDATE_SLICE'] : ['PLAN', 'REVIEW_PLAN']);
+    assert.deepEqual(continued.operations.slice(0, initialOperations), stopped.operations);
+    const continuedLedger = JSON.parse(await fs.readFile(path.join(root, '.turn-ledger.json')));
+    assert.deepEqual(continuedLedger.turns.slice(0, originalLedger.turns.length), originalLedger.turns);
+    assert.ok(continuedLedger.total > originalLedger.total); assert.equal(continuedLedger.reservations.length, 0);
+    assert.deepEqual(JSON.parse(await fs.readFile(journalFile)).events.slice(0, initialOperations), originalJournal.events);
+    assert.deepEqual(await fs.readFile(stopped.finalizer.rawPath), originalRaw);
+    for (const [file, bytes] of evidence) assert.deepEqual(await fs.readFile(file), bytes);
+    assert.equal(await manager.main(['run', '--resume', runId, '--json'], { offline }), 0);
+    const closed = JSON.parse(await fs.readFile(stateFile)), final = JSON.parse(await fs.readFile(closed.finalizer.rawPath));
+    const ledger = JSON.parse(await fs.readFile(path.join(root, '.turn-ledger.json')));
+    assert.equal(closed.status, 'PASS'); assert.equal(final.finalExecutionState, 'SPEC_CLOSED');
+    assert.equal(ledger.total, fault === 'findings-cycle' ? 12 : 10);
+    assert.equal(ledger.reservations.length, 0); assert.ok(ledger.turns.every(turn => turn.state === 'completed'));
+    assert.equal(backend.calls.filter(call => call.method === 'turn/start').length, 8, 'only the original and subsequent parent turns are dispatched');
+    assert.deepEqual(await fs.readFile(path.join(root, 'snapshot.json')), originalSnapshot);
+    assert.deepEqual(await fs.readFile(stopped.finalizer.rawPath), originalRaw);
+    for (const [file, bytes] of evidence) assert.deepEqual(await fs.readFile(file), bytes);
+  } finally { if (context !== undefined) process.env.NODE_TEST_CONTEXT = context; }
 });
 
 for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-child','aux-only','aux-run-nine','aux-run-eleven','aux-followup-twelve']) test(`normal entry blocks ${fault} without successor, refund or proof substitution`, async t => {

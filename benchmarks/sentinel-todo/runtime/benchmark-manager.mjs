@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { isDeepStrictEqual } from 'node:util';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -297,10 +298,15 @@ function dispatch(configuration, caseId, operation) {
   if (!target) fail(`missing production-v3 dispatch for ${caseId}/${operation}`);
   return { phase, label: target.model, model: target.model.toLowerCase(), effort: target.effort };
 }
-function compactExecution(execution) {
+export function compactExecution(execution) {
   if (!execution) return null;
   if (execution.error) return { error: execution.error };
+  const delivery = item => Object.fromEntries(['slice', 'deliveryId', 'counters', 'persistedValidation',
+    'observedValidation', 'auxiliaryStatus', 'formalStatus', 'evidenceSha256'].map(key => [key, item[key] ?? null]));
   return { state: execution.state, currentFingerprint: execution.currentFingerprint ?? null,
+    activationId: execution.activationId ?? null, sequence: execution.sequence ?? null,
+    requirementsAuthority: execution.requirementsAuthority ?? null, preparationRevision: execution.preparationRevision ?? null,
+    deliveries: (execution.deliveries ?? []).map(delivery), completed: (execution.completed ?? []).map(delivery),
     legalOperations: execution.legalOperations ?? [], normalHandoff: execution.normalHandoff ?? null,
     recoveryTargets: execution.recoveryTargets ?? [],
     requiredRecoveryHandoff: execution.requiredRecoveryHandoff ?? null,
@@ -378,11 +384,55 @@ export function nextHandoff(operation, readback, readinessResult = null) {
   if (operation === 'SPEC_RESUME') return { operation: 'SPEC_READINESS', slice: null };
   if (operation === 'SPEC_PROMOTE') return { operation: 'PLAN', slice: null };
   if (['PLAN', 'REPLAN'].includes(operation) && readback.preparation?.status === 'AWAITING_REVIEW') return { operation: 'REVIEW_PLAN', slice: null };
+  if (operation === 'REVIEW_PLAN' && decideOutcome(operation, readback, true, readinessResult).blocker
+    === 'PREPARATION_REVIEW_NOT_APPROVED') return { operation: 'PLAN', slice: null };
   const handoff = readback.executionRaw?.mandatoryRecovery
     ?? readback.executionRaw?.requiredRecoveryHandoff
     ?? readback.executionRaw?.normalHandoff
     ?? (readback.executionRaw ? readback.product?.deriveNormalHandoff?.(readback.executionRaw, operation) : null);
   return handoff?.operation ? { operation: handoff.operation, slice: handoff.slice ?? null } : null;
+}
+
+// A pause is not a recovery admission. Re-prove the saved result and use the
+// same public handoff as uninterrupted execution; retain the existing ledger.
+export function focalResumeHandoff({ state, evidence, readback, ledger, runId, product }) {
+  const recorded = state.operations?.at(-1);
+  if (state.status !== 'FOCAL_STOP' || state.pendingObservation != null
+    || !['PASS', 'NEEDS_FIX'].includes(recorded?.outcome?.result)
+    || evidence?.turn?.completed !== true || !evidence.turn.threadId
+    || evidence.turn.threadId !== recorded.threadId
+    || evidence.sequence !== state.operations.length || evidence.operation !== recorded.operation
+    || evidence.slice !== recorded.slice || !isDeepStrictEqual(evidence.outcome, recorded.outcome)
+    || !isDeepStrictEqual(state.preparation ?? null, evidence.preparation ?? null)
+    || !isDeepStrictEqual(state.readiness ?? null, evidence.readinessResult ?? null)) fail('case is not safely resumable');
+  validateNativeLedger(ledger, state, runId, { settled: true });
+  if (!isDeepStrictEqual(readback.execution, evidence.officialReadback?.execution)
+    || !isDeepStrictEqual(readback.lifecycle, evidence.officialReadback?.lifecycle)) fail('official state changed since stop');
+  const current = { ...readback, preparation: state.preparation ?? null, product };
+  if (!isDeepStrictEqual(decideOutcome(recorded.operation, current, true, state.readiness ?? null), recorded.outcome)) {
+    fail('saved outcome does not match official state');
+  }
+  const target = nextHandoff(recorded.operation, current, state.readiness ?? null);
+  if (!target || !Object.hasOwn(PHASE, target.operation)) fail('stopped case has no legal next handoff');
+  return target;
+}
+
+function assertCaseIdentity(state, { workspace, specPath, policy }) {
+  if (state.protocol !== 'native-app-server-v1' || state.workspace !== workspace || state.specPath !== specPath
+    || !isDeepStrictEqual(state.contextPolicy, policy)) fail('case identity/context protocol differs');
+}
+function assertResumeScope(previousScope, mode) {
+  if (previousScope !== mode && (previousScope !== 'focal' || mode !== 'case')) fail('resume cannot silently change the measured scope');
+}
+async function readFocalResumeHandoff({ product, runRoot, caseRoot, state, expected, mode }) {
+  assertCaseIdentity(state, expected);
+  assertResumeScope((await readJson(path.join(caseRoot, 'journal.json'))).runMode, mode);
+  const { specPath } = expected;
+  const evidencePath = state.operations?.at(-1)?.evidencePath;
+  if (typeof evidencePath !== 'string' || path.dirname(evidencePath) !== caseRoot) fail('stopped evidence is not case-owned');
+  const evidence = JSON.parse((await product.readOwnedFile(evidencePath)).bytes);
+  return focalResumeHandoff({ state, evidence, readback: await officialReadback(product, specPath),
+    ledger: await readJson(ledgerPath(runRoot)), runId: path.basename(runRoot), product });
 }
 
 export function recoverableRunnerHandoff({ operation, slice, outcome, readback, priorOperations, remainingTurns }) {
@@ -527,8 +577,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
   const state = resume ? await readJson(stateFile) : { caseId, status: 'ACTIVE', protocol: 'native-app-server-v1',
     startedAt: new Date().toISOString(), operations: [], workspace, specPath, journal,
     contextPolicy: policy, authorThread: null, threads: {}, runnerTurns: 0, mainTurns: 0 };
-  if (state.protocol !== 'native-app-server-v1' || state.workspace !== workspace || state.specPath !== specPath
-    || JSON.stringify(state.contextPolicy) !== JSON.stringify(policy)) fail('case identity/context protocol differs');
+  assertCaseIdentity(state, { workspace, specPath, policy });
   let target = { operation: 'SPEC_INIT', slice: null }, readiness = null, preparation = null;
   let pending = resume ? state.pendingObservation ?? null : null;
   if (resume) {
@@ -537,17 +586,12 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       target = { operation: pending.operation, slice: pending.slice };
       readiness = state.readiness ?? null; preparation = state.preparation ?? null;
     } else {
-    if (state.status !== 'FOCAL_STOP' || state.operations.at(-1)?.outcome?.result !== 'PASS') fail('case is not safely resumable');
-    const last = await readJson(state.operations.at(-1).evidencePath), current = await officialReadback(product, specPath);
-    if (JSON.stringify(current.execution) !== JSON.stringify(last.officialReadback.execution)
-      || current.lifecycle.status !== last.officialReadback.lifecycle.status) fail('official state changed since stop');
-    readiness = state.readiness ?? null; preparation = state.preparation ?? null;
-    target = nextHandoff(last.operation, { ...current, preparation, product }, readiness);
-    if (!target) fail('stopped case has no legal next handoff');
+      target = await readFocalResumeHandoff({ product, runRoot, caseRoot, state, expected: { workspace, specPath, policy }, mode });
+      readiness = state.readiness ?? null; preparation = state.preparation ?? null;
     }
     const previousJournal = await fs.readFile(journal), previousScope = JSON.parse(previousJournal).runMode;
     if (previousScope !== mode) {
-      if (previousScope !== 'focal' || mode !== 'case') fail('resume cannot silently change the measured scope');
+      assertResumeScope(previousScope, mode);
       // Only this explicitly resumed case advances from diagnostic to case.
       // Keep the prior bytes/raw and every original event; finalization now
       // applies the full case oracle and closure gates rather than focal rules.
@@ -869,10 +913,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       if (outcome.result === 'BLOCKED' || outcome.result === 'FAIL') break;
       pending = null;
-      target = operation === 'REVIEW_PLAN' && outcome.result === 'NEEDS_FIX'
-        && outcome.blocker === 'PREPARATION_REVIEW_NOT_APPROVED'
-        ? { operation: 'PLAN', slice: null }
-        : nextHandoff(operation, { ...readback, preparation, product }, readiness);
+      target = nextHandoff(operation, { ...readback, preparation, product }, readiness);
       if (!target && operation !== 'SPEC_CLOSE') { terminal = { result: 'BLOCKED', blocker: 'NO_OFFICIAL_HANDOFF' }; break; }
     }
   } catch (error) {
@@ -950,6 +991,15 @@ async function run(options) {
       fail('only a stopped single case or scoped pending observation can be resumed');
     }
     const caseId = previous?.cases[0] ?? options.caseId;
+    if (previous) {
+      const caseRoot = path.join(runRoot, caseName(caseId)), state = await readJson(path.join(caseRoot, 'case-state.json'));
+      if (state.pendingObservation == null) {
+        const specPath = path.join(caseRoot, 'workspace', ...configuration.cases.find(item => item.id === caseId).specPath.split('/'));
+        // Refusal must precede ACTIVE metadata; runCase revalidates before dispatch.
+        await readFocalResumeHandoff({ product, runRoot, caseRoot, state,
+          expected: { workspace: path.join(caseRoot, 'workspace'), specPath, policy: contextPolicy(configuration) }, mode });
+      }
+    }
     const runInfo = previous
       ? { ...previous, status: 'ACTIVE', mode: options.maxOperations !== null ? 'focal' : 'case', resumedAt: new Date().toISOString() }
       : { runId: id, status: 'ACTIVE', mode, cases: options.full ? ['A', 'B', 'C'] : [caseId],

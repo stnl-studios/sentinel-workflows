@@ -589,3 +589,81 @@ test('T21/T22: B/C competing for the last admission and contradictory no-start s
   await assert.rejects(manager.settleTurn(root, runner, { turnStarted: false }, 2), /settlement is invalid/u);
   assert.equal((await budgetSnapshot(root)).turnBudget.consumed, 2);
 });
+
+function stoppedFinding() {
+  const outcome = { result: 'NEEDS_FIX', blocker: null };
+  const execution = { state: 'VALIDATION_NEEDS_FIX' };
+  const state = { caseId: 'A', status: 'FOCAL_STOP', mainTurns: 1, runnerTurns: 0,
+    operations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-01', threadId: 'parent', outcome }] };
+  return { state, runId: 'run-owned', ledger: { version: 1, limit: 48, total: 1,
+    reservations: [], turns: [{ number: 1, role: 'main', caseId: 'A', runId: 'run-owned', state: 'completed' }] },
+    evidence: { sequence: 1, operation: 'VALIDATE_SLICE', slice: 'slice-01',
+      turn: { completed: true, threadId: 'parent' }, outcome,
+      officialReadback: { execution, lifecycle: { status: 'ready', closed: false } } },
+    readback: { execution, executionRaw: { ...execution, normalHandoff: { operation: 'APPLY_FINDINGS', slice: 'slice-01' } },
+      lifecycle: { status: 'ready', closed: false } } };
+}
+
+test('focal pause preserves a proven findings handoff and settled ledger without admission', () => {
+  const input = stoppedFinding(), before = structuredClone(input);
+  assert.deepEqual(manager.focalResumeHandoff(input), { operation: 'APPLY_FINDINGS', slice: 'slice-01' });
+  assert.deepEqual(input, before);
+  const preparation = { status: 'AWAITING_REVIEW', authority: { preparationRevision: 1 } };
+  input.state.preparation = input.evidence.preparation = preparation;
+  input.state.operations[0].operation = input.evidence.operation = 'REVIEW_PLAN';
+  input.readback.execution = input.evidence.officialReadback.execution = { state: 'NO_EXECUTION' };
+  input.readback.executionRaw = input.readback.execution;
+  input.state.operations[0].outcome = input.evidence.outcome = { result: 'NEEDS_FIX', blocker: 'PREPARATION_REVIEW_NOT_APPROVED' };
+  assert.deepEqual(manager.focalResumeHandoff(input), { operation: 'PLAN', slice: null });
+});
+
+test('focal resume refuses invalid identity, uncertainty, terminal refusal and official drift', () => {
+  const changes = [
+    x => { x.state.status = 'BLOCKED'; },
+    x => { x.state.pendingObservation = {}; },
+    x => { x.evidence.turn.completed = false; },
+    x => { x.evidence.turn.threadId = 'foreign'; },
+    x => { x.evidence.sequence = 2; },
+    x => { x.evidence.operation = 'EXECUTE_SLICE'; },
+    x => { x.evidence.slice = 'slice-02'; },
+    x => { x.evidence.outcome = { result: 'PASS', blocker: null }; },
+    x => { x.state.preparation = { status: 'altered' }; },
+    x => { x.state.readiness = { verdict: 'READY' }; },
+    x => { x.ledger.reservations.push({ id: 'pending' }); },
+    x => { x.ledger.turns[0].state = 'uncertain'; },
+    x => { x.ledger.turns[0].runId = 'foreign'; },
+    x => { x.state.mainTurns = 0; },
+    x => { x.readback.execution = { state: 'COMPLETE' }; },
+    x => { x.readback.lifecycle = { status: 'closed', closed: true }; },
+    x => { x.readback.executionRaw.normalHandoff = null; },
+    x => { x.state.operations[0].outcome = x.evidence.outcome = { result: 'BLOCKED', blocker: 'SANDBOX_COMMAND_DENIED' }; },
+    x => { x.state.operations[0].outcome = x.evidence.outcome = { result: 'PASS', blocker: null }; },
+  ];
+  for (const change of changes) {
+    const input = stoppedFinding(); change(input); const before = structuredClone(input);
+    assert.throws(() => manager.focalResumeHandoff(input)); assert.deepEqual(input, before);
+  }
+});
+
+test('focal resume distinguishes authority and evidence drift at identical public state and handoff', () => {
+  const input = stoppedFinding();
+  const raw = { ...input.readback.executionRaw, activationId: 'activation-original', sequence: 1,
+    requirementsAuthority: 'requirements-original', preparationRevision: 1,
+    deliveries: [{ deliveryId: 'delivery-01', slice: 'slice-01', evidenceSha256: 'evidence-original', counters: { validation: 1 } }] };
+  input.evidence.officialReadback.execution = manager.compactExecution(raw);
+  input.readback.execution = manager.compactExecution(raw);
+  assert.equal(manager.focalResumeHandoff(input).operation, 'APPLY_FINDINGS');
+  for (const change of [
+    value => { value.activationId = 'activation-replaced'; },
+    value => { value.requirementsAuthority = 'requirements-replaced'; },
+    value => { value.preparationRevision++; },
+    value => { value.sequence++; },
+    value => { value.deliveries[0].evidenceSha256 = 'evidence-replaced'; },
+    value => { value.deliveries[0].deliveryId = 'delivery-replaced'; },
+    value => { value.deliveries[0].counters.validation++; },
+  ]) {
+    const changed = structuredClone(raw); change(changed);
+    input.readback.executionRaw = changed; input.readback.execution = manager.compactExecution(changed);
+    assert.throws(() => manager.focalResumeHandoff(input), /official state changed since stop/u);
+  }
+});
