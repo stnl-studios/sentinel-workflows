@@ -598,14 +598,16 @@ function contractReadForms(file) {
 // Self-addressing cannot turn outgoing communication into harmless metadata.
 // The containing thread/turn and its parent binding are checked independently.
 function runnerMetadataFailures(item,binding) {
-  // rust-v0.163.0 multi_agents_v2/list_agents.rs only lists scoped names/status.
-  // No send/turn/spawn call: authenticate its explicit actor and empty targets.
-  if(item.type==='collabAgentToolCall' && item.tool==='listAgents') {
+  // rust-v0.163.0: list_agents only inventories; multi_agents/wait.rs returns
+  // empty receivers/states on timeout, not an empty requested-target list.
+  // Admit only that result-free observation, with no payload or turn effect.
+  if(item.type==='collabAgentToolCall' && ['listAgents','wait'].includes(item.tool)) {
+    const inventory=item.tool==='listAgents';
     const statesObject=item.agentsStates!==null&&typeof item.agentsStates==='object'&&!Array.isArray(item.agentsStates);
     return [['STATUS',item.status==='completed'],['SENDER',item.senderThreadId===binding.agentThreadId],
       ['RECEIVERS',Array.isArray(item.receiverThreadIds)&&item.receiverThreadIds.length===0],
-      ['PROMPT',item.prompt==null],['MODEL',item.model==null||item.model===binding.model],
-      ['EFFORT',item.reasoningEffort==null||item.reasoningEffort===binding.effort],
+      ['PROMPT',item.prompt==null],['MODEL',item.model==null||inventory&&item.model===binding.model],
+      ['EFFORT',item.reasoningEffort==null||inventory&&item.reasoningEffort===binding.effort],
       ['AGENTS_STATES_OBJECT',statesObject],['AGENTS_STATES_EMPTY',statesObject&&Object.keys(item.agentsStates).length===0]]
       .filter(([,valid])=>!valid).map(([label])=>label);
   }
@@ -636,10 +638,13 @@ function runnerActivityDiagnostic(item,itemIndex,binding) {
     const receivers=item.receiverThreadIds==null?'absent':!valid?'invalid'
       :item.receiverThreadIds.length===0?'empty':item.receiverThreadIds.length===1?'one':'many';
     const target=predicate=>!valid?'unknown':item.receiverThreadIds.some(predicate)?'yes':'no';
+    const prompt=item.prompt==null?'absent':typeof item.prompt==='string'?'present':'invalid';
+    const states=item.agentsStates==null?'absent':typeof item.agentsStates!=='object'||Array.isArray(item.agentsStates)?'invalid'
+      :Object.keys(item.agentsStates).length===0?'empty':'nonempty';
     return prefix+`variant=v1; tool=${tool}; status=${status}; sender=${sender}; receivers=${receivers}; `
       +`receiverRunner=${target(id=>id===binding.agentThreadId)}; receiverParent=${target(id=>id===binding.parentThreadId)}; `
       +`receiverOther=${target(id=>id!==binding.agentThreadId&&id!==binding.parentThreadId)}; `
-      +`model=${relation(item.model,binding.model)}; effort=${relation(item.reasoningEffort,binding.effort)}`;
+      +`model=${relation(item.model,binding.model)}; effort=${relation(item.reasoningEffort,binding.effort)}; prompt=${prompt}; states=${states}`;
   }
   const kind=['started','interacted','interrupted','completed'].includes(item.kind)?item.kind:item.kind==null?'absent':'other';
   const [pathLabel,threadLabel]=item.type==='subAgentActivity'&&item.kind==='interacted'
