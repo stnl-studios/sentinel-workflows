@@ -13,7 +13,7 @@ import {
   RunnerSemanticResultError, assertRunnerVerdictConsistency, deriveCanonicalRunnerRejection,
   parseSemanticValidationPayload, parseSemanticExecutionPayload, parseCapturedResult,
   assertExecutionResultScope, recoverableRunnerResultDiagnostic, serializeCommand, serializeMarkdownScalar,
-  executionFields, isExplanatoryExecutionField, formalRecoveryBudget, MAX_NATIVE_PRODUCER_TURNS, nativeCheckRoundMatches,
+  executionFields, isExplanatoryExecutionField, formalRecoveryBudget, MAX_NATIVE_PRODUCER_TURNS, MIN_CORRECTIONS_BEFORE_RECURRENCE, nativeCheckRoundMatches,
 } from './runner-result-contract.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
@@ -298,6 +298,10 @@ function repeatedProducerRefusal(bundle, latest) {
       scope:origin.verification,round:origin.attempt+(origin.admission?.binding?.normalization?.consumedInvocations??0)};
   };
   const request=recurrenceRequest(current),priorRequest=recurrenceRequest(prior);
+  const inherited=jsonBytes(current.origin,'repeated producer origin').value.admission?.binding?.normalization??null;
+  const consumed=profile==='current-validation'
+    ?formalRecoveryBudget(latest.consumedInvocations,inherited).consumedInvocations:request.round;
+  if(consumed<=MIN_CORRECTIONS_BEFORE_RECURRENCE)return false;
   if(!same(request.authority,priorRequest.authority)||!same(request.scope??request.scopePaths,priorRequest.scope??priorRequest.scopePaths)
     ||!same(request.terminal??null,priorRequest.terminal??null)
     ||!same(jsonBytes(current.verificationObservation,'current observation').value.after,

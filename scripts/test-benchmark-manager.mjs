@@ -62,9 +62,10 @@ for(const exhausted of [false,true])test(`public normalized formal retains only 
     binding:{agentPath:toolResult.agentId},toolResult,finalResponseSha256:'sha256:'+createHash('sha256').update(toolResult.finalResponse).digest('hex')});};
   await normalizedFormal(carrier,{invalid:true,beforeCapture});
   await normalizedFormal(carrier,{successor:true,invalid:exhausted,beforeCapture});
+  if(exhausted)await normalizedFormal(carrier,{successor:true,invalid:true,beforeCapture});
   const image=await captureCurrentExecution(f.specPath);
   const proof=assertNativeCaptures(image,captures,{restoreCaptureSources});
-  assert.equal(proof.matched,2);assert.equal(proof.rejectedResponses.length,exhausted?2:1);
+  assert.equal(proof.matched,exhausted?3:2);assert.equal(proof.rejectedResponses.length,exhausted?3:1);
   const selected=image.inspection.deliveries.find(item=>item.deliveryId===f.delivery.deliveryId);
   assert.equal(selected.formalStatus,exhausted?null:'PASS');
   if(exhausted){
@@ -72,9 +73,9 @@ for(const exhausted of [false,true])test(`public normalized formal retains only 
     await assert.rejects(normalizedFormal(carrier,{successor:true}),error=>error.code==='UNSUPPORTED_FORMAT');
     assert.deepEqual(Buffer.from((await captureCurrentExecution(f.specPath)).activationBytes),Buffer.from(image.activationBytes));
   }
-  for(const input of [[captures[1]],[captures[0],captures[0]],
-    [{...captures[0],toolResult:{...captures[0].toolResult,finalResponse:captures[0].toolResult.finalResponse+'changed'}},captures[1]],
-    [{...captures[0],binding:{agentPath:'/root/foreign'}},captures[1]]])
+  for(const input of [[captures.at(-1)],[captures[0],captures[0],...captures.slice(2)],
+    [{...captures[0],toolResult:{...captures[0].toolResult,finalResponse:captures[0].toolResult.finalResponse+'changed'}},...captures.slice(1)],
+    [{...captures[0],binding:{agentPath:'/root/foreign'}},...captures.slice(1)]])
     assert.throws(()=>assertNativeCaptures(image,input,{restoreCaptureSources}),error=>error.code==='NATIVE_EVIDENCE_UNPROVEN');
   assert.throws(()=>assertNativeCaptures(image,captures),/public product source verifier absent/u);
   const entry=[...image.files].find(([name])=>name.startsWith('evidence/')&&name.endsWith('.json'));

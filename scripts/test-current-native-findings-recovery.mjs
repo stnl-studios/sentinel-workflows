@@ -350,7 +350,7 @@ test('EC-1 inherited global round 5 TESTS_FAIL publishes Q13 without round 6',as
   assert.equal(quiet.inspection.normalHandoff.operation,'VALIDATE_SLICE');
 });
 
-test('EC-1 second concluded APPLY rejection exhausts the inherited episode',async t=>{
+test('EC-1 third concluded APPLY rejection exhausts the inherited episode after two corrections',async t=>{
   const {fixture,published,current}=await rejectedFirst(t);
   const successor=await normalizeSuccessor({specPath:fixture.specPath,slice:fixture.delivery.slice,
     expectedActivationId:current.inspection.activationId});
@@ -358,10 +358,17 @@ test('EC-1 second concluded APPLY rejection exhausts the inherited episode',asyn
   assert.equal(second.request.format,'stnl-current-findings-request-v2');
   assert.equal(second.request.round,2);
   assert.equal(second.request.invocation,1);
-  const closed=await publish(successor.handle);
+  const secondClosed=await publish(successor.handle);
+  assert.equal(secondClosed.transition.normalization.status,'settled');
+  const secondImage=await captureCurrentExecution(fixture.specPath);
+  const thirdOwner=await normalizeSuccessor({specPath:fixture.specPath,slice:fixture.delivery.slice,
+    expectedActivationId:secondImage.inspection.activationId});
+  const third=await findingsRound(fixture,thirdOwner,{invalid:true});
+  assert.equal(third.request.round,3);
+  const closed=await publish(thirdOwner.handle);
   assert.equal(closed.transition.normalization.status,'exhausted');
   assert.equal(closed.transition.normalization.episodeId,published.transition.normalization.episodeId);
-  assert.equal(closed.transition.normalization.consumedInvocations,2);
+  assert.equal(closed.transition.normalization.consumedInvocations,3);
   const quiet=await captureCurrentExecution(fixture.specPath);
   assert.equal(quiet.inspection.normalHandoff,null);
   assert.equal(quiet.inspection.deliveries[0].counters.findingsChecks,0);

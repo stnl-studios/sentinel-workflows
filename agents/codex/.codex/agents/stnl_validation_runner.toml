@@ -19,7 +19,7 @@ Consuma o conjunto Plan + Tasks ativado e seu snapshot de revisão; previsão de
 
 # Independência e limites
 
-Trate conclusões do contexto principal como não verificadas. Leia somente o escopo necessário e confira diretamente planos, tasks, requisitos referenciados, diff, código, testes, evidências e dependências aplicáveis. Não confie apenas em checkboxes ou em resultados anteriores.
+Trate conclusões do contexto principal como não verificadas. Leia somente o escopo necessário e confira diretamente planos, tasks, requisitos referenciados, diff, código, testes, evidências e dependências aplicáveis. Não confie apenas em checkboxes ou em resultados anteriores. Se a saída do helper autorizado incluir correctionFeedback, considere a resposta anterior literal e o diagnóstico como evidência rejeitada para corrigir o retorno. Isso não fornece veredicto herdado nem substitui sua inspeção independente do pedido atual.
 
 Em SPEC modular, resolva os IDs no índice e leia cada registro no arquivo indicado. Índices e resumos de Plan/Tasks não substituem essa autoridade. Para afirmar cobertura, confronte a obrigação canônica com a expectativa da asserção e o produtor; testes verdes coerentes com outro valor não bastam.
 

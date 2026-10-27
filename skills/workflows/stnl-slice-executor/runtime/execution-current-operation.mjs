@@ -20,7 +20,7 @@ import {composePostConversionValidation,composePostConversionFindings,
   inspectCurrentFindingsPrefix,
   composeInitialCurrentOperation} from './current-evidence-state.mjs';
 import {composeInitialImplementationEvidence,assertTestCoverageCorrectionWork} from './execution-evidence-current.mjs';
-import {recoverableRunnerResultDiagnostic,MAX_NATIVE_PRODUCER_TURNS} from './runner-result-contract.mjs';
+import {recoverableRunnerResultDiagnostic,MAX_NATIVE_PRODUCER_TURNS,MIN_CORRECTIONS_BEFORE_RECURRENCE} from './runner-result-contract.mjs';
 import {executeRunnerVerification,verificationCommand} from './runner-verification.mjs';
 import {withExecutionPublicationLock,assertNoPendingExecutionPublication,readOwnedFile,writeNew,persistAllocation,captureExecutionTree,
   reserveCurrentExecutionOperation,publishCurrentExecutionOperation,abortCurrentExecutionOperation,copyCurrentCandidateTree,
@@ -487,6 +487,27 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null,te
       'No approved product output paths were present in the captured domain.'}};
   return {request,info,observed,dispatchId,current};
 }
+async function verifiedPreviousChecks(op,image,count) {
+  const rounds=[];
+  for(let index=1;index<=count;index++)rounds.push(await capturedSources(op,index));
+  const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+  const current=continuity.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
+  const request=await readJson(path.join(op.root,`round-${count}.request.json`));
+  const initial=usesCurrentChecks(image,op.owner);
+  const result=initial
+    ?op.owner.operation==='EXECUTE_SLICE'
+      ?composeInitialImplementationEvidence({context:op.context,authority:request.authority,owner:op.owner,
+        currentEvidence:current.evidence?image.files.get(current.evidence.path):null,counters:current.counters,rounds})
+      :inspectCurrentFindingsPrefix({context:op.context,authority:request.authority,owner:op.owner,
+        previous:{bundleBytes:image.files.get(current.evidence.path),counters:current.counters},rounds})
+    :await inspectPostConversionFindingsPrefix({context:op.context,
+      snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
+      bundleBytes:Buffer.from(image.files.get(current.evidence.path)),owner:op.owner,rounds});
+  return {cap:rounds.at(-1),request,initial,result,
+    scopePaths:initial?request.scopePaths:result.lastScope,
+    lastWork:initial?parseCurrentJson(Buffer.from(rounds.at(-1).verificationObservation).toString('utf8')).after:result.lastWork};
+}
+
 export async function reserveDispatch(handle,{responseVariant=null,terminal=false}={}) {
   if(typeof terminal!=='boolean') fail('INVALID_CURRENT_IMAGE','terminal selection must be boolean');
   if(responseVariant!==null && responseVariant!==NATIVE_JUDGMENT_VARIANT)
@@ -529,44 +550,28 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
       fail('STALE_BASE','A1 no longer descends from admitted A0');
     let previous=null;
     if(auxiliary && previousRound) {
-      const rounds=[];
-      for(let index=1;index<=previousRound;index+=1) rounds.push(await capturedSources(now,index));
-      const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
-      const current=continuity.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
-      if(usesCurrentChecks(image,now.owner)) {
-        const request=await readJson(path.join(now.root,`round-${previousRound}.request.json`));
-        const authority=request.authority;
-        const result=now.owner.operation==='EXECUTE_SLICE'
-          ?composeInitialImplementationEvidence({context:now.context,authority,owner:now.owner,
-            currentEvidence:current.evidence?image.files.get(current.evidence.path):null,counters:current.counters,rounds})
-          :inspectCurrentFindingsPrefix({context:now.context,authority,owner:now.owner,
-            previous:{bundleBytes:image.files.get(current.evidence.path),counters:current.counters},rounds});
+      previous=await verifiedPreviousChecks(now,image,previousRound);
+      const result=previous.result;
+      if(previous.initial) {
         if(result.outcome!=='recorded'
           || (now.owner.operation==='EXECUTE_SLICE'
-            ?(parseCurrentJson(Buffer.from(rounds.at(-1).rawResponse).toString('utf8')).result?.status??parseCurrentJson(Buffer.from(rounds.at(-1).rawResponse).toString('utf8')).status)
+            ?(parseCurrentJson(Buffer.from(previous.cap.rawResponse).toString('utf8')).result?.status??parseCurrentJson(Buffer.from(previous.cap.rawResponse).toString('utf8')).status)
             :result.auxiliaryStatus)!=='TESTS_FAIL'
           && !result.testCoverageCorrection
-          && !(productDrift&&parseCurrentJson(Buffer.from(rounds.at(-1).rawResponse).toString('utf8')).result?.status==='TESTS_PASS')
+          && !(productDrift&&parseCurrentJson(Buffer.from(previous.cap.rawResponse).toString('utf8')).result?.status==='TESTS_PASS')
           || result.consumedInvocations!==previousRound+(now.binding.normalization?.consumedInvocations??0))
           fail('OWNER_UNCERTAIN','previous Initial prefix is not an eligible failed check');
-        const prior=await readJson(path.join(now.root,`round-${previousRound}.observation.json`));
-        previous={cap:rounds.at(-1),request,scopePaths:request.scopePaths,lastWork:prior.after};
       } else {
-      const summary=await inspectPostConversionFindingsPrefix({context:now.context,
-        snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
-        bundleBytes:Buffer.from(image.files.get(current.evidence.path)),owner:now.owner,rounds});
-      if(!['TESTS_FAIL',...(productDrift?['TESTS_PASS']:[])].includes(summary.status)
-        || summary.status==='TESTS_PASS' && productDrift.sourceRound!==previousRound
-        || summary.rounds!==previousRound
-        +(now.binding.normalization?.consumedInvocations??0))
-        fail('OWNER_UNCERTAIN','previous findings prefix is not an eligible validated result');
-      previous={cap:rounds.at(-1),request:await readJson(path.join(now.root,`round-${previousRound}.request.json`)),
-        scopePaths:summary.lastScope,lastWork:summary.lastWork};
+        if(!['TESTS_FAIL',...(productDrift?['TESTS_PASS']:[])].includes(result.status)
+          || result.status==='TESTS_PASS' && productDrift.sourceRound!==previousRound
+          || result.rounds!==previousRound+(now.binding.normalization?.consumedInvocations??0))
+          fail('OWNER_UNCERTAIN','previous findings prefix is not an eligible validated result');
       }
     }
     const dispatchId=previousRound?now.record.runner.dispatchId:randomUUID();
     const {request,info,observed}=await requestInputs(image,now,dispatchId,round,previous,terminal);
-    if(auxiliary && previousRound>=2 && now.record.runner.resultStatus==='TESTS_FAIL') {
+    if(auxiliary && previousRound+(now.binding.normalization?.consumedInvocations??0)>MIN_CORRECTIONS_BEFORE_RECURRENCE
+      && previousRound>=2 && now.record.runner.resultStatus==='TESTS_FAIL') {
       const last=await capturedSources(now,previousRound),prior=await capturedSources(now,previousRound-1);
       const result=cap=>{const raw=parseCurrentJson(Buffer.from(cap.rawResponse).toString('utf8'));return raw.result??raw;};
       const latestResult=result(last),priorResult=result(prior);
@@ -868,6 +873,33 @@ async function checkedProductDrift(op,image,observation) {
   }
   return {observed,paths};
 }
+async function nativeCorrectionFeedback(op,image,round) {
+  let capture,diagnostic;
+  if(round>1) {
+    const previous=await verifiedPreviousChecks(op,image,round-1);
+    capture=previous.cap;
+    const receipt=parseCurrentJson(Buffer.from(capture.receipt).toString('utf8'));
+    const response=parseCurrentJson(Buffer.from(capture.rawResponse).toString('utf8'));
+    const result=response.result??response;
+    diagnostic=receipt.captureFailure??`${result.status}: ${result.failures??result.blockers??result.evidence}`;
+  } else if(op.binding.normalization) {
+    const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+    const current=continuity.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
+    const bundle=parseCurrentJson(Buffer.from(image.files.get(current.evidence.path)).toString('utf8'));
+    const prior=bundle.support.find(item=>item.kind==='rejection'
+      &&item.origin.operation===op.owner.operation
+      &&item.operationAttemptId===op.binding.normalization.sourceOperationAttemptId);
+    if(!prior)fail('OWNER_MISMATCH','corrective feedback predecessor is absent');
+    const profile=op.owner.operation==='EXECUTE_SLICE'?'initial-implementation'
+      :op.owner.operation==='APPLY_FINDINGS'?'current-findings':'current-validation';
+    capture=restoreCaptureSources(profile,prior,new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])));
+    diagnostic=prior.diagnostic;
+  } else return null;
+  if(typeof diagnostic!=='string'||!diagnostic.trim())fail('EVIDENCE_INCOMPLETE','corrective feedback diagnostic is absent');
+  const bytes=Buffer.from(capture.rawResponse);
+  return {operation:op.owner.operation,diagnostic,previousResponse:bytes.toString('utf8'),previousResponseSha256:sha(bytes)};
+}
+
 export async function verifyNative(originFile) {
   const {op,origin,round}=await opFromOrigin(originFile);
   const continuation=op.record.preVerificationContinuation?.round===round?op.record.preVerificationContinuation:null;
@@ -917,6 +949,7 @@ export async function verifyNative(originFile) {
     return head;
   };
   const headBefore=origin.responseVariant===NATIVE_JUDGMENT_VARIANT?await measuredHead():null;
+  const correctionFeedback=await nativeCorrectionFeedback(op,image,round);
   const result=await executeRunnerVerification({verification:origin.verification,
     outputFile:path.join(op.root,`round-${round}.verification.json`),observeState,
     startGuard:action=>withExecutionPublicationLock(op.workspace,async()=>{
@@ -955,7 +988,7 @@ export async function verifyNative(originFile) {
     if(!same(await readJson(observationFile),observation)) fail('OWNER_UNCERTAIN','native recipe observation differs on replay');
   } else await put(observationFile,observation);
   return {status:'completed',agentId,commands:result.checks.map(item=>({command:verificationCommand(item.request),exit:item.exit})),
-    observationFile};
+    observationFile,...(correctionFeedback?{correctionFeedback}:{})};
 }
 
 async function capturedSources(op,round=1) {

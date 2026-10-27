@@ -1088,7 +1088,7 @@ test('Initial native preflight blocks another delivery input change',async()=>{
   await assert.rejects(fs.lstat(verification),error=>error.code==='ENOENT');
 });
 
-for(const secondInvalid of [false,true])test(`D1 Initial concluded formal refusal has exactly one successor (${secondInvalid?'exhausted':'PASS'})`,async()=>{
+for(const secondInvalid of [false,true])test(`D1 Initial formal refusal preserves bounded corrections (${secondInvalid?'two corrections exhausted':'PASS'})`,async()=>{
   const f=await fixture();await installCurrentInitial(f);
   const implementation=await reserved(f,'stnl-current-native-judgment-v1');
   await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
@@ -1103,6 +1103,10 @@ for(const secondInvalid of [false,true])test(`D1 Initial concluded formal refusa
   await normalizedFormal(carrier,{invalid:true,responseVariant:'stnl-current-native-judgment-v1'});
   assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff?.operation,'VALIDATE_SLICE');
   await normalizedFormal(carrier,{successor:true,invalid:secondInvalid,responseVariant:'stnl-current-native-judgment-v1'});
+  if(secondInvalid) {
+    assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff?.operation,'VALIDATE_SLICE');
+    await normalizedFormal(carrier,{successor:true,invalid:true,responseVariant:'stnl-current-native-judgment-v1'});
+  }
   const image=await inspectCurrentExecution(f.specPath),current=image.deliveries.find(item=>item.slice==='slice-01');
   assert.equal(current.counters.validationAttempts,secondInvalid?0:1);
   if(secondInvalid)assert.equal(image.normalHandoff,null);else assert.equal(current.formalStatus,'PASS');
@@ -1189,16 +1193,17 @@ for(const fault of ['missing-work','unknown-obligation','no-inputs','external-bl
   await assert.rejects(publish(first.start.handle));
 });
 
-test('formal recovery preserves both incomplete refusals and exhausts one credit across new owners',async()=>{
+test('formal recovery preserves three incomplete refusals and exhausts after two corrections across owners',async()=>{
   const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
   const options={status:'BLOCKED',blockers:'Inspection of the prepared AC-001 assertions remains incomplete.',reviewTriage:incompleteReviewTriage,responseVariant:'stnl-current-native-judgment-v1'};
   const first=await normalizedFormal(f,options),second=await normalizedFormal(f,{...options,successor:true});
+  const third=await normalizedFormal(f,{...options,successor:true});
   assert.notEqual(first.start.owner.operationAttemptId,second.start.owner.operationAttemptId);
   const image=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
-  assert.equal(image.inspection.normalHandoff,null);assert.equal(current.normalization.status,'exhausted');assert.equal(current.normalization.consumedInvocations,2);
+  assert.equal(image.inspection.normalHandoff,null);assert.equal(current.normalization.status,'exhausted');assert.equal(current.normalization.consumedInvocations,3);
   const bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path)));
-  assert.deepEqual(bundle.support.filter(x=>x.kind==='rejection').map(x=>x.diagnostic.startsWith('FORMAL_REVIEW_INCOMPLETE:')),[true,true]);
-  for(const response of [first.finalResponse,second.finalResponse])assert.ok(bundle.objects.some(x=>Buffer.from(x.bytesBase64,'base64').toString('utf8')===response));
+  assert.deepEqual(bundle.support.filter(x=>x.kind==='rejection').map(x=>x.diagnostic.startsWith('FORMAL_REVIEW_INCOMPLETE:')),[true,true,true]);
+  for(const response of [first.finalResponse,second.finalResponse,third.finalResponse])assert.ok(bundle.objects.some(x=>Buffer.from(x.bytesBase64,'base64').toString('utf8')===response));
   await assert.rejects(normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:image.inspection.activationId}));
 });
 

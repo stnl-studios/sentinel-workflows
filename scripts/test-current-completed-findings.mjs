@@ -124,6 +124,9 @@ for(const secondInvalid of [false,true])test(`F05 completed auxiliary rejection 
   await publish(next.handle);image=await captureCurrentExecution(f.specPath);
   for(const [suffix,bytes]of sources)assert.deepEqual(await fs.readFile(path.join(root,`round-1.${suffix}.json`)),bytes);
   if(secondInvalid) {
+    const third=await startCompletedApply(f,{successor:true});
+    await completedApplyRound(f,third,{invalid:true});await publish(third.handle);
+    image=await captureCurrentExecution(f.specPath);
     assert.equal(image.inspection.normalHandoff,null);
     await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
   } else {

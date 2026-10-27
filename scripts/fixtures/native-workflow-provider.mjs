@@ -174,10 +174,10 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       const coverageRounds = operation === 'EXECUTE_SLICE' && fault === 'test-coverage-correction';
       const validationOrdinal=operations.filter(item=>item.operation==='VALIDATE_SLICE').length;
       const mixedFinal=fault==='findings-format-corrections'&&operation==='VALIDATE_SLICE'&&validationOrdinal===2;
-      const expanded=operation==='VALIDATE_SLICE'&&['formal-four-corrections','formal-exhausted','formal-continuation-exhausted'].includes(fault);
+      const expanded=operation==='VALIDATE_SLICE'&&['formal-two-corrections','formal-four-corrections','formal-exhausted','formal-continuation-exhausted'].includes(fault);
       const producerCorrections=fault==='execute-producer-corrections'&&operation==='EXECUTE_SLICE'?4:fault==='findings-producer-corrections'&&operation==='APPLY_FINDINGS'?3:0;
       const mixedApply=fault==='findings-producer-mixed'&&operation==='APPLY_FINDINGS';
-      const formalRounds=mixedApply?3:producerCorrections?producerCorrections+1:coverageRounds?3:mixedFinal?4:expanded?(fault==='formal-continuation-exhausted'?4:5):operation==='VALIDATE_SLICE'&&['formal-successor','formal-incomplete','formal-incomplete-exhausted','formal-continuation-correction'].includes(fault)?2:1;
+      const formalRounds=mixedApply?3:producerCorrections?producerCorrections+1:coverageRounds?3:mixedFinal?4:expanded?(fault==='formal-two-corrections'?3:fault==='formal-continuation-exhausted'?4:5):operation==='VALIDATE_SLICE'&&fault==='formal-incomplete-exhausted'?3:operation==='VALIDATE_SLICE'&&['formal-successor','formal-incomplete','formal-continuation-correction'].includes(fault)?2:1;
       for(let formalRound=0;formalRound<formalRounds;formalRound++){
       if(coverageRounds) {
         const file=path.join(workspace,'src/native-filter.test.mjs');
@@ -224,6 +224,13 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         await fs.writeFile(file,formalRound===1?source.replace('todo.completed === false','todo.completed === true'):source);
       }
       const measured = await verifyNative(dispatch.originFile);
+      if(fault==='formal-two-corrections'&&operation==='VALIDATE_SLICE'&&formalRound>0) {
+        const feedback=measured.correctionFeedback;
+        if(!feedback||!feedback.diagnostic.includes('RUNNER_SEMANTIC_RESULT_INVALID')
+          ||JSON.parse(feedback.previousResponse).result.status!=='INVALID'
+          ||feedback.previousResponseSha256!=='sha256:'+createHash('sha256').update(feedback.previousResponse).digest('hex'))
+          throw Error('corrective producer did not receive the complete prior failure input');
+      }
       const findingsCycles = fault === 'findings-two-cycles' ? 2 : ['findings-cycle','findings-format-corrections','findings-producer-corrections','findings-producer-mixed'].includes(fault) ? 1 : 0;
       const validationRound = operations.filter(item => item.operation === 'VALIDATE_SLICE').length;
       const needsFix = findingsCycles > 0 && operation === 'VALIDATE_SLICE' && validationRound <= findingsCycles;
@@ -257,6 +264,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       if((fault==='formal-four-corrections'&&operation==='VALIDATE_SLICE'||mixedFinal)&&formalRound<formalRounds-1) {
         const [field,value]=[['status','INVALID'],['commands',[]],['evidence',0],['findingReferences',{}]][formalRound];result[field]=value;
       }
+      if(fault==='formal-two-corrections'&&operation==='VALIDATE_SLICE'&&formalRound<2)result.status='INVALID';
       const text = (['findings-producer-corrections','findings-producer-mixed'].includes(fault)&&operation==='APPLY_FINDINGS'||fault==='execute-producer-corrections'&&operation==='EXECUTE_SLICE')&&formalRound===0?'{invalid Initial APPLY result':JSON.stringify({ format: 'stnl-current-native-judgment-v1', result,
         ...(operation === 'VALIDATE_SLICE' && !invalid ? { newFindings: findings } : {}) })
         +(invalid?'\nCanonical task identity: `'+agentPath+'`':'');

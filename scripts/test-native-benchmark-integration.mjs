@@ -141,7 +141,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'findings-two-cycles'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','test-coverage-correction'],['fresh','formal-successor'],['fresh','formal-four-corrections'],['fresh','findings-format-corrections'],['fresh','formal-observe-inventory'],['fresh','formal-observe-wait-timeout'],['fresh','execute-producer-corrections'],['fresh','findings-producer-corrections'],['fresh','findings-producer-mixed'],['fresh','formal-exhausted'],['fresh','formal-incomplete'],['fresh','formal-incomplete-exhausted'],['fresh','formal-continuation-exhausted'],['fresh','formal-continuation-correction'], ['fresh','review-correction'],['fresh','review-correction-four'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'findings-two-cycles'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','test-coverage-correction'],['fresh','formal-successor'],['fresh','formal-two-corrections'],['fresh','formal-four-corrections'],['fresh','findings-format-corrections'],['fresh','formal-observe-inventory'],['fresh','formal-observe-wait-timeout'],['fresh','execute-producer-corrections'],['fresh','findings-producer-corrections'],['fresh','findings-producer-mixed'],['fresh','formal-exhausted'],['fresh','formal-incomplete'],['fresh','formal-incomplete-exhausted'],['fresh','formal-continuation-exhausted'],['fresh','formal-continuation-correction'], ['fresh','review-correction'],['fresh','review-correction-four'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
   t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
@@ -287,10 +287,10 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     assert.equal(backend.operations.some(item=>item.operation==='SPEC_CLOSE'),false);
     const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json')));
     const formal=JSON.parse(await fs.readFile(state.operations.at(-1).evidencePath));
-    const rejected=fault==='formal-exhausted'?5:fault==='formal-continuation-exhausted'?4:2;
+    const rejected=fault==='formal-exhausted'?5:fault==='formal-continuation-exhausted'?4:3;
     assert.equal(formal.captureProof.matched,rejected);assert.equal(formal.captureProof.rejectedResponses.length,rejected);
     const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
-    assert.equal(ledger.total,fault==='formal-incomplete-exhausted'?8:11);assert.equal(ledger.reservations.length,0);
+    assert.equal(ledger.total,fault==='formal-incomplete-exhausted'?9:11);assert.equal(ledger.reservations.length,0);
     return;
   }
   if (['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].includes(fault)) {
@@ -316,15 +316,16 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     assert.equal(ledger.total,9);assert.equal(ledger.reservations.length,0);
   }
   assert.equal(result.status, 'PASS', JSON.stringify({result,evidenceHistory,errors:[...backend.threads.values()].flatMap(thread=>thread.turns.filter(turn=>turn.error).map(turn=>turn.error))}));
-  if(['formal-four-corrections','findings-format-corrections'].includes(fault)) {
+  if(['formal-two-corrections','formal-four-corrections','findings-format-corrections'].includes(fault)) {
     const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json')));
     const raw=JSON.parse(await fs.readFile(state.finalizer.rawPath));
-    assert.equal(raw.operations.retries,4);assert.equal(raw.operations.mechanicalRejections,fault==='formal-four-corrections'?4:3);
+    assert.equal(raw.operations.retries,fault==='formal-two-corrections'?2:4);assert.equal(raw.operations.mechanicalRejections,fault==='formal-two-corrections'?2:fault==='formal-four-corrections'?4:3);
     assert.equal(raw.finalExecutionState,'SPEC_CLOSED');
     const scope=state.operations.filter(op=>op.operation==='VALIDATE_SLICE').at(-1);
     const evidence=JSON.parse(await fs.readFile(scope.evidencePath));
-    assert.equal(evidence.turn.captures.length,fault==='formal-four-corrections'?5:4);
-    assert.ok((await fs.readFile(evidence.promptFile,'utf8')).includes(`Operational correction margin after this admission: ${fault==='formal-four-corrections'?4:3}.`));
+    assert.equal(evidence.turn.captures.length,fault==='formal-two-corrections'?3:fault==='formal-four-corrections'?5:4);
+    if(fault==='formal-two-corrections')assert.equal(evidence.turn.captures[0].toolResult.finalResponse,evidence.turn.captures[1].toolResult.finalResponse);
+    assert.ok((await fs.readFile(evidence.promptFile,'utf8')).includes(`Operational correction margin after this admission: ${['formal-two-corrections','formal-four-corrections'].includes(fault)?4:3}.`));
   }
   if(['execute-producer-corrections','findings-producer-corrections','findings-producer-mixed','formal-continuation-correction'].includes(fault)){
     const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json'))),raw=JSON.parse(await fs.readFile(state.finalizer.rawPath));
@@ -374,7 +375,7 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
   const findingsCycles = fault === 'findings-two-cycles' ? 2 : ['findings-cycle','findings-format-corrections','findings-producer-corrections','findings-producer-mixed'].includes(fault) ? 1 : 0;
   const extra = 2 * findingsCycles;
   const preparationExtra = fault==='review-correction-four'?8:fault?.startsWith('review-correction') ? 2 : 0;
-  const refusalChild=fault==='findings-producer-mixed'?2:['formal-four-corrections','execute-producer-corrections'].includes(fault)?4:['findings-format-corrections','findings-producer-corrections','findings-producer-mixed'].includes(fault)?3:['formal-successor','formal-incomplete','formal-continuation-correction'].includes(fault)?1:0;
+  const refusalChild=['formal-two-corrections','findings-producer-mixed'].includes(fault)?2:['formal-four-corrections','execute-producer-corrections'].includes(fault)?4:['findings-format-corrections','findings-producer-corrections','findings-producer-mixed'].includes(fault)?3:['formal-successor','formal-incomplete','formal-continuation-correction'].includes(fault)?1:0;
   const continuationChild=['pre-verification-continuation','formal-continuation-correction'].includes(fault)?1:0;
   const coverageChildren=fault==='test-coverage-correction'?2:0;
   const auxiliaryCalls = fault === 'review-correction-aux' ? 3 : fault === 'aux-run-eight' ? 8

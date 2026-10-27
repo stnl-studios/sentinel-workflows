@@ -88,10 +88,11 @@ test('D1 N1 completed v3 publishes concluded rejection and admits only one inher
   await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:final.inspection.activationId}),error=>error.code==='NORMALIZATION_NOT_ELIGIBLE');
 });
 
-test('D1 N1 completed v3 second concluded rejection exhausts the episode',async t=>{
+test('D1 N1 completed v3 third concluded rejection exhausts after two corrections',async t=>{
   const f=await completedNativeCase(t);await normalizedFormal(f,{invalid:true});
+  await normalizedFormal(f,{successor:true,invalid:true});
   await normalizedFormal(f,{successor:true,invalid:true});const image=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
-  assert.equal(current.normalization.status,'exhausted');assert.equal(current.normalization.consumedInvocations,2);assert.equal(image.inspection.normalHandoff,null);
+  assert.equal(current.normalization.status,'exhausted');assert.equal(current.normalization.consumedInvocations,3);assert.equal(image.inspection.normalHandoff,null);
   await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
 });
 
@@ -230,13 +231,14 @@ test('D1 N5 typed recipe and SPEC/workspace/product paths with spaces use the no
 });
 
 
-test('D1 N2 identical malformed EXECUTE response stops without a third owner',async t=>{
+test('D1 N2 identical malformed EXECUTE stops after two corrections without a fourth owner',async t=>{
   const sameInvalid=async({file})=>{const tool=JSON.parse(await fs.readFile(file));tool.finalResponse='IDENTICAL_INVALID_EXECUTE_RESPONSE';await fs.writeFile(file,JSON.stringify(tool)+'\n');};
   const f=await completedPristineCase(t),first=await execute(f,{beforeCapture:sameInvalid});await publish(first.start.handle);
   const second=await execute(f,{successor:true,beforeCapture:sameInvalid});await publish(second.start.handle);
+  const third=await execute(f,{successor:true,beforeCapture:sameInvalid});await publish(third.start.handle);
   const image=await captureCurrentExecution(f.specPath),c=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
-  assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,2);
-  assert.equal(c.normalization.episodeId,first.start.owner.operationAttemptId);assert.equal(c.normalization.round,2);
+  assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,3);
+  assert.equal(c.normalization.episodeId,first.start.owner.operationAttemptId);assert.equal(c.normalization.round,3);
   assert.equal(image.inspection.normalHandoff,null);
   await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
 });
@@ -249,11 +251,12 @@ test('D1 N2 refusal in invocation five consumes the local margin and forbids a s
   await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
 });
 
-test('D1 N1 current v1 second formal refusal exhausts without consuming a formal ID',async t=>{
+test('D1 N1 current v1 third formal refusal exhausts without consuming a formal ID',async t=>{
   const f=await completedPristineCase(t),implementation=await execute(f);await publish(implementation.start.handle);
   await normalizedFormal(f,{invalid:true});await normalizedFormal(f,{successor:true,invalid:true});
+  await normalizedFormal(f,{successor:true,invalid:true});
   const image=await captureCurrentExecution(f.specPath),c=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
-  assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,2);assert.equal(c.counters.validationAttempts,0);
+  assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,3);assert.equal(c.counters.validationAttempts,0);
   assert.equal(image.inspection.normalHandoff,null);
 });
 
@@ -435,7 +438,10 @@ for(const removalAt of ['refusal','successor','successor-after-FAIL','successor-
     await publishCurrentLocalReview({specPath:f.specPath,slice:f.delivery.slice,planBytes:input.planBytes,
       reviewedTaskBytes:input.reviewedTaskBytes,currentTaskBytes:input.currentTaskBytes,review});
     await normalizedFormal(f,{invalid:true});
-    if(removalAt==='successor-review-exhausted')await normalizedFormal(f,{successor:true,invalid:true});
+    if(removalAt==='successor-review-exhausted') {
+      await normalizedFormal(f,{successor:true,invalid:true});
+      await normalizedFormal(f,{successor:true,invalid:true});
+    }
     else await completedFormal(f,{successor:true});
     if(removalAt==='successor') {
       const previous=await captureCurrentExecution(f.specPath),next=reviewInput(previous,2),candidate=prepareCurrentLocalReview(next);
@@ -449,7 +455,7 @@ for(const removalAt of ['refusal','successor','successor-after-FAIL','successor-
   const image=await captureCurrentExecution(f.specPath),c=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0],bundle=JSON.parse(Buffer.from(image.files.get(c.evidence.path)));
   assert.equal(image.inspection.deliveries[0].formalStatus,removalAt==='successor-review-exhausted'?null:'PASS');
   if(removalAt==='successor-review-exhausted') {
-    assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,2);
+    assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,3);
     assert.equal(c.counters.validationAttempts,3);assert.equal(image.inspection.normalHandoff,null);
     await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
   }
@@ -472,8 +478,9 @@ for(const removalAt of ['successor','refusal'])for(const exhausted of removalAt=
     await publishCurrentLocalReview({specPath:f.specPath,slice:f.delivery.slice,planBytes:input.planBytes,reviewedTaskBytes:input.reviewedTaskBytes,currentTaskBytes:input.currentTaskBytes,review});
     if(exhausted) {
       await normalizedFormal(f,{invalid:true});await normalizedFormal(f,{successor:true,invalid:true});
+      await normalizedFormal(f,{successor:true,invalid:true});
       const stopped=await captureCurrentExecution(f.specPath),c=JSON.parse(Buffer.from(stopped.files.get('continuity.json'))).deliveries[0];
-      assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,2);assert.equal(stopped.inspection.normalHandoff,null);
+      assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,3);assert.equal(stopped.inspection.normalHandoff,null);
       await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:stopped.inspection.activationId}));return;
     }
     await normalizedFormal(f);

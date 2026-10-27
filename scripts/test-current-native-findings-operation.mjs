@@ -171,9 +171,21 @@ test('EC-1/S2 preserves two failure rounds before third-round PASS',async t=>{
   assert.equal(after.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
 });
 
- test('EC-1/S2 repeated failed verification on unchanged work blocks another producer',async t=>{
-  const cycle=await applyRoundsCase(t,['TESTS_FAIL','TESTS_FAIL']);
+ test('EC-1/S2 repeated failed verification allows two corrections before blocking unchanged work',async t=>{
+  const cycle=await applyRoundsCase(t,['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL']);
   const before=await fs.readFile(path.join(path.dirname(cycle.rounds.at(-1).dispatch.originFile),'owner.json'));
   await assert.rejects(reserveDispatch(cycle.start.handle),error=>error.code==='EVIDENCE_INCOMPLETE'&&/no demonstrated author correction/u.test(error.message));
   assert.deepEqual(await fs.readFile(path.join(path.dirname(cycle.rounds.at(-1).dispatch.originFile),'owner.json')),before);
  });
+
+test('EC-1/S2 failed checks deliver both feedback inputs before a corrected third check',async t=>{
+  const cycle=await applyRoundsCase(t,['TESTS_FAIL','TESTS_FAIL','TESTS_PASS']);
+  for(const index of [1,2]) {
+    const original=JSON.parse(await fs.readFile(path.join(cycle.fixture.root,`mechanical-findings-round-${index}.json`)));
+    const input=cycle.rounds[index].measured.correctionFeedback;
+    assert.equal(input.previousResponse,original.finalResponse);
+    assert.equal(input.previousResponseSha256,sha(Buffer.from(original.finalResponse)));
+    assert.match(input.diagnostic,/TESTS_FAIL: AC-001 fails/u);
+  }
+  assert.equal(cycle.rounds[2].capture.status,'TESTS_PASS');
+});

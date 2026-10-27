@@ -9,10 +9,70 @@ import {completedFindingsCycle} from './fixtures/current-native-findings-operati
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {captureCurrentExecution as captureQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
-import {begin,normalizeSuccessor,publish,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {begin,normalizeSuccessor,reserveDispatch,bindNative,verifyNative,publish,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 
 const run=promisify(execFile);
 const operationRoot=dispatch=>path.dirname(dispatch.originFile);
+
+test('eligible recurrence permits two corrective opportunities before a successful response',async t=>{
+  const fixture=await nativeOperationCase(t);
+  const first=await normalizedFormal(fixture,{invalid:true,invalidText:'SAME_INVALID_FORMAL_RESPONSE'});
+  const second=await normalizedFormal(fixture,{successor:true,invalid:true,invalidText:'SAME_INVALID_FORMAL_RESPONSE'});
+  assert.equal(first.published.transition.normalization.consumedInvocations,1);
+  assert.equal(second.published.transition.normalization.consumedInvocations,2);
+  assert.equal(second.published.transition.normalization.status,'settled','one correction cannot exhaust the minimum two opportunities');
+  const passed=await normalizedFormal(fixture,{successor:true});
+  const origin=JSON.parse(await fs.readFile(passed.dispatch.originFile));
+  assert.equal(origin.admission.binding.normalization.consumedInvocations,2,'the successful third producer inherits both failures');
+  const image=await captureCurrentExecution(fixture.specPath);
+  assert.equal(image.inspection.deliveries[0].formalStatus,'PASS');
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const evidence=JSON.parse(Buffer.from(image.files.get(continuity.deliveries[0].evidence.path)));
+  assert.equal(evidence.support.filter(item=>item.kind==='rejection').length,2);
+  assert.ok(evidence.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')===first.finalResponse));
+});
+
+test('successor helper input includes the literal rejected response and concrete feedback without another recipe',async t=>{
+  const fixture=await nativeOperationCase(t);
+  const first=await normalizedFormal(fixture,{invalid:true,invalidText:'INVALID_FIRST_RESPONSE_FOR_FEEDBACK'});
+  const image=await captureCurrentExecution(fixture.specPath);
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const diagnostic=continuity.deliveries[0].lastDiagnostic.reason;
+  await normalizedFormal(fixture,{successor:true,beforeCapture:async({dispatch})=>{
+    const verificationFile=dispatch.originFile.replace(/\.origin\.json$/u,'.verification.json');
+    const before=await fs.stat(verificationFile),bytes=await fs.readFile(verificationFile);
+    const {stdout}=await run(process.execPath,[dispatch.verificationHelper,'verify-native','--origin-file',dispatch.originFile]);
+    const input=JSON.parse(stdout);
+    assert.deepEqual(input.correctionFeedback,{operation:'VALIDATE_SLICE',diagnostic,
+      previousResponse:first.finalResponse,previousResponseSha256:first.captured.rawResponseSha256});
+    assert.deepEqual(await fs.readFile(verificationFile),bytes);
+    assert.equal((await fs.stat(verificationFile)).mtimeMs,before.mtimeMs,'helper replay must not execute the recipe again');
+  }});
+});
+
+test('successor refuses altered feedback evidence before running another recipe',async t=>{
+  const fixture=await nativeOperationCase(t);
+  const first=await normalizedFormal(fixture,{invalid:true,invalidText:'AUTHENTIC_REJECTED_RESPONSE'});
+  const image=await captureCurrentExecution(fixture.specPath);
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const evidenceFile=path.join(fixture.image.f.execution,continuity.deliveries[0].evidence.path);
+  const original=await fs.readFile(evidenceFile);
+  const start=await normalizeSuccessor({specPath:fixture.specPath,slice:fixture.delivery.slice,
+    expectedActivationId:image.inspection.activationId});
+  const dispatch=await reserveDispatch(start.handle);await bindNative(start.handle,'mechanical-feedback-evidence-negative');
+  const bundle=JSON.parse(original);
+  const source=bundle.objects.find(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')===first.finalResponse);
+  assert.ok(source);source.bytesBase64=Buffer.from('ALTERED_REJECTED_RESPONSE').toString('base64');
+  await fs.writeFile(evidenceFile,JSON.stringify(bundle));
+  try {
+    await assert.rejects(()=>verifyNative(dispatch.originFile));
+    await assert.rejects(fs.lstat(dispatch.originFile.replace(/\.origin\.json$/u,'.verification.json')),{code:'ENOENT'});
+    const before=await fs.readFile(path.join(operationRoot(dispatch),'owner.json'));
+    await assert.rejects(()=>normalizeSuccessor({specPath:fixture.specPath,slice:fixture.delivery.slice,
+      expectedActivationId:image.inspection.activationId}));
+    assert.deepEqual(await fs.readFile(path.join(operationRoot(dispatch),'owner.json')),before);
+  } finally {await fs.writeFile(evidenceFile,original);}
+});
 
 test('operational recovery: four schema corrections retain all refusals before PASS',async t=>{
   const fixture=await nativeOperationCase(t),responses=[];
@@ -132,7 +192,7 @@ test('EC-1 normalization: quiet rejection and successor read without temporary a
   });
 });
 
-test('EC-1 normalization: repeated unchanged invalid response exhausts inherited episode',async t=>{
+test('EC-1 normalization: recurrence exhausts only after two corrective opportunities',async t=>{
   const fixture=await nativeOperationCase(t);
   const first=await normalizedFormal(fixture,{invalid:true,
     invalidText:'INVALID_FORMAL_RESPONSE: first description'});
@@ -141,7 +201,12 @@ test('EC-1 normalization: repeated unchanged invalid response exhausts inherited
   assert.equal(first.captured.rawResponseSha256,second.captured.rawResponseSha256);
   assert.equal(first.published.transition.normalization.round,1);
   assert.equal(second.published.transition.normalization.round,2);
-  assert.equal(second.published.transition.normalization.status,'exhausted');
+  assert.equal(second.published.transition.normalization.status,'settled');
+  const third=await normalizedFormal(fixture,{successor:true,invalid:true,
+    invalidText:'INVALID_FORMAL_RESPONSE: first description'});
+  assert.equal(third.captured.rawResponseSha256,first.captured.rawResponseSha256);
+  assert.equal(third.published.transition.normalization.consumedInvocations,3);
+  assert.equal(third.published.transition.normalization.status,'exhausted');
   assert.equal(second.published.transition.normalization.episodeId,
     first.published.transition.normalization.episodeId);
   const final=await captureCurrentExecution(fixture.specPath);

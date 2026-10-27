@@ -3,6 +3,7 @@ function fail(message) { throw new Error(message); }
 
 // Local bounded lineage; the caller owns its operational quota across stages.
 export const MAX_NATIVE_PRODUCER_TURNS = 5;
+export const MIN_CORRECTIONS_BEFORE_RECURRENCE = 2;
 export function formalRecoveryBudget(producerTurns, inherited = null) {
   if(![1,2].includes(producerTurns) || inherited && (inherited.operation!=='VALIDATE_SLICE'
     || inherited.status!=='settled' || !Number.isSafeInteger(inherited.round) || inherited.round<1

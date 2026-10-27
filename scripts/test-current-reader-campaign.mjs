@@ -168,7 +168,10 @@ test('C03 existing post-conversion normalization and local review compose with c
       await fs.writeFile(path.join(root,'other/greeting.mjs'),'export const greeting="reader B";\n');
       await normalizedFormal(fixture,{invalid:mode!=='review'});
     }
-    if(exhausted)await normalizedFormal(fixture,{successor:true,invalid:true});
+    if(exhausted) {
+      await normalizedFormal(fixture,{successor:true,invalid:true});
+      await normalizedFormal(fixture,{successor:true,invalid:true});
+    }
     if(mode==='review') {
       const old=await captureCurrentExecution(fixture.specPath),slice=fixture.delivery.slice;
       const snapshot=JSON.parse(Buffer.from(old.files.get('approved-preparation.json')));
