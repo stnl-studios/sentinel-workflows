@@ -610,11 +610,28 @@ function isBoundRunnerMetadata(item,binding) {
 function runnerActivityDiagnostic(item,itemIndex,binding) {
   // Fixed enums/relations only, in the existing refusal. Never retain item IDs,
   // agent paths, commands, output or unknown server values to explain a denial.
+  // runnerHistory is the read surface, not evidence of the request's issuer.
   const relation=(value,expected)=>value==null?'absent':!id(value)?'invalid':value===expected?'matches':'differs';
+  const prefix=`itemIndex=${itemIndex}; failed=${runnerMetadataFailures(item,binding).join(',')}; itemType=${item.type}; origin=runnerHistory; `;
+  if(item.type==='collabAgentToolCall') {
+    const value=(input,known)=>input==null?'absent':typeof input!=='string'?'invalid':known.includes(input)?input:'other';
+    const tool=value(item.tool,['spawnAgent','sendInput','resumeAgent','wait','closeAgent','sendMessage','followupTask','interruptAgent','listAgents']);
+    const status=value(item.status,['inProgress','completed','failed','interrupted']);
+    const sender=item.senderThreadId==null?'absent':!id(item.senderThreadId)?'invalid'
+      :item.senderThreadId===binding.agentThreadId?'runner':item.senderThreadId===binding.parentThreadId?'parent':'other';
+    const valid=Array.isArray(item.receiverThreadIds)&&item.receiverThreadIds.every(id);
+    const receivers=item.receiverThreadIds==null?'absent':!valid?'invalid'
+      :item.receiverThreadIds.length===0?'empty':item.receiverThreadIds.length===1?'one':'many';
+    const target=predicate=>!valid?'unknown':item.receiverThreadIds.some(predicate)?'yes':'no';
+    return prefix+`variant=v1; tool=${tool}; status=${status}; sender=${sender}; receivers=${receivers}; `
+      +`receiverRunner=${target(id=>id===binding.agentThreadId)}; receiverParent=${target(id=>id===binding.parentThreadId)}; `
+      +`receiverOther=${target(id=>id!==binding.agentThreadId&&id!==binding.parentThreadId)}; `
+      +`model=${relation(item.model,binding.model)}; effort=${relation(item.reasoningEffort,binding.effort)}`;
+  }
   const kind=['started','interacted','interrupted','completed'].includes(item.kind)?item.kind:item.kind==null?'absent':'other';
   const [pathLabel,threadLabel]=item.type==='subAgentActivity'&&item.kind==='interacted'
     ?['recipientPath','recipientThreadId']:['agentPath','agentThreadId'];
-  return `itemIndex=${itemIndex}; failed=${runnerMetadataFailures(item,binding).join(',')}; itemType=${item.type}; kind=${kind}; `
+  return prefix+`variant=v2; tool=unknown; status=unknown; sender=unknown; kind=${kind}; `
     + `${pathLabel}=${relation(item.agentPath,binding.agentPath)}; ${threadLabel}=${relation(item.agentThreadId,binding.agentThreadId)}; `
     + `model=${relation(item.model,binding.model)}; effort=${relation(item.reasoningEffort,binding.effort)}`;
 }
@@ -623,8 +640,8 @@ function assertRunnerActivities(items,binding) {
   if(descendants.length)throw Object.assign(fail(`runner delegated outside the admitted operation (${runnerActivityDiagnostic(descendants[0],items.indexOf(descendants[0]),binding)})`),{descendants});
   for(const [index,item] of items.entries())if(['subAgentActivity','collabAgentToolCall'].includes(item.type)
     &&!isBoundRunnerMetadata(item,binding)) {
-    const reason=item.type==='subAgentActivity'&&item.kind==='interacted'
-      ?'runner outgoing communication is forbidden':'runner activity is foreign, effectful or ambiguous';
+    const reason=item.type==='collabAgentToolCall'?'runner collaboration tool is not authorized'
+      :item.kind==='interacted'?'runner outgoing communication is forbidden':'runner activity is foreign, effectful or ambiguous';
     throw fail(`${reason} (${runnerActivityDiagnostic(item,index,binding)})`);
   }
 }

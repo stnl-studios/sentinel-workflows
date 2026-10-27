@@ -460,6 +460,7 @@ for (const [target, agentPath, agentThreadId, relation] of [
     assert.ok(error.message.includes('failed=OUTGOING_COMMUNICATION;'), error.message);
     assert.ok(error.message.includes(`recipientThreadId=${relation}`), error.message);
     assert.ok(error.message.includes(`recipientPath=${relation}`), error.message);
+    assert.match(error.message, /origin=runnerHistory; variant=v2; tool=unknown; status=unknown; sender=unknown;/u);
     assert.doesNotMatch(error.message, /foreign|private-|\/root|019a/u);
     return true;
   };
@@ -539,7 +540,13 @@ for (const [name, changes, failed, detail] of [
     assert.equal(error.code, 'NATIVE_TRANSPORT_UNPROVEN');
     assert.ok(error.message.includes(`itemIndex=1; failed=${failed};`), error.message);
     assert.ok(error.message.includes(detail), error.message);
-    assert.ok(error.message.includes('agentThreadId=') && error.message.includes('agentPath='), error.message);
+    if (changes.type === 'collabAgentToolCall') {
+      assert.match(error.message, /origin=runnerHistory; variant=v1;/u);
+      assert.ok(error.message.includes('sender=') && error.message.includes('receivers='), error.message);
+    } else {
+      assert.match(error.message, /origin=runnerHistory; variant=v2; tool=unknown; status=unknown; sender=unknown;/u);
+      assert.ok(error.message.includes('agentThreadId=') && error.message.includes('agentPath='), error.message);
+    }
     assert.ok(Buffer.byteLength(error.message) < 512, 'bounded fixed diagnostic');
     assert.doesNotMatch(error.message, /private-|\/root\/|019a|\.toml|\/Users\//u, 'no identifiers, paths, commands or unknown values');
     if (name === 'spawn') assert.deepEqual(error.descendants, [activity], 'all descendant evidence remains attached');
@@ -564,6 +571,61 @@ for (const [name, changes, failed, detail] of [
   assert.equal(result.captures.length, 0);
   assert.ok(!events.some(event => event.type === 'native.child.continuation.admitted'));
   assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1, 'only original fake principal');
+});
+
+// Official 0.163 CollabAgentTool/CollabAgentToolCallStatus enums. Observation
+// origin and explicit sender/receiver fields are distinct facts, never aliases.
+for (const [name, changes, expected] of [
+  ...['spawnAgent','sendInput','resumeAgent','wait','closeAgent','sendMessage','followupTask','interruptAgent','listAgents']
+    .map(tool => [tool, { tool }, [`tool=${tool}; status=completed; sender=runner; receivers=one; receiverRunner=no; receiverParent=yes; receiverOther=no;`]]),
+  ['parent sender', { senderThreadId: parent }, ['sender=parent;']],
+  ['other sender', { senderThreadId: 'private-sender-secret' }, ['sender=other;']],
+  ['absent sender', { senderThreadId: undefined }, ['sender=absent;']],
+  ['invalid sender', { senderThreadId: 17 }, ['sender=invalid;']],
+  ['mixed receivers', { receiverThreadIds: [child, parent, 'private-receiver-secret'] }, ['receivers=many; receiverRunner=yes; receiverParent=yes; receiverOther=yes;']],
+  ['empty receivers', { receiverThreadIds: [] }, ['receivers=empty; receiverRunner=no; receiverParent=no; receiverOther=no;']],
+  ['absent receivers', { receiverThreadIds: undefined }, ['receivers=absent; receiverRunner=unknown; receiverParent=unknown; receiverOther=unknown;']],
+  ['invalid receivers', { receiverThreadIds: [17] }, ['receivers=invalid; receiverRunner=unknown; receiverParent=unknown; receiverOther=unknown;']],
+  ['unknown tool', { tool: 'private-tool-secret' }, ['tool=other;']],
+  ['absent tool', { tool: undefined }, ['tool=absent;']],
+  ['invalid tool', { tool: {} }, ['tool=invalid;']],
+  ...['inProgress','failed','interrupted'].map(status => [status, { status }, [`status=${status};`]]),
+  ['unknown status', { status: 'private-status-secret' }, ['status=other;']],
+  ['absent status', { status: null }, ['status=absent;']],
+  ['invalid status', { status: 17 }, ['status=invalid;']],
+]) test(`formal collaboration v1 diagnostic preserves ${name} without authorizing it`, async t => {
+  const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true });
+  const activity = { id: 'private-item-secret', type: 'collabAgentToolCall', tool: 'wait', status: 'completed',
+    senderThreadId: child, receiverThreadIds: [parent], agentsStates: { 'private-state-secret': { message: 'private-output-secret' } },
+    prompt: 'private-prompt-secret', ...changes };
+  s.state.items.splice(1, 0, activity); s.state.turns[0].items = structuredClone(s.state.items);
+  const binding = await bindAppServerChild(s.rpc, identity);
+  const check = error => {
+    assert.equal(error.code, 'NATIVE_TRANSPORT_UNPROVEN');
+    assert.match(error.message, /itemIndex=1; failed=ITEM_TYPE; itemType=collabAgentToolCall; origin=runnerHistory; variant=v1;/u);
+    for (const detail of expected) assert.ok(error.message.includes(detail), error.message);
+    assert.ok(Buffer.byteLength(error.message) < 512);
+    assert.doesNotMatch(error.message, /private-|019a|\/root|\/Users\//u);
+    return true;
+  };
+  for (const initialization of [false, true]) await assert.rejects(readAppServerChild(s.rpc,
+    { binding, bundle: f.bundle, cwd: f.root, initialization }), check);
+  if (['wait', 'sendInput'].includes(name)) for (const position of [0, 1]) {
+    const replay = await continuedHistory(t); replay.s.state.turns[position].items.splice(1, 0, activity);
+    await assert.rejects(readAppServerChild(replay.rpc, { binding: replay.binding, bundle: replay.bundle,
+      cwd: replay.root, continuation: replay.continuation }), check);
+  }
+  s.state.parentItems.push({ ...s.state.parentItems[0], id: 'completed', kind: 'completed' });
+  const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
+  const result = await provider.runTurn({ prompt: 'OFFLINE only', workflowSkill: 'stnl-slice-quality-manager', model: 'gpt-6.1-sol',
+    effort: 'medium', role: 'review', operationId: 'v1-diagnostic', timeoutMs: 1000,
+    observeFormalBinding: () => ({ agentPath: identity.agentPath }),
+    onChildCompleted: () => assert.fail('diagnosis cannot grant a capture or continuation') });
+  assert.equal(result.completed, false); assert.deepEqual(result.captures, []); check({ code: result.errorCode, message: result.error });
+  const events = (await fs.readFile(result.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(events.find(event => event.type === 'native.transport.blocked').message, result.error);
+  assert.ok(!events.some(event => event.type === 'native.child.continuation.admitted'));
+  assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1, 'only the existing fake principal, no retry');
 });
 
 for (const [name, changes, failed, detail] of [
