@@ -25,7 +25,7 @@ test('historical child cost stays readable; optional auxiliary metadata cannot t
 test('formal designation requires the product binding, not a reservation or child label', async t => {
   const f = await reservedOperation(t);
   const input = { product, specPath: f.specPath, operation: 'VALIDATE_SLICE', slice: f.delivery.slice };
-  assert.equal(await observeFormalRunner(input), null);
+  assert.deepEqual(await observeFormalRunner(input), { state: 'pending' });
   await bindNative(f.start.handle, '/root/arbitrary-name');
   const designation = await observeFormalRunner(input);
   assert.equal(designation.agentPath, '/root/arbitrary-name');
@@ -34,6 +34,14 @@ test('formal designation requires the product binding, not a reservation or chil
   assert.equal(designation.round, 1);
   await assert.rejects(observeFormalRunner({ ...input, operation: 'EXECUTE_SLICE' }));
   assert.equal(await observeFormalRunner({ ...input, operation: 'PLAN' }), null);
+});
+test('pending formal observation requires an intact official unbound reservation', async t => {
+  const f = await reservedOperation(t), input = { product, specPath: f.specPath,
+    operation: 'VALIDATE_SLICE', slice: f.delivery.slice };
+  const marker = path.join(path.dirname(f.dispatch.originFile), 'owner.json');
+  const record = JSON.parse(await fs.readFile(marker)); record.runner.agentId = '/root/foreign';
+  await fs.writeFile(marker, JSON.stringify(record));
+  await assert.rejects(observeFormalRunner(input));
 });
 for (const mutation of ['agent', 'round', 'owner', 'registry']) test(`formal designation rejects ${mutation} divergence`, async t => {
   const f = await reservedOperation(t);

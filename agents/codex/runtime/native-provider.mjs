@@ -232,14 +232,26 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             const binding = children.get(item.agentPath);
             if (!binding || binding.agentThreadId !== item.agentThreadId) throw blocked('unmatched completed child identity');
           }
+          let formalPending = false;
           if (observeFormalBinding !== null) {
             const rootCompleted = new Set(observed.items.filter(item => item.type === 'subAgentActivity' && item.kind === 'completed')
               .map(item => item.agentThreadId));
             const needsDesignation = [...children.values()].some(binding => !formal.has(binding.agentThreadId)
               && !auxiliaryDone.has(binding.agentThreadId)
               && (rootCompleted.has(binding.agentThreadId) || observed.turn.status !== 'inProgress'));
-            const designation = needsDesignation ? await hook('observeFormalBinding',observeFormalBinding) : null;
-            if (!designation && previousReady.length && formal.size === 0) {
+            const formalObservation = needsDesignation ? await hook('observeFormalBinding',observeFormalBinding) : null;
+            formalPending = formalObservation?.state === 'pending';
+            if (formalPending && Object.keys(formalObservation).length !== 1)
+              throw blocked('pending formal observation is malformed');
+            if (formalObservation !== null && !formalPending
+              && (!formalObservation || typeof formalObservation !== 'object' || Array.isArray(formalObservation)
+                || Object.hasOwn(formalObservation, 'state') || typeof formalObservation.agentPath !== 'string'
+                || !formalObservation.agentPath)) throw blocked('formal designation identity absent or malformed');
+            const designation = formalPending ? null : formalObservation;
+            if (designation && ![...children.values()].some(binding => binding.agentPath === designation.agentPath
+              && binding.parentThreadId === dispatch.threadId && binding.parentTurnId === dispatch.turnId))
+              throw blocked('formal designation does not match an observed child');
+            if (!formalPending && !designation && previousReady.length && formal.size === 0) {
               if (typeof validateRetainedCaptures !== 'function') throw blocked('retained formal verifier absent');
               const saved = [];
               for (const ready of previousReady) {
@@ -295,7 +307,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               }
               if (formal.has(binding.agentThreadId) && view.turns.length && view.turns.every(item => item.status === 'completed')) {
                 if (!captures.has(binding.agentPath)) await collect(binding,observed.turn.status==='inProgress');
-              } else if (view.turns.length && view.turns.every(item => item.status === 'completed')) {
+              } else if (!formalPending && view.turns.length && view.turns.every(item => item.status === 'completed')) {
                 const key = `${binding.agentThreadId}:${view.turns.map(item => item.id).join(',')}`;
                 if (!notified.has(key)) {
                   await hook('onAuxiliaryCompleted',onAuxiliaryCompleted,binding); auxiliaryDone.add(binding.agentThreadId);
@@ -306,7 +318,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             if (observed.turn.status !== 'inProgress') {
               const complete = [...children.values()].every(binding => views.get(binding.agentThreadId)?.turns.length
                 && views.get(binding.agentThreadId).turns.every(item => item.status === 'completed'));
-              if (!complete) { await wait(pollMs, signal); continue; }
+              if (!complete || formalPending) { await wait(pollMs, signal); continue; }
               terminalObserved = true;
               for (const binding of children.values()) if (!formal.has(binding.agentThreadId) && !auxiliaryDone.has(binding.agentThreadId)) {
                 await hook('onAuxiliaryCompleted',onAuxiliaryCompleted,binding); auxiliaryDone.add(binding.agentThreadId);
@@ -320,7 +332,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               && value.agentPath === item.agentPath).length !== 1) throw blocked('duplicate completed child identity');
             if (!captures.has(item.agentPath)) await collect(binding);
           }
-          if (observed.turn.status !== 'inProgress') break;
+          if (observed.turn.status !== 'inProgress' && !formalPending) break;
           await wait(pollMs, signal);
         }
         if (observed.turn.status !== 'completed' || observed.turn.error != null)

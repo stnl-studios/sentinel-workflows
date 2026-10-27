@@ -773,6 +773,77 @@ test('a terminal principal cannot hand off while its auxiliary remains active', 
   assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1);
 });
 
+test('a terminal principal keeps a reserved child pending until that same child is formally bound', async t => {
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});let observations=0,auxiliary=0,formal=0;
+  const provider=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc,pollMs:1});
+  const result=await provider.runTurn({prompt:'offline',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'reserved-same-child',role:'author',observeFormalBinding:async()=>++observations===1?{state:'pending'}:{agentPath:identity.agentPath},
+    onFormalObserved:()=>{formal++;},onAuxiliaryCompleted:()=>{auxiliary++;}});
+  assert.equal(result.completed,true,result.error);assert.equal(result.terminalObserved,true);
+  assert.equal(observations,2);assert.equal(formal,1);assert.equal(auxiliary,0);assert.equal(result.captures.length,1);
+});
+
+test('a pending reservation with multiple completed children binds one exact child and settles the other once', async t => {
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  const second={...structuredClone(s.state.parentItems[0]),id:'spawn-two',agentPath:'/root/check-two',agentThreadId:'019a0000-0000-7000-8000-000000000003'};
+  const completed={...structuredClone(s.state.parentItems[0]),id:'complete-one',kind:'completed'};
+  const completedTwo={...second,id:'complete-two',kind:'completed'};s.state.parentItems.push(second,completed,completedTwo);
+  const request=s.rpc.request.bind(s.rpc),rpc={notify:s.rpc.notify,async request(method,params){
+    if(params.threadId===second.agentThreadId&&method==='thread/read')return {thread:{...structuredClone(s.state.thread),id:second.agentThreadId}};
+    if(params.threadId===second.agentThreadId&&method==='thread/turns/list')return {data:structuredClone(s.state.turns),nextCursor:null};
+    if(params.threadId===second.agentThreadId&&method==='thread/items/list')return {data:structuredClone(s.state.items).map(item=>({turnId:params.turnId,item})),nextCursor:null};
+    return request(method,params);
+  }};
+  const provider=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc,pollMs:1});
+  let observations=0,auxiliary=[];const result=await provider.runTurn({prompt:'offline',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'reserved-multiple-children',role:'author',observeFormalBinding:async()=>++observations===1?{state:'pending'}:{agentPath:identity.agentPath},
+    onAuxiliaryCompleted:binding=>auxiliary.push(binding.agentThreadId)});
+  assert.equal(result.completed,true,result.error);assert.equal(observations,2);assert.equal(result.captures.length,1);
+  assert.deepEqual(auxiliary,[second.agentThreadId]);
+});
+
+test('a later child can still become formal after an earlier child was conclusively auxiliary', async t => {
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  const firstDone={...structuredClone(s.state.parentItems[0]),id:'complete-one',kind:'completed'};s.state.parentItems.push(firstDone);
+  const second={...structuredClone(s.state.parentItems[0]),id:'spawn-two',agentPath:'/root/check-two',agentThreadId:'019a0000-0000-7000-8000-000000000003'};
+  const secondDone={...second,id:'complete-two',kind:'completed'};let parentDone=false;
+  const request=s.rpc.request.bind(s.rpc),rpc={notify:s.rpc.notify,async request(method,params){
+    if(params.threadId===second.agentThreadId&&method==='thread/read')return {thread:{...structuredClone(s.state.thread),id:second.agentThreadId}};
+    if(params.threadId===second.agentThreadId&&method==='thread/turns/list')return {data:structuredClone(s.state.turns),nextCursor:null};
+    if(params.threadId===second.agentThreadId&&method==='thread/items/list')return {data:structuredClone(s.state.items).map(item=>({turnId:params.turnId,item})),nextCursor:null};
+    const result=await request(method,params);
+    if(method==='thread/turns/list'&&params.threadId===parent)result.data[0].status=parentDone?'completed':'inProgress';
+    return result;
+  }};
+  const provider=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc,pollMs:1});
+  let observations=0,auxiliary=[],formal=[];const result=await provider.runTurn({prompt:'offline',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'aux-then-formal',role:'author',observeFormalBinding:async()=>++observations===1?null:{agentPath:second.agentPath},
+    onAuxiliaryCompleted:binding=>{auxiliary.push(binding.agentThreadId);s.state.parentItems.push(second,secondDone);parentDone=true;},
+    onFormalObserved:(binding)=>formal.push(binding.agentThreadId)});
+  assert.equal(result.completed,true,result.error);assert.equal(result.captures.length,1);assert.equal(observations,2);
+  assert.deepEqual(auxiliary,[child]);assert.deepEqual(formal,[second.agentThreadId]);
+});
+
+test('a terminal principal remains blocked at the existing deadline while formal binding stays pending', async t => {
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
+  const provider=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc,pollMs:1});let auxiliary=0;
+  const result=await provider.runTurn({prompt:'offline',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'reserved-deadline',role:'author',timeoutMs:35,observeFormalBinding:async()=>({state:'pending'}),
+    onAuxiliaryCompleted:()=>{auxiliary++;}});
+  assert.equal(result.completed,false);assert.match(result.error,/observation deadline exceeded/u);
+  assert.equal(result.terminalObserved,false);assert.equal(auxiliary,0);assert.deepEqual(result.captures,[]);
+});
+
+test('a formal designation with no matching official child identity blocks instead of becoming auxiliary success', async t => {
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});let auxiliary=0;
+  const provider=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
+  const result=await provider.runTurn({prompt:'offline',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'invalid-formal-identity',role:'author',observeFormalBinding:async()=>({agentPath:'/root/foreign'}),
+    onAuxiliaryCompleted:()=>{auxiliary++;}});
+  assert.equal(result.completed,false);assert.match(result.error,/formal designation does not match an observed child/u);
+  assert.equal(auxiliary,0);assert.deepEqual(result.captures,[]);
+});
+
 test('parent denial preserves already observed child identities as uncertain cost, never formal proof', async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true,
     mutate(state) { state.parentItems.push({ id: 'denied', type: 'commandExecution', command: 'cat <<EOF',
@@ -831,14 +902,14 @@ function auxiliaryFollowupServer(options) {
 test('auxiliary follow-up has two distinct completion events and two charged turns, never a formal capture', async t => {
   const f = await fixture(t), s = auxiliaryFollowupServer({ bundle: f.bundle, cwd: f.root });
   const p = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
-  const charged = new Set(); let started = 0, completed = 0;
+  const charged = new Set(); let started = 0, completed = 0, formalObservations = 0;
   const result = await p.runTurn({ prompt: 'Offline selected operation', workflowSkill: 'stnl-slice-executor',
     model: 'gpt-6-luna', effort: 'high', operationId: 'aux-followup', role: 'review',
-    observeFormalBinding: async () => null, onChildStarted: () => { started++; },
+    observeFormalBinding: async () => { formalObservations++; return null; }, onChildStarted: () => { started++; },
     onChildTurns: (binding, turns) => { for (const turn of turns) charged.add(`${binding.agentThreadId}:${turn.id}`); },
     onAuxiliaryCompleted: () => { completed++; } });
   assert.equal(result.completed, true, result.error); assert.equal(started, 1); assert.equal(completed, 1);
-  assert.equal(charged.size, 2); assert.deepEqual(result.captures, []);
+  assert.equal(charged.size, 2); assert.deepEqual(result.captures, []); assert.equal(formalObservations, 1);
   const events = (await fs.readFile(result.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
   assert.equal(events.some(event => event.type === 'native.child.completed'), false);
   assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1);
@@ -847,7 +918,7 @@ test('auxiliary follow-up has two distinct completion events and two charged tur
 test('reobserving both auxiliary completions deduplicates advice settlement and charges by public turn ID', async t => {
   const f = await fixture(t), s = auxiliaryFollowupServer({ bundle: f.bundle, cwd: f.root });
   const followup = s.state.turns.pop(), followupEvents = s.state.parentItems.splice(-2);
-  const request = s.rpc.request.bind(s.rpc); let parentDone = false, completed = 0, observations = 0;
+  const request = s.rpc.request.bind(s.rpc); let parentDone = false, completed = 0, observations = 0, formalObservations = 0;
   s.rpc.request = async (method, params) => {
     const value = await request(method, params);
     if (method === 'thread/turns/list' && params.threadId === parent) value.data[0].status = parentDone ? 'completed' : 'inProgress';
@@ -857,7 +928,7 @@ test('reobserving both auxiliary completions deduplicates advice settlement and 
   const charged = new Set();
   const result = await p.runTurn({ prompt: 'Offline selected operation', workflowSkill: 'stnl-slice-executor',
     model: 'gpt-6-luna', effort: 'high', operationId: 'aux-reobserve', role: 'review',
-    observeFormalBinding: async () => null,
+    observeFormalBinding: async () => { formalObservations++; return null; },
     onChildTurns: (binding, turns) => { observations++; for (const turn of turns) charged.add(`${binding.agentThreadId}:${turn.id}`); },
     onAuxiliaryCompleted: () => {
       completed++;
@@ -868,6 +939,7 @@ test('reobserving both auxiliary completions deduplicates advice settlement and 
     } });
   assert.equal(result.completed, true, result.error); assert.equal(completed, 2);
   assert.ok(observations >= 3); assert.equal(charged.size, 2); assert.deepEqual(result.captures, []);
+  assert.equal(formalObservations, 1, 'a conclusively auxiliary child is not reclassified during later observations');
 });
 
 for (const fault of ['duplicate-event', 'extra-completion', 'foreign-completion', 'duplicate-turn', 'failed-followup', 'incomplete-followup'])

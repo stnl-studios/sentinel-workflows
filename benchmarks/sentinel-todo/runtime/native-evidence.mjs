@@ -41,7 +41,22 @@ async function formalRunnerState({ product, specPath, operation, slice }) {
     || registry.operations.filter(x => x.operationId === binding.operationId).length !== 1) fail('formal registry association differs');
   await product.captureCurrentActiveExecution(specPath, attempt);
   const runner = record.runner;
-  if (!runner || ['reserved', 'aborted'].includes(runner.status)) return null;
+  if (!runner || runner.status === 'aborted') return null;
+  // A validated reservation is an unresolved official dispatch, not proof that
+  // every completed child is auxiliary. Binding it can still designate one.
+  if (runner.status === 'reserved') {
+    if (runner.agentId !== null || ![1, 2, 3].includes(runner.round) || typeof runner.dispatchId !== 'string'
+      || !runner.dispatchId || runner.originFile !== path.join(root, `round-${runner.round}.origin.json`))
+      fail('reserved formal dispatch is malformed');
+    const origin = await read(runner.originFile);
+    if (!equal(origin.owner, owner) || !equal(origin.admission?.binding, binding)
+      || origin.dispatchId !== runner.dispatchId || origin.attempt !== runner.round
+      || origin.specPath !== context.logicalAuthorityPath || origin.workspace !== context.productRoot)
+      fail('reserved formal origin differs');
+    if (!equal(await read(activationFile), activation) || !equal(await read(marker), record))
+      fail('formal reservation changed during observation');
+    return { state: 'pending' };
+  }
   if (!['running', 'captured'].includes(runner.status) || typeof runner.agentId !== 'string'
     || ![1, 2, 3].includes(runner.round)) fail('formal designation is not an observable running binding');
   const originFile = path.join(root, `round-${runner.round}.origin.json`);
@@ -58,11 +73,12 @@ async function formalRunnerState({ product, specPath, operation, slice }) {
       operationId:binding.operationId,ownershipToken:owner.ownershipToken,filesystemContext:binding.filesystemContext} };
 }
 export async function observeFormalRunner(input) {
-  return (await formalRunnerState(input))?.designation??null;
+  const current = await formalRunnerState(input);
+  return current?.state === 'pending' ? current : current?.designation ?? null;
 }
 export async function prepareFormalContinuation({ product,specPath,operation,slice,binding,toolResultFile,firstTurnId,commit }) {
   const current=await formalRunnerState({product,specPath,operation,slice});
-  if(!current)return null;
+  if(!current||current.state==='pending')return null;
   if(current.designation.agentPath!==binding.agentPath)fail('continuation is not the designated runner');
   return product.prepareNativeContinuation(current.handle,{toolResultFile,binding,firstTurnId,commit});
 }
