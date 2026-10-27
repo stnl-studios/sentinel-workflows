@@ -53,8 +53,21 @@ async function formalRunnerState({ product, specPath, operation, slice }) {
       || origin.dispatchId !== runner.dispatchId || origin.attempt !== runner.round
       || origin.specPath !== context.logicalAuthorityPath || origin.workspace !== context.productRoot)
       fail('reserved formal origin differs');
-    if (!equal(await read(activationFile), activation) || !equal(await read(marker), record))
-      fail('formal reservation changed during observation');
+    if (!equal(await read(activationFile), activation)) fail('formal reservation authority changed during observation');
+    const after = await read(marker);
+    if (!equal(after, record)) {
+      // bindNative may finish while this read-only observation is in flight.
+      // Recognize only its exact write, never build a designation from these
+      // snapshots. The existing poll must obtain a fresh complete proof.
+      const { agentId, status, ...dispatchBefore } = runner;
+      const { agentId: boundAgent, status: boundStatus, ...dispatchAfter } = after.runner ?? {};
+      if (!equal({ ...after, runner }, record) || !equal(dispatchAfter, dispatchBefore)
+        || boundStatus !== 'running' || typeof boundAgent !== 'string' || !boundAgent.trim())
+        fail('formal reservation changed outside native binding');
+      const agent = await read(path.join(root, `round-${runner.round}.agent.json`));
+      if (!equal(agent, { agentId: boundAgent, originFile: runner.originFile }))
+        fail('formal reservation native binding proof differs');
+    }
     return { state: 'pending' };
   }
   if (!['running', 'captured'].includes(runner.status) || typeof runner.agentId !== 'string'

@@ -218,7 +218,21 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
       }
       return value;
     } };
-    return actualFactory({ ...args, rpc, pollMs: 1 });
+    const provider = await actualFactory({ ...args, rpc, pollMs: 1 });
+    const runTurn = provider.runTurn.bind(provider);
+    provider.runTurn = input => runTurn({ ...input, observeFormalBinding: async () => {
+      try { return await input.observeFormalBinding(); }
+      catch (error) {
+        const code = ['NATIVE_EVIDENCE_UNPROVEN','ENOENT','UNSAFE_PATH','INVALID_STATE'].includes(error?.code) ? error.code : 'unclassified';
+        const message = code === 'NATIVE_EVIDENCE_UNPROVEN' && /^[a-zA-Z /-]{1,120}$/u.test(error.message) ? error.message : 'redacted';
+        const locations = [...String(error?.stack ?? '').matchAll(/\/([^/\s:]+\.mjs):(\d+):(\d+)/gu)]
+          .filter(match => ['native-evidence.mjs','execution-publication.mjs','execution-current-reader.mjs','execution-current-operation.mjs'].includes(match[1]))
+          .map(match => ({ file: match[1], line: Number(match[2]), column: Number(match[3]) }));
+        t.diagnostic(`TEST_ONLY_OBSERVATION_GUARD ${JSON.stringify({ category: 'PRODUCT_CALLBACK', code, message, locations })}`);
+        throw error;
+      }
+    } });
+    return provider;
   };
   await manager.initializeTurnBudget(runRoot, configuration.turnBudget.maxTurnsPerRun);
   const inherited = process.env.NODE_TEST_CONTEXT; delete process.env.NODE_TEST_CONTEXT;
@@ -557,6 +571,7 @@ test('literal manager entry parses ordinary run --case A and retains its normal 
 for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-child','aux-only','aux-run-nine','aux-run-eleven','aux-followup-twelve']) test(`normal entry blocks ${fault} without successor, refund or proof substitution`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
+  let terminalPendingObservations = 0;
   t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
   const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
   const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
@@ -569,7 +584,27 @@ for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-c
   }
   const offline = { mode: 'OFFLINE_TEST_ONLY', sdk, createNativeProvider: async args => {
     backend ??= offlineNativeWorkflow({ ...args, caseRoot: args.evidenceRoot, fault });
-    return actual({ ...args, rpc: backend.rpc, pollMs: 1 });
+    const provider = await actual({ ...args, rpc: backend.rpc, pollMs: 1 });
+    if (fault !== 'aux-only') return provider;
+    const runTurn = provider.runTurn.bind(provider);
+    provider.runTurn = async input => {
+      let dispatch, clock;
+      try { return await runTurn({ ...input,
+        onDispatched: async value => { dispatch = value; await input.onDispatched?.(value); },
+        observeFormalBinding: async () => {
+          const current = await input.observeFormalBinding();
+          const principal = backend.threads.get(dispatch.threadId)?.turns.find(turn => turn.id === dispatch.turnId);
+          if (current?.state === 'pending' && principal?.status === 'completed'
+            && ++terminalPendingObservations === 2) {
+            // Prove one pending observation returned without terminating, then
+            // cross its unchanged deadline through the existing test clock seam.
+            clock = t.mock.method(Date, 'now', () => dispatch.deadlineAt + 1);
+          }
+          return current;
+        },
+      }); } finally { clock?.mock.restore(); }
+    };
+    return provider;
   } };
   const context = process.env.NODE_TEST_CONTEXT; delete process.env.NODE_TEST_CONTEXT;
   try {
@@ -597,10 +632,17 @@ for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-c
     } else if (fault === 'aux-only') {
       const evidence = JSON.parse(await fs.readFile(state.operations.at(-1).evidencePath));
       assert.equal(evidence.turn.captures.length, 0, 'auxiliary advice cannot emit a formal ready envelope');
-      assert.equal(evidence.outcome.blocker, 'OWNER_UNCERTAIN');
+      assert.equal(terminalPendingObservations, 2, 'a terminal parent cannot make a pending reservation conclusive');
+      assert.equal(evidence.turn.terminalObserved, false);
+      assert.equal(evidence.turn.errorCode, 'NATIVE_TRANSPORT_UNPROVEN');
+      assert.match(evidence.turn.error, /observation deadline exceeded/u);
+      assert.equal(evidence.outcome.blocker, 'NATIVE_TRANSPORT_UNPROVEN');
       assert.match(evidence.officialReadback.execution.error, /activeAttempt declares an unresolved or different owner/u);
-      assert.equal(ledger.total, 5); assert.equal(ledger.reservations.length, 0);
-      assert.equal(ledger.turns.filter(turn => turn.childKind === 'auxiliary').length, 1);
+      assert.equal(ledger.total, 5); assert.equal(ledger.reservations.length, 10);
+      assert.equal(ledger.turns.filter(turn => turn.childKind === 'auxiliary').length, 0);
+      assert.equal(ledger.turns.filter(turn => turn.childKind === 'pending' && turn.state === 'dispatched').length, 1);
+      assert.equal(ledger.turns.filter(turn => turn.role === 'main' && turn.state === 'uncertain').length, 1);
+      await assert.rejects(manager.main(['clean','--run',runId]), /pending\/uncertain/);
     } else if (fault === 'aux-run-nine') {
       assert.equal(ledger.total, 12, 'the ninth auxiliary is counted even though the boundary blocks');
       assert.equal(ledger.turns.filter(turn => turn.unadmitted).length, 1);

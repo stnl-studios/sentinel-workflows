@@ -43,6 +43,40 @@ test('pending formal observation requires an intact official unbound reservation
   await fs.writeFile(marker, JSON.stringify(record));
   await assert.rejects(observeFormalRunner(input));
 });
+test('a reservation bound during observation stays pending until a fresh full designation', async t => {
+  const f = await reservedOperation(t);
+  let advanced = false;
+  const observing = { ...product, async captureCurrentActiveExecution(...args) {
+    const image = await product.captureCurrentActiveExecution(...args);
+    if (!advanced) { advanced = true; await bindNative(f.start.handle, '/root/bound-during-observation'); }
+    return image;
+  } };
+  const input = { product: observing, specPath: f.specPath, operation: 'VALIDATE_SLICE', slice: f.delivery.slice };
+  assert.deepEqual(await observeFormalRunner(input), { state: 'pending' });
+  const designation = await observeFormalRunner({ ...input, product });
+  assert.equal(designation.agentPath, '/root/bound-during-observation');
+  assert.equal(designation.dispatchId, f.dispatch.dispatchId);
+});
+for (const mutation of ['owner', 'dispatch', 'round', 'origin', 'outside-runner', 'unknown-status', 'agent'])
+test(`a reservation changing during observation rejects ${mutation} divergence`, async t => {
+  const f = await reservedOperation(t), marker = path.join(path.dirname(f.dispatch.originFile), 'owner.json');
+  const observing = { ...product, async captureCurrentActiveExecution(...args) {
+    const image = await product.captureCurrentActiveExecution(...args);
+    await bindNative(f.start.handle, '/root/bound-during-observation');
+    const record = JSON.parse(await fs.readFile(marker));
+    if (mutation === 'owner') record.binding.owner.ownershipToken = 'foreign';
+    if (mutation === 'dispatch') record.runner.dispatchId = 'foreign';
+    if (mutation === 'round') record.runner.round = 2;
+    if (mutation === 'origin') record.runner.originFile = path.join(path.dirname(f.dispatch.originFile), 'foreign.origin.json');
+    if (mutation === 'outside-runner') record.phase = 'foreign';
+    if (mutation === 'unknown-status') record.runner.status = 'unknown';
+    if (mutation === 'agent') record.runner.agentId = '/root/foreign';
+    await fs.writeFile(marker, JSON.stringify(record));
+    return image;
+  } };
+  await assert.rejects(observeFormalRunner({ product: observing, specPath: f.specPath,
+    operation: 'VALIDATE_SLICE', slice: f.delivery.slice }));
+});
 for (const mutation of ['agent', 'round', 'owner', 'registry']) test(`formal designation rejects ${mutation} divergence`, async t => {
   const f = await reservedOperation(t);
   await bindNative(f.start.handle, '/root/check');
