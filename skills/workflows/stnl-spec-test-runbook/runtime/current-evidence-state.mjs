@@ -2712,7 +2712,8 @@ function deriveRetainedApplyEpisode(bundle,map,context,approvedAuthority,records
   const priorSupport=bundle.support.filter(item=>!priorChecks.includes(item)&&item!==admission
     &&!(item.kind==='rejection'&&item.origin.operation==='APPLY_FINDINGS'&&item.operationAttemptId===first.owner.operationAttemptId)
     &&(item.kind!=='validation'||formalRecordNumber(item)<formalRecordNumber(admission))
-    &&(item.kind!=='rejection'||item.origin.operation!=='VALIDATE_SLICE'));
+    &&(item.kind!=='rejection'||item.origin.operation!=='VALIDATE_SLICE'
+      ||Number(requestForRecord(item,map).attemptId.slice(8))<=formalRecordNumber(admission)));
   const prior={...bundle,currentAuthoritySha256:projectedDelivery(approvedAuthority.delivery),
     findingsChecks:priorChecks,validation:admission,openFindings:first.base.openFindings,support:priorSupport};
   prior.objects=referencedObjects([...prior.implementation,...priorChecks,...priorSupport,admission],map);
@@ -3053,7 +3054,8 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
   if ([...bundle.implementation,...bundle.findingsChecks,...bundle.support,...(bundle.validation?[bundle.validation]:[])]
     .some(record=>record.recordFormat==='stnl-task-record-v1-imported')) fail('UNSUPPORTED_FORMAT','evidence format is not supported');
   verifyWorkObservation('current-validation',{observedWork});
-  const historicalRefusals=bundle.findingsChecks.length?firstFormalRefusals(bundle,sourceMap(bundle)):[];
+  const hasFindings=bundle.findingsChecks.length>0||bundle.support.some(item=>item.kind==='rejection'&&item.origin.operation==='APPLY_FINDINGS');
+  const historicalRefusals=hasFindings?firstFormalRefusals(bundle,sourceMap(bundle)):[];
   const formalRefusals=bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE'&&!historicalRefusals.includes(item));
   const refusedAttempt=formalRefusals.length?jsonBytes(restoreCaptureSources('current-validation',formalRefusals.at(-1),sourceMap(bundle)).validationRequest,'refused formal request').value.attemptId:null;
   const candidate=bundle.validation?.id===refusedAttempt?bundle.validation:null;
@@ -3109,7 +3111,7 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
       return {...verified,bundle,original:copyBytes(bundleBytes,'formal successor bytes'),map:objects};
     }
   }
-  if (bundle.findingsChecks.length || bundle.support.some(item=>item.kind==='rejection' && item.origin.operation==='APPLY_FINDINGS'))
+  if (hasFindings)
     return inspectFindings(original,bundle,context,approvedAuthority,declaredCounters,observedWork,null,currentAuthoritySha256);
   if (bundle.findingsChecks.length || bundle.openDivergences.length || bundle.currentAuthoritySha256!==(currentAuthoritySha256??projectedDelivery(approvedAuthority.delivery))) invalid('bundle formal authority/unsupported records');
   if (bundle.implementation.some(item => item.recordFormat==='stnl-task-record-v1-imported')) fail('UNSUPPORTED_FORMAT','imported implementation record');

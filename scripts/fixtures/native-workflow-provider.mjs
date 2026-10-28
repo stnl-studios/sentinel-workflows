@@ -162,7 +162,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         await fs.copyFile(path.join(repo, 'scripts/fixtures',source), path.join(workspace, 'src/cli.mjs'));
         const checks=caseId==='A'?checkSource:checkSource.replace("'list','--completed'","'list'").replace('map(x=>x.id),[1]','map(x=>x.id),[1,2]');
         await fs.writeFile(path.join(workspace, 'src/native-filter.test.mjs'), checks);
-        if (['findings-cycle', 'findings-two-cycles','findings-format-corrections'].includes(fault)) {
+        if (['findings-cycle', 'findings-two-cycles','findings-format-corrections','formal-recovered-apply-rejection'].includes(fault)) {
           const file = path.join(workspace, 'src/cli.mjs');
           const original = await fs.readFile(file, 'utf8');
           if (!original.includes('todo.completed === false')) throw new Error('offline mutant did not reach its pending branch');
@@ -181,7 +181,8 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       const expanded=operation==='VALIDATE_SLICE'&&['formal-two-corrections','formal-four-corrections','formal-exhausted','formal-continuation-exhausted'].includes(fault);
       const producerCorrections=fault==='execute-producer-corrections'&&operation==='EXECUTE_SLICE'?4:fault==='findings-producer-corrections'&&operation==='APPLY_FINDINGS'?3:0;
       const mixedApply=fault==='findings-producer-mixed'&&operation==='APPLY_FINDINGS';
-      const formalRounds=mixedApply?3:producerCorrections?producerCorrections+1:coverageRounds?3:mixedFinal?4:expanded?(fault==='formal-two-corrections'?3:fault==='formal-continuation-exhausted'?4:5):operation==='VALIDATE_SLICE'&&fault==='formal-incomplete-exhausted'?3:operation==='VALIDATE_SLICE'&&['formal-successor','formal-incomplete','formal-continuation-correction'].includes(fault)?2:1;
+      const recoveredApply=fault==='formal-recovered-apply-rejection'&&(operation==='APPLY_FINDINGS'||operation==='VALIDATE_SLICE'&&validationOrdinal===1);
+      const formalRounds=recoveredApply?2:mixedApply?3:producerCorrections?producerCorrections+1:coverageRounds?3:mixedFinal?4:expanded?(fault==='formal-two-corrections'?3:fault==='formal-continuation-exhausted'?4:5):operation==='VALIDATE_SLICE'&&fault==='formal-incomplete-exhausted'?3:operation==='VALIDATE_SLICE'&&['formal-successor','formal-incomplete','formal-continuation-correction'].includes(fault)?2:1;
       for(let formalRound=0;formalRound<formalRounds;formalRound++){
       if(coverageRounds) {
         const file=path.join(workspace,'src/native-filter.test.mjs');
@@ -238,7 +239,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
           ||feedback.previousResponseSha256!=='sha256:'+createHash('sha256').update(feedback.previousResponse).digest('hex'))
           throw Error('corrective producer did not receive the complete prior failure input');
       }
-      const findingsCycles = fault === 'findings-two-cycles' ? 2 : ['findings-cycle','findings-format-corrections','findings-producer-corrections','findings-producer-mixed'].includes(fault) ? 1 : 0;
+      const findingsCycles = fault === 'findings-two-cycles' ? 2 : ['findings-cycle','findings-format-corrections','findings-producer-corrections','findings-producer-mixed','formal-recovered-apply-rejection'].includes(fault) ? 1 : 0;
       const validationRound = operations.filter(item => item.operation === 'VALIDATE_SLICE').length;
       const needsFix = findingsCycles > 0 && operation === 'VALIDATE_SLICE' && validationRound <= findingsCycles;
       const corrected = findingsCycles > 0 && operation === 'VALIDATE_SLICE' && !needsFix;
@@ -266,7 +267,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       const incomplete=operation==='VALIDATE_SLICE'&&['formal-incomplete','formal-incomplete-exhausted'].includes(fault)
         &&(formalRound===0||fault==='formal-incomplete-exhausted');
       if(incomplete){result.status='BLOCKED';result.blockers='Independent inspection of the prepared assertions against the canonical AC-001 obligation is incomplete.';}
-      const invalid = !coverageRounds && (['formal-continuation-exhausted','formal-exhausted'].includes(fault)&&operation==='VALIDATE_SLICE'
+      const invalid = recoveredApply&&formalRound===0 || !coverageRounds && (['formal-continuation-exhausted','formal-exhausted'].includes(fault)&&operation==='VALIDATE_SLICE'
         || ['formal-successor','formal-continuation-correction'].includes(fault)&&formalRounds===2&&formalRound===0);
       if((fault==='formal-four-corrections'&&operation==='VALIDATE_SLICE'||mixedFinal)&&formalRound<formalRounds-1) {
         const [field,value]=[['status','INVALID'],['commands',[]],['evidence',0],['findingReferences',{}]][formalRound];result[field]=value;

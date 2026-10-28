@@ -1284,9 +1284,10 @@ test('lifecycle-family common barrier excludes controller with no orphan operati
 
 
 // These carriers are synthetic mechanical tool results, never native qualification.
-async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResume=false,resolved=false}={}) {
+async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResume=false,resolved=false,successor=false,invalid=false}={}) {
   const image=await inspectCurrentExecution(f.specPath);
-  const started=await begin({specPath:f.specPath,slice:'slice-01',expectedActivationId:image.activationId,operation:kind});
+  const start={specPath:f.specPath,slice:'slice-01',expectedActivationId:image.activationId,operation:kind};
+  const started=successor?await normalizeSuccessor(start):await begin(start);
   const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal});
   const requestBefore=await fs.readFile(dispatch.requestFile);
   if(edit)await edit();
@@ -1295,7 +1296,7 @@ async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResum
   const measured=await verifyNative(dispatch.originFile);
   let result;
   if(kind==='EXECUTE_SLICE') {const {head,...payload}=initialPayload(1);result={...payload,commands:measured.commands};}
-  else if(kind==='APPLY_FINDINGS'){const {head,...payload}=applyPayload(1,'TESTS_PASS',0);result={...payload,commands:measured.commands};}
+  else if(kind==='APPLY_FINDINGS'){const {head,...payload}=applyPayload(JSON.parse(requestBefore).round,'TESTS_PASS',0);result={...payload,commands:measured.commands};if(invalid)result.coverage='none';}
   else result={status,commands:measured.commands,evidence:'The reviewed pay assertion executed.',findingReferences:resolved?'finding-01':'none',
     findingDispositions:resolved?'finding-01=resolved':'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
   const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result,...(kind==='VALIDATE_SLICE'?{newFindings:[]}:{})});
@@ -1311,7 +1312,7 @@ async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResum
   }else published=await publish(started.handle);
   assert.equal(published.publication,'confirmed');assert.equal(published.cleanup,'complete');
   assert.equal(digest(await fs.readFile(path.join(path.dirname(dispatch.originFile),'round-1.response.json'))),captured.rawResponseSha256);
-  return {started,dispatch,captured,root:path.dirname(dispatch.originFile),image:await captureCurrentExecution(f.specPath)};
+  return {started,dispatch,captured,published,root:path.dirname(dispatch.originFile),image:await captureCurrentExecution(f.specPath)};
 }
 
 for(const change of ['typed-new','typed-edit','unpredicted','still-absent'])test(`U3.15-B output semantics ${change} survives capture and terminal formal`,async t=>{
@@ -1440,6 +1441,43 @@ for(const privateMutation of [false,true])test(`U3.15-B APPLY retains the origin
   assert.deepEqual(await fs.readFile(path.join(annex,'keep.bin')),Buffer.from([0,1,255]));
 });
 
+
+test('normalized formal NEEDS_FIX retains its anchor through rejected APPLY, correction and CLOSE',async t=>{
+  const f=await fixture({kind:'lifecycle',single:true,closeReady:true,productRefs:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  f.normalizedFirst=true;
+  await sealedBlockingFormal(f);
+  const rejected=await bConclude(f,'APPLY_FINDINGS',{invalid:true,
+    edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  assert.equal(rejected.published.transition.outcome,'rejected');
+  const responseFile=path.join(rejected.root,'round-1.response.json');
+  const responseBefore=await fs.readFile(responseFile);
+  const row=JSON.parse(Buffer.from(rejected.image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(rejected.image.files.get(row.evidence.path)));
+  assert.equal(bundle.findingsChecks.length,0,'a refused first APPLY is not an accepted check');
+  const authority=JSON.parse(await fs.readFile(rejected.dispatch.requestFile)).authority;
+  const validate=copy=>inspectCurrentEvidence({context:rejected.image.context,authority,
+    bundleBytes:Buffer.from(JSON.stringify(copy)+'\n'),counters:row.counters,baseline:row.baseline,
+    observedWork:rejected.image.observedByDelivery.get(row.deliveryId).manifest});
+  assert.equal(validate(bundle).rejection.origin.operation,'APPLY_FINDINGS');
+  for(const mutation of ['missing-formal-refusal','foreign-formal-owner']) {
+    const copy=structuredClone(bundle);
+    const anchor=copy.support.find(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE');
+    assert.ok(anchor);
+    if(mutation==='missing-formal-refusal')copy.support=copy.support.filter(item=>item!==anchor);
+    else anchor.operationAttemptId=anchor.origin.operationAttemptId='00000000-0000-4000-8000-000000000000';
+    assert.throws(()=>validate(copy),error=>{
+      assert.equal(error.code,'EVIDENCE_INCOMPLETE',error.message);return true;
+    },mutation);
+  }
+  const accepted=await bConclude(f,'APPLY_FINDINGS',{successor:true});
+  assert.equal(accepted.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  assert.deepEqual(await fs.readFile(responseFile),responseBefore,'correction retains the refused literal response');
+  const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true,resolved:true});
+  assert.equal(formal.image.inspection.state,'COMPLETE');
+  assert.equal((await publishCandidate('CLOSE',path.dirname(f.specPath),null)).publication,'confirmed');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
+});
 
 for(const laterNormalized of [false,true])test(`U3.15-B retained EXECUTE preserves a normalized first formal anchor through APPLY and ${laterNormalized?'normalized ':''}terminal PASS`,async t=>{
   const f=await fixture({single:true,productRefs:true,futureLeaf:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
