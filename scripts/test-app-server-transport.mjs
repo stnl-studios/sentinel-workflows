@@ -1146,6 +1146,76 @@ for (const announce of [true, false]) test(`formal follow-up ${announce ? 'annou
   assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1);
 });
 
+for(const fault of [null,'summary-prefix','null-phase-prefix','missing-first-envelope','full-prefix-disagrees','wrong-proof-hash','changed-first-response','third-turn','wrong-round'])
+test(`formal coverage clarification preserves the first public turn (${fault??'admitted'})`,async t=>{
+  const f=await fixture(t),firstText='BLOCKED: structured coverage proof missing',secondText='BLOCKED: authenticated coverage proof';
+  const s=server({bundle:f.bundle,cwd:f.root,provider:true,response:firstText});
+  s.state.parentItems.push({...s.state.parentItems[0],id:'first-completion',kind:'completed'});
+  if(fault==='null-phase-prefix')s.state.turns[0].items.at(-1).phase=null;
+  const request=s.rpc.request.bind(s.rpc);let parentDone=false,ready=0,firstFile,firstBytes,firstHistory;
+  const base={agentPath:identity.agentPath,operationAttemptId:'proved-owner',operationId:'proved-operation',dispatchId:'proved-dispatch',round:1};
+  let designation=base;
+  s.rpc.request=async(method,params)=>{
+    if(method==='thread/items/list'&&params.threadId===child)return{data:structuredClone(params.turnId===s.state.turns[0].id&&firstHistory&&['summary-prefix','full-prefix-disagrees'].includes(fault)?firstHistory:s.state.turns.find(turn=>turn.id===params.turnId).items).map(item=>({turnId:params.turnId,item})),nextCursor:null};
+    const value=await request(method,params);
+    if(method==='thread/turns/list'&&params.threadId===parent)value.data[0].status=parentDone?'completed':'inProgress';
+    return value;
+  };
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc,pollMs:1}),charged=new Set();
+  const result=await p.runTurn({prompt:'Offline proof clarification',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',operationId:`coverage-${fault??'admitted'}`,role:'review',
+    observeFormalBinding:async()=>designation,
+    onChildTurns:(binding,turns)=>{for(const turn of turns)charged.add(`${binding.agentThreadId}:${turn.id}`);},
+    onChildCompleted:async({capture})=>{
+      ready++;
+      if(ready===1) {
+        firstFile=capture.file;firstBytes=await fs.readFile(firstFile);
+        firstHistory=structuredClone(s.state.turns[0].items);
+        const next=structuredClone(s.state.turns[0]);next.id='proof-clarification';next.items.at(-1).id='proof-response';next.items.at(-1).text=secondText;
+        s.state.turns.push(next);s.state.parentItems.push({...s.state.parentItems[0],id:'proof-completion',kind:'completed'});
+        designation={...base,round:fault==='wrong-round'?3:2,clarification:{agentId:identity.agentPath,round:1,responseSha256:fault==='wrong-proof-hash'?sha('foreign'):sha(firstText)}};
+        if(fault==='changed-first-response')s.state.turns[0].items.at(-1).text='changed historical response';
+        if(fault==='full-prefix-disagrees')s.state.turns[0].items.at(-1).text='divergent full surface';
+        if(fault==='summary-prefix'){s.state.turns[0].itemsView='summary';s.state.turns[0].items=[];}
+        if(fault==='missing-first-envelope')await fs.unlink(firstFile);
+        parentDone=true;
+      } else if(fault==='third-turn') {
+        const third=structuredClone(s.state.turns[1]);third.id='unadmitted-third';third.items.at(-1).id='third-response';s.state.turns.push(third);
+        s.state.parentItems.push({...s.state.parentItems[0],id:'third-completion',kind:'completed'});
+      }
+    }});
+  const admitted=[null,'summary-prefix','null-phase-prefix'].includes(fault);
+  assert.equal(result.completed,admitted,result.error);
+  if(fault==='missing-first-envelope')await assert.rejects(fs.stat(firstFile),{code:'ENOENT'},'missing first envelope is never recreated');
+  else assert.deepEqual(await fs.readFile(firstFile),firstBytes,'the original envelope is never replaced');
+  assert.equal(charged.size,fault==='third-turn'?3:2);
+  if(admitted) {
+    assert.equal(result.captures.length,2);assert.notEqual(result.captures[0].file,result.captures[1].file);
+    assert.deepEqual(result.captures.map(x=>x.toolResult.finalResponse),[firstText,secondText]);
+    assert.deepEqual(result.captures.map(x=>x.designation.round),[1,2]);
+    assert.equal(result.captures[1].turnId,'proof-clarification');
+    const replay=await p.runTurn({prompt:'Offline proof clarification',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',operationId:`coverage-${fault??'admitted'}`,role:'review',
+      observation:result,observeFormalBinding:async()=>designation,
+      onChildTurns:(binding,turns)=>{for(const turn of turns)charged.add(`${binding.agentThreadId}:${turn.id}`);}});
+    assert.equal(replay.completed,true,replay.error);assert.equal(replay.captures.length,2);
+    assert.deepEqual(replay.captures.map(x=>x.toolResult),result.captures.map(x=>x.toolResult));
+    assert.equal(charged.size,2,'reobservation does not add turns or charges');
+  }
+  assert.equal(s.calls.filter(call=>call.method==='turn/start').length,1,'collector never starts a child turn');
+});
+
+test('coverage clarification preserves a separately admitted initialization and both formal turns',async t=>{
+  const f=await continuedHistory(t),first=await readAppServerChild(f.rpc,{binding:f.binding,bundle:f.bundle,cwd:f.root,continuation:f.continuation});
+  const file=path.join(f.root,'first-formal.json');await writeNativeToolResult(file,first);
+  const before=await fs.readFile(file),turn=structuredClone(f.s.state.turns[1]);turn.id='coverage-proof-turn';
+  turn.items.at(-1).id='coverage-proof-answer';turn.items.at(-1).text='BLOCKED with structured omission proof';f.s.state.turns.push(turn);
+  const options={binding:f.binding,bundle:f.bundle,cwd:f.root,continuation:f.continuation,
+    priorCaptures:[{binding:f.binding,turnId:'continued-turn',file,toolResult:first}]};
+  const clarified=await readAppServerChild(f.rpc,options),replay=await readAppServerChild(f.rpc,options);
+  assert.equal(clarified.finalResponse,turn.items.at(-1).text);assert.deepEqual(replay,clarified);
+  assert.equal(clarified.preVerificationContinuation,undefined,'the old initialization is not attributed to the new recipe round');
+  assert.deepEqual(await fs.readFile(file),before);assert.ok(f.s.calls.every(call=>call.method.startsWith('thread/')));
+});
+
 test('S2 frozen paths select the intended skill despite homonyms; all siblings/runner are pinned', async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root });
   await initializeAppServer(s.rpc);

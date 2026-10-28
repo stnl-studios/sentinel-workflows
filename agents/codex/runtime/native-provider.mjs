@@ -81,20 +81,24 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
       };
       // Pin each public result independently. A continuation never overwrites
       // the first file, even if both the API and a mutable file later drift.
-      const pin = async (binding,observed,file,map,prior=[]) => {
-        let capture=map.get(binding.agentPath);
+      const captureKey=(binding,designation)=>designation?.clarification?`${binding.agentPath}:${designation.round}`:binding.agentPath;
+      const readyFor=(binding,designation)=>previousReady.filter(e=>e.binding?.agentPath===binding.agentPath
+        &&(e.designation?.round??null)===(designation?.round??null));
+      const pin = async (binding,observed,file,map,prior=[],key=binding.agentPath) => {
+        let capture=map.get(key);
         if(!capture&&prior.length) {
           if(prior.length!==1||prior[0].toolResultFile!==file
             ||Object.keys(binding).some(k=>prior[0].binding[k]!==binding[k]))throw blocked('persisted child readiness binding differs');
           const saved=JSON.parse(await fs.readFile(file,'utf8'));
           if(sha(saved.finalResponse)!==prior[0].finalResponseSha256)throw blocked('persisted first child envelope differs');
-          capture={binding,file,toolResult:saved,finalResponseSha256:prior[0].finalResponseSha256};
+          capture={binding,file,toolResult:saved,finalResponseSha256:prior[0].finalResponseSha256,
+            ...(prior[0].turnId?{turnId:prior[0].turnId}:{}),...(prior[0].designation?{designation:prior[0].designation}:{})};
         }
         if(capture&&JSON.stringify(capture.toolResult)!==JSON.stringify(observed))throw blocked('public child differs from first capture');
         const written=capture??await writeNativeToolResult(file,observed),meta=await fs.lstat(file);
         if(!meta.isFile()||meta.isSymbolicLink()||meta.nlink!==1||await fs.realpath(file)!==file
           ||!(await fs.readFile(file)).equals(Buffer.from(JSON.stringify(observed)+'\n')))throw blocked('saved first child envelope absent/aliased/divergent');
-        const result={...written,binding,toolResult:observed};map.set(binding.agentPath,result);return result;
+        const result={...written,binding,toolResult:observed};map.set(key,result);return result;
       };
       const collect = async (binding,parentActive=false) => {
         try {
@@ -102,6 +106,21 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         let grant=continuations.get(binding.agentPath)??null;
         const count=views.get(binding.agentThreadId)?.turns.length??1;
         const firstTurnId=views.get(binding.agentThreadId)?.turns[0]?.id;
+        const designation=formal.get(binding.agentThreadId),clarification=designation?.clarification;
+        const key=captureKey(binding,designation),priorCaptures=[];
+        if(clarification) {
+          let prior=captures.get(binding.agentPath);
+          if(!prior) {
+            const ready=previousReady.filter(e=>e.binding?.agentPath===binding.agentPath&&e.designation?.round===clarification.round);
+            if(ready.length!==1)throw blocked('coverage clarification first capture is missing or ambiguous');
+            prior=await pin(binding,JSON.parse(await fs.readFile(ready[0].toolResultFile,'utf8')),ready[0].toolResultFile,captures,ready);
+          }
+          if(clarification.agentId!==binding.agentPath||clarification.round!==designation.round-1
+            ||prior.designation?.round!==clarification.round||prior.finalResponseSha256!==clarification.responseSha256
+            ||['operationAttemptId','operationId','dispatchId'].some(field=>prior.designation?.[field]!==designation[field]))
+            throw blocked('coverage clarification differs from the authenticated first capture');
+          priorCaptures.push(prior);
+        }
         const observeInitialization=()=>readAppServerChild(rpc,{binding,bundle,cwd:workspace,initialization:true});
         if(grant) {
           const original=JSON.parse(grant.firstToolResultUtf8);
@@ -120,9 +139,9 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             return;
           }
         }
-        const observed=await readAppServerChild(rpc,{binding,bundle,cwd:workspace,continuation:grant});
+        const observed=await readAppServerChild(rpc,{binding,bundle,cwd:workspace,continuation:grant,priorCaptures});
         assertCurrent();
-        if(!grant) {
+        if(!grant&&!clarification) {
           const original=await pin(binding,observed,stem+'.json',firstResponses,
             previousReady.filter(e=>e.binding?.agentPath===binding.agentPath));
           if(parentActive&&onPrepareContinuation!==null&&!captures.has(binding.agentPath)) {
@@ -145,13 +164,14 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             }
           }
         }
-        const file=stem+(grant?'.continued.json':'.json');
-        const capture=await pin(binding,observed,file,captures,previousReady.filter(e=>e.binding?.agentPath===binding.agentPath));
+        const file=stem+(clarification?`.round-${designation.round}.json`:grant?'.continued.json':'.json');
+        const capture=await pin(binding,observed,file,captures,readyFor(binding,designation),key);
+        capture.turnId=views.get(binding.agentThreadId)?.turns.at(-1)?.id;
         if(formal.has(binding.agentThreadId))capture.designation=formal.get(binding.agentThreadId);
-        if(!notified.has(binding.agentPath)) {
-          if(!previousReady.some(e=>e.binding?.agentPath===binding.agentPath))await record({type:'native.child.completed',binding,toolResultFile:file,
+        if(!notified.has(key)) {
+          if(!readyFor(binding,designation).length)await record({type:'native.child.completed',binding,toolResultFile:file,turnId:capture.turnId,
             ...(capture.designation?{designation:capture.designation}:{}),finalResponseSha256:capture.finalResponseSha256});
-          await hook('onChildCompleted',onChildCompleted,{binding,toolResult:observed,capture});notified.add(binding.agentPath);
+          await hook('onChildCompleted',onChildCompleted,{binding,toolResult:observed,capture});notified.add(key);
         }
         } catch(error) { throw nativeFailure(error,'capture'); }
       };
@@ -265,7 +285,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
                 if(ready.toolResult.preVerificationContinuation)continuationChecked.add(ready.binding.agentPath);}
             }
             for (const binding of children.values()) {
-              const designated = designation?.agentPath === binding.agentPath
+              let designated = designation?.agentPath === binding.agentPath
                 && binding.parentThreadId === dispatch.threadId && binding.parentTurnId === dispatch.turnId;
               if (observed.turn.status === 'inProgress' && !rootCompleted.has(binding.agentThreadId)
                 && !designated && !views.has(binding.agentThreadId)) continue;
@@ -283,14 +303,28 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               } });
               assertCurrent();
               views.set(binding.agentThreadId, view);
+              let selectedDesignation=designated?designation:formal.get(binding.agentThreadId);
+              const initialTurns=continuations.has(binding.agentPath)?2:1;
+              if(selectedDesignation&&!selectedDesignation.clarification&&view.turns.length>initialTurns) {
+                const next=await hook('observeFormalBinding',observeFormalBinding);
+                if(next?.state==='pending'){formalPending=true;continue;}
+                if(next?.agentPath!==binding.agentPath||next?.clarification?.round!==selectedDesignation.round
+                  ||next.round!==selectedDesignation.round+1
+                  ||['operationAttemptId','operationId','dispatchId'].some(field=>next[field]!==selectedDesignation[field]))
+                  throw blocked('formal child has repeated completion or follow-up');
+                selectedDesignation=next;designated=true;
+              }
               const completions = observed.items.filter(item => item.type === 'subAgentActivity' && item.kind === 'completed'
                 && item.agentPath === binding.agentPath).length;
               // Distinct completion items can describe distinct auxiliary
               // turns. They never relax the formal runner's single-turn rule.
               if (formal.has(binding.agentThreadId) || designated) {
                 const grant=continuations.get(binding.agentPath);
-                if(!grant&&(completions>1||view.turns.length>1)||grant&&(view.turns.length>2
+                const clarification=selectedDesignation?.clarification;
+                if(!clarification&&(!grant&&(completions>1||view.turns.length>1)||grant&&(view.turns.length>2
                   ||view.turns[0]?.id!==grant.firstTurnId||completions>view.turns.filter(t=>t.status==='completed').length))
+                  ||clarification&&(view.turns.length!==initialTurns+1
+                    ||completions>view.turns.filter(t=>t.status==='completed').length))
                   throw blocked('formal child has repeated completion or follow-up');
               } else if (completions > view.turns.filter(turn => turn.status === 'completed').length) {
                 throw blocked('auxiliary completion count exceeds completed public turns');
@@ -299,14 +333,17 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               if(failedTurn)throw blocked(`child turn failed/interrupted; preserve its effects (formal=${designated||formal.has(binding.agentThreadId)}; ${failedTurn.failure})`);
               if (designated) {
                 const previous = formal.get(binding.agentThreadId);
-                if (previous && JSON.stringify(previous) !== JSON.stringify(designation)) throw blocked('formal designation changed');
-                if (!previous) {
-                  await hook('onFormalObserved',value=>onFormalObserved?.(binding,value),designation); formal.set(binding.agentThreadId, designation);
-                  await record({ type: 'native.child.formal', binding, designation });
+                if (previous && JSON.stringify(previous) !== JSON.stringify(selectedDesignation)
+                  &&!selectedDesignation.clarification) throw blocked('formal designation changed');
+                if (!previous||JSON.stringify(previous)!==JSON.stringify(selectedDesignation)) {
+                  await hook('onFormalObserved',value=>onFormalObserved?.(binding,value),
+                    {...selectedDesignation,...(selectedDesignation.clarification?{turnId:view.turns.at(-1).id}:{})});
+                  formal.set(binding.agentThreadId, selectedDesignation);
+                  await record({ type: 'native.child.formal', binding, designation:selectedDesignation });
                 }
               }
               if (formal.has(binding.agentThreadId) && view.turns.length && view.turns.every(item => item.status === 'completed')) {
-                if (!captures.has(binding.agentPath)) await collect(binding,observed.turn.status==='inProgress');
+                if (!captures.has(captureKey(binding,formal.get(binding.agentThreadId)))) await collect(binding,observed.turn.status==='inProgress');
               } else if (!formalPending && view.turns.length && view.turns.every(item => item.status === 'completed')) {
                 const key = `${binding.agentThreadId}:${view.turns.map(item => item.id).join(',')}`;
                 if (!notified.has(key)) {
@@ -339,10 +376,14 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           throw blocked(`parent turn failed/interrupted (${publicTurnDiagnostic(observed.turn)})`);
         // Also reobserve already captured children after the principal ends.
         // A changed/extra turn or modified envelope cannot replace the first.
-        for (const binding of children.values()) if (observeFormalBinding === null || formal.has(binding.agentThreadId)) await collect(binding);
-        if (new Set(previousReady.map(event => event.binding?.agentPath)).size !== previousReady.length
+        for (const binding of children.values()) if (observeFormalBinding === null || formal.has(binding.agentThreadId)) {
+          views.set(binding.agentThreadId,await observeAppServerChild(rpc,{binding,cwd:workspace,
+            onTurns:turns=>hook('onChildTurns',value=>onChildTurns?.(binding,value),turns)}));
+          await collect(binding);
+        }
+        if (new Set(previousReady.map(event => captureKey(event.binding,event.designation))).size !== previousReady.length
           || previousReady.some(event => !children.has(event.binding?.agentPath)
-            || !captures.has(event.binding?.agentPath))) throw blocked('persisted child readiness is orphaned or duplicated');
+            || !captures.has(captureKey(event.binding,event.designation)))) throw blocked('persisted child readiness is orphaned or duplicated');
         const messages = observed.items.filter(item => item.type === 'agentMessage');
         const answer = messages.at(-1);
         if (!answer || ![null, undefined, 'final_answer'].includes(answer.phase)

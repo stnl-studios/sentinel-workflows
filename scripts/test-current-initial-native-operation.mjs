@@ -493,6 +493,153 @@ async function coveragePrefixFixture(t,{inputTest=false,mutate=null}={}) {
   return {...f,started,dispatch,file,finalResponse,captured:await captureNative(started.handle,file)};
 }
 
+async function coverageClarificationFixture(t,{triageMutation=null,resultMutation=null,beforeCapture=null}={}) {
+  const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=(amount=1)=>amount===0?"declined":"paid";\n');
+  const agentId='same-coverage-proof-producer';await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile),{head,...result}=initialPayload(1,'BLOCKED');
+  result.commands=measured.commands;result.blockers='The approved zero-amount assertion is absent; structured proof was not provided.';
+  resultMutation?.(result);
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+  const file=path.join(f.root,'incomplete-coverage.json');await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse}));
+  const requestBytes=await fs.readFile(dispatch.requestFile),request=JSON.parse(requestBytes);
+  const triage={format:'stnl-formal-review-triage-v1',owner:request.owner,requestSha256:digest(requestBytes),responseSha256:digest(Buffer.from(finalResponse)),
+    category:'incomplete-review',inputsAvailable:true,externalBlockers:[],missingWork:[{obligationId:'obligation-01',
+      evidence:'The approved zero-amount assertion is absent from the selected test, but its authenticated omission proof is missing.',
+      remainingWork:'Provide testCoverageOmissions for this approved obligation only; do not change the product or grant a verdict.'}]};
+  triageMutation?.(triage,result);
+  const triageFile=path.join(f.root,'coverage-triage.json');await fs.writeFile(triageFile,JSON.stringify(triage));
+  await beforeCapture?.({f,started,dispatch,file});
+  return {...f,started,dispatch,file,finalResponse,result,agentId,triage,triageFile};
+}
+
+async function concludeCoverageClarification(f,{mutate=null,agentId=f.agentId,invalidText=null}={}) {
+  const dispatch=await reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(f.started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile),{head,...result}=initialPayload(2,'BLOCKED');
+  result.commands=measured.commands;result.blockers='Only the approved zero-amount assertion is missing.';
+  result.priorRoundFailure='The preceding BLOCKED omitted the structured coverage proof.';
+  result.correctionApplied='Clarified only the missing proof; no product or test changed.';
+  result.inSliceRationale='The same producer authenticates the selected existing test for the approved obligation.';
+  result.testCoverageOmissions=[{obligationId:'obligation-01',testPath:'src/pay.test.mjs',
+    testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),
+    evidence:'AC-001 requires pay(0), which the current selected test never calls.',expectedCorrection:'Add the missing zero-amount assertion.'}];
+  mutate?.(result);
+  const finalResponse=invalidText??JSON.stringify({format:'stnl-current-native-judgment-v1',result}),file=path.join(f.root,'clarified-coverage.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse}));
+  return {dispatch,measured,result,file,finalResponse,captured:await captureNative(f.started.handle,file)};
+}
+
+test('EXECUTE coverage clarification binds the same producer, preserves BLOCKED and admits correction only after proof',async t=>{
+  const f=await coverageClarificationFixture(t,{resultMutation:r=>{r.unexpectedWorkspaceEffects='none observed';}});
+  const first=await captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile});
+  assert.equal(first.nextAction,'reserve-dispatch');assert.ok(first.testCoverageClarification);assert.equal(first.testCoverageCorrection,undefined);
+  assert.equal((await resume(f.started.handle)).testCoverageClarification.agentId,f.agentId);
+  assert.equal((await captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile})).replayed,true);
+  await assert.rejects(captureNative(f.started.handle,f.file),{code:'OWNER_MISMATCH'});
+  await assert.rejects(publish(f.started.handle));
+  const second=await concludeCoverageClarification(f);
+  assert.equal(second.captured.status,'BLOCKED');assert.ok(second.captured.testCoverageCorrection);
+  assert.match(second.measured.correctionFeedback.diagnostic,/testCoverageOmissions/u);
+  assert.equal(second.measured.correctionFeedback.previousResponse,f.finalResponse);
+  await fs.appendFile(path.join(f.root,'src/pay.test.mjs'),'test("zero",()=>assert.equal(pay(0),"declined"));\n');
+  const third=await reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await assert.rejects(bindNative(f.started.handle,f.agentId),{code:'OWNER_MISMATCH'});
+  await bindNative(f.started.handle,'fresh-after-actual-test-correction');
+  const measured=await verifyNative(third.originFile),{head,...result}=initialPayload(3,'TESTS_PASS');result.commands=measured.commands;
+  const final=path.join(f.root,'final-coverage.json');await fs.writeFile(final,JSON.stringify({agentId:'fresh-after-actual-test-correction',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+  await captureNative(f.started.handle,final);await publish(f.started.handle);
+  const view=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(view.files.get('continuity.json'))).deliveries[0];
+  assert.equal(current.counters.implementationChecks,3);assert.equal(view.inspection.state,'IMPLEMENTED_AWAITING_VALIDATION');
+  const bundle=JSON.parse(Buffer.from(view.files.get(current.evidence.path)));
+  assert.ok(bundle.objects.some(x=>Buffer.from(x.bytesBase64,'base64').toString('utf8')===f.finalResponse));
+});
+
+for(const fault of ['external-blocker','wrong-owner','wrong-request','wrong-response','unknown-obligation','no-inputs'])
+test(`EXECUTE coverage clarification refuses triage ${fault}`,async t=>{
+  const f=await coverageClarificationFixture(t,{triageMutation:triage=>{
+    if(fault==='external-blocker')triage.externalBlockers=['Security policy denied required access'];
+    if(fault==='wrong-owner')triage.owner={...triage.owner,ownershipToken:'foreign'};
+    if(fault==='wrong-request')triage.requestSha256='sha256:'+'a'.repeat(64);
+    if(fault==='wrong-response')triage.responseSha256='sha256:'+'a'.repeat(64);
+    if(fault==='unknown-obligation')triage.missingWork[0].obligationId='obligation-999';
+    if(fault==='no-inputs')triage.inputsAvailable=false;
+  }});
+  await assert.rejects(captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile}),{code:'FORMAL_RECOVERY_NOT_ELIGIBLE'});
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+});
+
+for(const fault of ['missing-proof','wrong-hash','untriaged-obligation','PASS','malformed','semantic','different-agent','product-change'])
+test(`EXECUTE coverage clarification cannot authorize ${fault}`,async t=>{
+  const f=await coverageClarificationFixture(t);await captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile});
+  if(fault==='product-change')await fs.appendFile(path.join(f.root,'src/pay.mjs'),'// changed before clarification\n');
+  const conclusion=concludeCoverageClarification(f,{agentId:fault==='different-agent'?'foreign-clarifier':f.agentId,invalidText:fault==='malformed'?'{invalid clarification':null,mutate:result=>{
+    if(fault==='missing-proof')delete result.testCoverageOmissions;
+    if(fault==='wrong-hash')result.testCoverageOmissions[0].testedFileSha256='sha256:'+'a'.repeat(64);
+    if(fault==='untriaged-obligation')result.testCoverageOmissions[0].obligationId='obligation-999';
+    if(fault==='PASS'){result.status='TESTS_PASS';delete result.testCoverageOmissions;}
+    if(fault==='semantic')result.coverage='pending';
+  }});
+  if(['different-agent','product-change'].includes(fault))await assert.rejects(conclusion);
+  else {
+    const refused=await conclusion;assert.equal(refused.captured.nextAction,'blocked');
+    assert.equal(refused.captured.captureClass,'coverage-clarification-rejected');
+    assert.equal((await resume(f.started.handle)).nextAction,'blocked');
+    assert.equal((await captureNative(f.started.handle,refused.file)).replayed,true);
+    const {context}=await resolveCurrentExecutionContext(f.specPath);
+    const activation=JSON.parse(await fs.readFile(path.join(context.logicalExecutionRoot,'activation.json')));
+    await assert.rejects(normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:activation.activationId}));
+    await assert.rejects(fs.stat(path.join(path.dirname(f.dispatch.originFile),'round-3.origin.json')),{code:'ENOENT'});
+  }
+  await assert.rejects(publish(f.started.handle));
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+});
+
+test('EXECUTE coverage clarification never attaches triage to a previously captured response',async t=>{
+  const f=await coverageClarificationFixture(t);await captureNative(f.started.handle,f.file);
+  const receipt=path.join(path.dirname(f.dispatch.originFile),'round-1.receipt.json'),before=await fs.readFile(receipt);
+  await assert.rejects(captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile}),{code:'OWNER_MISMATCH'});
+  assert.deepEqual(await fs.readFile(receipt),before);assert.equal((await resume(f.started.handle)).nextAction,'blocked');
+});
+
+test('EXECUTE coverage clarification refuses an uncertain observation without a second dispatch',async t=>{
+  const f=await coverageClarificationFixture(t,{beforeCapture:async({dispatch})=>{
+    const file=path.join(path.dirname(dispatch.originFile),'round-1.observation.json'),observation=JSON.parse(await fs.readFile(file));
+    observation.status='uncertain';await fs.writeFile(file,JSON.stringify(observation));
+  }});
+  await assert.rejects(captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile}),{code:'OWNER_UNCERTAIN'});
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+});
+
+test('EXECUTE coverage clarification shares the last remaining invocation with ordinary corrections',async t=>{
+  const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');
+  let dispatch=first;
+  for(let round=1;round<=5;round++) {
+    if(round<=3)await fs.writeFile(path.join(f.root,'src/pay.mjs'),`export const pay=()=>"broken-${round}";\n`);
+    if(round===4)await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+    if(round>1)dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+    const agentId=round===5?'shared-clarification-4':`shared-clarification-${round}`;await bindNative(started.handle,agentId);
+    const measured=await verifyNative(dispatch.originFile),{head,...result}=initialPayload(round,round<=3?'TESTS_FAIL':'BLOCKED');
+    result.automaticCheckRound=`${round}/5`;result.commands=measured.commands;result.blockers=round<=3?'none':'The approved zero-amount assertion is absent.';
+    if(round===5)result.testCoverageOmissions=[{obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),evidence:'No assertion for pay(0).',expectedCorrection:'Add the approved zero-amount assertion.'}];
+    const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result}),file=path.join(f.root,`shared-${round}.json`);
+    await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse}));
+    let reviewTriageFile=null;
+    if(round===4) {
+      const bytes=await fs.readFile(dispatch.requestFile),request=JSON.parse(bytes);
+      reviewTriageFile=path.join(f.root,'shared-triage.json');await fs.writeFile(reviewTriageFile,JSON.stringify({format:'stnl-formal-review-triage-v1',owner:request.owner,
+        requestSha256:digest(bytes),responseSha256:digest(Buffer.from(finalResponse)),category:'incomplete-review',inputsAvailable:true,externalBlockers:[],
+        missingWork:[{obligationId:'obligation-01',evidence:'Structured proof of the absent zero-amount assertion is missing.',remainingWork:'Provide the authenticated omission proof for the approved requirement.'}]}));
+    }
+    const captured=await captureNative(started.handle,file,{reviewTriageFile});assert.equal(captured.nextAction,round<5?'reserve-dispatch':'blocked');
+  }
+  assert.equal((await resume(started.handle)).nextAction,'blocked');
+  await assert.rejects(reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+  await assert.rejects(publish(started.handle));
+});
+
 for(const defect of ['coverage','discoveryActions'])test(`Rejected BLOCKED ${defect} preserves semantic-refusal publication after resume`,async t=>{
   const f=await coveragePrefixFixture(t,{mutate:r=>{r[defect]='pending';}});
   const bytes=await fs.readFile(f.file);

@@ -80,10 +80,13 @@ async function formalRunnerState({ product, specPath, operation, slice }) {
     || origin.specPath !== context.logicalAuthorityPath || origin.workspace !== context.productRoot
     || agent.agentId !== runner.agentId || agent.originFile !== originFile) fail('formal origin/agent/round differs');
   if (!equal(await read(activationFile), activation) || !equal(await read(marker), record)) fail('formal designation changed during observation');
+  const handle={format:'stnl-current-operation-handle-v1',specPath:context.logicalAuthorityPath,
+    operationId:binding.operationId,ownershipToken:owner.ownershipToken,filesystemContext:binding.filesystemContext};
+  const clarification=operation==='EXECUTE_SLICE'&&runner.round>1?(await product.resume(handle)).priorTestCoverageClarification:null;
+  if (!equal(await read(activationFile), activation) || !equal(await read(marker), record)) fail('formal clarification changed during observation');
   return { designation:{ agentPath: runner.agentId, operationAttemptId: owner.operationAttemptId,
-    operationId: binding.operationId, dispatchId: runner.dispatchId, round: runner.round },
-    handle:{format:'stnl-current-operation-handle-v1',specPath:context.logicalAuthorityPath,
-      operationId:binding.operationId,ownershipToken:owner.ownershipToken,filesystemContext:binding.filesystemContext} };
+    operationId: binding.operationId, dispatchId: runner.dispatchId, round: runner.round,
+    ...(clarification?{clarification}:{}) },handle };
 }
 export async function observeFormalRunner(input) {
   const current = await formalRunnerState(input);
@@ -255,7 +258,7 @@ export function assertNativeCaptures(image, captures, { restoreCaptureSources } 
       if (value?.agentId && value.status === 'completed' && typeof value.finalResponse === 'string') official.push({ value, record, objects });
     }
   }
-  if (new Set(captures.map(item => item.binding.agentPath)).size !== captures.length
+  if (new Set(captures.map(item => JSON.stringify([item.binding.agentPath,item.designation?.operationAttemptId,item.designation?.round]))).size !== captures.length
     || official.length !== captures.length) fail('native capture count/identity differs from retained invocation lineage');
   for (const capture of captures) {
     if (official.filter(({ value }) => value.agentId === capture.binding.agentPath

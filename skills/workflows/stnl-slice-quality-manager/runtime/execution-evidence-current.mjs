@@ -5,7 +5,7 @@ import {
   RunnerSemanticResultError, assertRunnerVerdictConsistency, assertExecutionResultScope,
   deriveCanonicalRunnerRejection, recoverableRunnerResultDiagnostic,
   parseSemanticExecutionPayload, serializeMarkdownScalar, serializeCommand,
-  executionFields, isExplanatoryExecutionField, MAX_NATIVE_PRODUCER_TURNS, nativeCheckRoundMatches,
+  executionFields, isExplanatoryExecutionField, MAX_NATIVE_PRODUCER_TURNS, nativeCheckRoundMatches, validateReviewTriage,
 } from './runner-result-contract.mjs';
 import { verifyCapturedInvocation, verifyWorkObservation, packCaptureSources, restoreCaptureSources,
   closeEvidenceObjects, projectNativeJudgment, NATIVE_JUDGMENT_VARIANT, findingsRoundCaptureSha256 } from './execution-evidence-proof.mjs';
@@ -488,7 +488,7 @@ function compose(input, info) {
     .filter(name=>previousAfter.entries.some(entry=>entry.path===name&&entry.kind==='absent')):[]);
   const runners = new Set(predecessor?implementationRounds(predecessor.bundle).map(({record})=>record.origin.runnerId):[]);
   const receipts = [];
-  let productBytes = 0, productDrift=null, previousCoverageCorrection=null;
+  let productBytes = 0, productDrift=null, previousCoverageCorrection=null,previousClarification=null;
   for (const [index, cap] of input.rounds.entries()) {
     const round = index + 1,globalRound=offset+round;
     verifyCapturedInvocation('initial-implementation', cap, undefined, undefined, undefined, round, transport);
@@ -519,7 +519,7 @@ function compose(input, info) {
         mismatch(`round ${round}: implementation drift witness differs`);
       productDrift=witness;
     }else if(productDrift)mismatch('implementation drift witness disappeared');
-    if (round > 1 && previousStatus !== 'TESTS_FAIL' && !(previousStatus === 'BLOCKED' && previousCoverageCorrection)
+    if (round > 1 && previousStatus !== 'TESTS_FAIL' && !(previousStatus === 'BLOCKED' && (previousCoverageCorrection||previousClarification))
       && !(previousStatus==='TESTS_PASS'&&witness?.sourceRound===round-1))invalid(`round ${round}: previous round did not fail`);
     const rawText = textBytes(cap.rawResponse, `round ${round} rawResponse`).text;
     const receipt = jsonBytes(cap.receipt, `round ${round} receipt`).value;
@@ -538,7 +538,9 @@ function compose(input, info) {
     }
     if (dispatchId !== null && dispatchId !== transportInfo.dispatchId) mismatch(`round ${round}: dispatch changed`);
     dispatchId = transportInfo.dispatchId;
-    if (runners.has(transportInfo.runnerId)) mismatch(`round ${round}: runner identity replay`);
+    if(previousClarification && transportInfo.runnerId!==previousClarification.agentId)
+      mismatch(`round ${round}: coverage clarification requires the same producer`);
+    if (runners.has(transportInfo.runnerId) && !previousClarification) mismatch(`round ${round}: runner identity replay`);
     runners.add(transportInfo.runnerId);
     receipts.push(receipt);
     const origin = originRecord(input.owner, transport, transportInfo);
@@ -560,6 +562,8 @@ function compose(input, info) {
     const result = projectionError?{error:projectionError}:semantic(semanticText, receipt, round);
     const schemaRejected = result.error !== undefined;
     if (schemaRejected) {
+      if(receipt.reviewTriage!==undefined||previousClarification)
+        fail('FORMAL_RECOVERY_NOT_ELIGIBLE','coverage clarification requires a schema-valid concluded response');
       if (index !== input.rounds.length - 1) invalid(`round ${round}: rejected round cannot precede another`);
       if (receipt.status === 'RUNNER_RESULT_BLOCKED') {
         if (transport === 'native') {
@@ -604,6 +608,9 @@ function compose(input, info) {
     expectEqual(receipt.verification, observed, 'EVIDENCE_STALE', `round ${round}: receipt observation`);
     const entries = testedState(receipt.testedState, input.context, input.owner, before, observed.after, info, round,retainedRemovals);
     if (previousCoverageCorrection) assertTestCoverageCorrectionWork(previousCoverageCorrection,before,observed.after);
+    if(previousClarification && (!same(before,observed.after)||payload.status!=='BLOCKED'
+      ||!same(payload.commands,previousClarification.commands)))
+      fail('FORMAL_RECOVERY_NOT_ELIGIBLE','coverage clarification must preserve the tested product, commands and BLOCKED verdict');
     verifyRemoval(cap.removalProofs, input.owner, round, before, observed.after);
     for(const name of retainedRemovals)if(!observed.after.entries.some(entry=>entry.path===name&&entry.kind==='absent'))retainedRemovals.delete(name);
     for(const blob of cap.removalProofs)retainedRemovals.add(jsonBytes(blob,'verified current removal').value.path);
@@ -640,6 +647,8 @@ function compose(input, info) {
       }
     }
     if (rejection !== null) {
+      if(receipt.reviewTriage!==undefined||previousClarification)
+        fail('FORMAL_RECOVERY_NOT_ELIGIBLE','coverage clarification requires a valid concluded BLOCKED check');
       if (index !== input.rounds.length - 1) invalid(`round ${round}: rejected round cannot precede another`);
       const diagnostic = recoverableRunnerResultDiagnostic(rejection);
       if (diagnostic === null) invalid(`round ${round}: rejection diagnostic unavailable`);
@@ -647,6 +656,19 @@ function compose(input, info) {
         consumedInvocations:round, round, sources:packCaptureSources('initial-implementation',cap,store)});
       previousStatus = 'rejected';
       continue;
+    }
+    const coverageCorrection=testCoverageCorrection(payload,input.authority,info,input.context,observed.after);
+    if(previousClarification && (!coverageCorrection
+      ||payload.testCoverageOmissions.some(item=>!previousClarification.missingWork.some(work=>work.obligationId===item.obligationId))))
+      fail('FORMAL_RECOVERY_NOT_ELIGIBLE','coverage clarification requires authenticated proof limited to the triaged obligations');
+    previousClarification=null;
+    if(receipt.reviewTriage!==undefined) {
+      if(payload.testCoverageOmissions!==undefined || commands.length===0)
+        fail('FORMAL_RECOVERY_NOT_ELIGIBLE','coverage clarification requires absent proof and completed checks');
+      const triage=validateReviewTriage(receipt.reviewTriage,{owner:input.owner,
+        requestSha256:nativeOrigin.requestSha256,responseSha256:raw(utf8(rawText)),status:payload.status,
+        commands,obligations:input.authority.delivery.obligations});
+      previousClarification={agentId:transportInfo.runnerId,round,responseSha256:raw(utf8(rawText)),commands,missingWork:triage.missingWork};
     }
     const correction = globalRound === 1 ? [] : changedLeaves(implementation.at(-1)?.testedWork??before, observed.after)
       .map(name => relativeTask(input.context, path.join(input.context.productRoot, name), input.owner.slice));
@@ -656,7 +678,7 @@ function compose(input, info) {
       contract:{delivery:input.authority.delivery, context:input.authority.context, terminal:null, recipe:info.recipe},
       recordUtf8, testedWork:observed.after, sources:packCaptureSources('initial-implementation',cap,store)});
     previousStatus = payload.status;
-    previousCoverageCorrection = testCoverageCorrection(payload,input.authority,info,input.context,observed.after);
+    previousCoverageCorrection = coverageCorrection;
   }
   const bundle = {
     format:'stnl-current-evidence-v1', deliveryId:input.owner.deliveryId, slice:input.owner.slice,
@@ -669,7 +691,8 @@ function compose(input, info) {
   return {bundle:parseCurrentJson(resultBytes.toString('utf8')), bytes:Uint8Array.from(resultBytes), sha256:raw(resultBytes),
     counters:{implementationChecks:implementation.length,findingsChecks:0,validationAttempts:0,findings:0},
     consumedInvocations:offset+input.rounds.length, outcome:previousStatus==='rejected' ? 'rejected' : 'recorded',
-    ...(previousStatus==='BLOCKED' && previousCoverageCorrection && offset+input.rounds.length<MAX_NATIVE_PRODUCER_TURNS ? {testCoverageCorrection:previousCoverageCorrection} : {})};
+    ...(previousStatus==='BLOCKED' && previousCoverageCorrection && offset+input.rounds.length<MAX_NATIVE_PRODUCER_TURNS ? {testCoverageCorrection:previousCoverageCorrection} : {}),
+    ...(previousStatus==='BLOCKED' && previousClarification && offset+input.rounds.length<MAX_NATIVE_PRODUCER_TURNS ? {testCoverageClarification:previousClarification} : {})};
 }
 
 export function composeInitialImplementationEvidence(input) {

@@ -266,7 +266,7 @@ test("native generic spawn loads the complete selected runner contract in an ind
   const quality = await fs.readFile(path.join(repository, "skills/workflows/stnl-slice-quality-manager/SKILL.md"), "utf8");
   const guide = await fs.readFile(path.join(canonical, "README.md"), "utf8");
   const contract = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
-  assert.match(contract, /name = "stnl_validation_runner"[\s\S]*developer_instructions = """\nCONTRATO_CANONICO=stnl-validation-runner\/v14/u);
+  assert.match(contract, /name = "stnl_validation_runner"[\s\S]*developer_instructions = """\nCONTRATO_CANONICO=stnl-validation-runner\/v15/u);
   for (const [owner, skill] of [['stnl-slice-executor', executor], ['stnl-slice-quality-manager', quality]]) {
     const invocation = await fs.readFile(path.join(repository, 'skills/workflows', owner, 'references/runner-invocation.md'), 'utf8');
     assertIndependentNativeInvocation(skill, invocation);
@@ -301,7 +301,7 @@ test('native invocation rejects missing independence, selected identity and no-w
 test("Initial EC-1 native test selects one complete candidate contract before dispatch", async () => {
   const contract = await fs.readFile(path.join(canonical, 'codex/.codex/agents/stnl_validation_runner.toml'), 'utf8');
   const operation = await fs.readFile(path.join(repository, 'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs'), 'utf8');
-  assert.match(contract, /CONTRATO_CANONICO=stnl-validation-runner\/v14/u);
+  assert.match(contract, /CONTRATO_CANONICO=stnl-validation-runner\/v15/u);
   assert.match(contract, /stnl-current-validation-response-v1/u);
   assert.match(contract, /stnl-current-findings-response-v1/u);
   assert.match(contract, /origin\.workspace/u);

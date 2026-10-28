@@ -13,7 +13,7 @@ import {
   RunnerSemanticResultError, assertRunnerVerdictConsistency, deriveCanonicalRunnerRejection,
   parseSemanticValidationPayload, parseSemanticExecutionPayload, parseCapturedResult,
   assertExecutionResultScope, recoverableRunnerResultDiagnostic, serializeCommand, serializeMarkdownScalar,
-  executionFields, isExplanatoryExecutionField, formalRecoveryBudget, MAX_NATIVE_PRODUCER_TURNS, MIN_CORRECTIONS_BEFORE_RECURRENCE, nativeCheckRoundMatches,
+  executionFields, isExplanatoryExecutionField, formalRecoveryBudget, MAX_NATIVE_PRODUCER_TURNS, MIN_CORRECTIONS_BEFORE_RECURRENCE, nativeCheckRoundMatches, validateReviewTriage,
 } from './runner-result-contract.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
@@ -758,29 +758,10 @@ function deriveCapture({context,authority:approvedAuthority,capture,expectedOwne
     contract:{delivery:approvedAuthority.delivery,context:approvedAuthority.context,terminal,recipe:approvedAuthority.delivery.verificationRecipe},
     recordUtf8:renderRecord(rootRequest,payload,observed.commands),testedWork:observed.observed.after};
   if(receipt.reviewTriage!==undefined) {
-    const triage=receipt.reviewTriage;
-    const reject=reason=>fail('FORMAL_RECOVERY_NOT_ELIGIBLE',reason);
-    const keys=['format','owner','requestSha256','responseSha256','category','inputsAvailable','externalBlockers','missingWork'];
-    if(!triage||typeof triage!=='object'||Array.isArray(triage)
-      ||JSON.stringify(Object.keys(triage).sort())!==JSON.stringify(keys.sort())
-      ||triage.format!=='stnl-formal-review-triage-v1'||triage.category!=='incomplete-review'
-      ||!same(triage.owner,request.owner)||triage.requestSha256!==raw(copyBytes(capture.validationRequest,'triage request'))
-      ||triage.responseSha256!==raw(copyBytes(capture.rawResponse,'triage response')))
-      reject('incomplete-review triage is not bound to this owner, request and literal response');
-    if(payload.status!=='BLOCKED'||newly.length||observed.commands.some(item=>item.exit!==0)
-      ||triage.inputsAvailable!==true||!Array.isArray(triage.externalBlockers)||triage.externalBlockers.length
-      ||!Array.isArray(triage.missingWork)||!triage.missingWork.length)
-      reject('triage requires incomplete review with available inputs, no external blocker, findings or failed checks');
-    const obligations=new Set(approvedAuthority.delivery.obligations.map(item=>item.id)),seen=new Set();
-    for(const item of triage.missingWork) {
-      if(!item||typeof item!=='object'||Array.isArray(item)
-        ||JSON.stringify(Object.keys(item).sort())!==JSON.stringify(['evidence','obligationId','remainingWork'])
-        ||!obligations.has(item.obligationId)||seen.has(item.obligationId)
-        ||['evidence','remainingWork'].some(key=>typeof item[key]!=='string'||!item[key].trim()
-          ||/^(none|pending|n\/a|unknown)$/iu.test(item[key].trim())))
-        reject('triage must identify concrete missing canonical work and its evidence');
-      seen.add(item.obligationId);
-    }
+    const triage=validateReviewTriage(receipt.reviewTriage,{owner:request.owner,
+      requestSha256:raw(copyBytes(capture.validationRequest,'triage request')),
+      responseSha256:raw(copyBytes(capture.rawResponse,'triage response')),status:payload.status,
+      commands:observed.commands,obligations:approvedAuthority.delivery.obligations,hasFindings:newly.length>0});
     return {request,origin,receipt,observed,response,payload,rejection:`FORMAL_REVIEW_INCOMPLETE: ${canonical(triage.missingWork)}`,
       parsed,consumedInvocations:info.producerTurns};
   }

@@ -531,7 +531,7 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
       ?await capturedImplementationPrefix(now):null;
     if(now.record.phase!=='working' || (!auxiliary && now.record.runner!==null)
       || auxiliary && previousRound && (now.record.runner.status!=='captured'
-        || !['TESTS_FAIL',...(productDrift?['TESTS_PASS']:[]),...(coveragePrefix?.testCoverageCorrection?['BLOCKED']:[])].includes(now.record.runner.resultStatus)
+        || !['TESTS_FAIL',...(productDrift?['TESTS_PASS']:[]),...(coveragePrefix?.testCoverageCorrection||coveragePrefix?.testCoverageClarification?['BLOCKED']:[])].includes(now.record.runner.resultStatus)
         || now.record.runner.resultStatus==='TESTS_PASS'
           && productDrift.sourceRound!==previousRound
         || previousRound+(now.binding.normalization?.consumedInvocations??0)>=MAX_NATIVE_PRODUCER_TURNS))
@@ -558,6 +558,7 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
             ?(parseCurrentJson(Buffer.from(previous.cap.rawResponse).toString('utf8')).result?.status??parseCurrentJson(Buffer.from(previous.cap.rawResponse).toString('utf8')).status)
             :result.auxiliaryStatus)!=='TESTS_FAIL'
           && !result.testCoverageCorrection
+          && !result.testCoverageClarification
           && !(productDrift&&parseCurrentJson(Buffer.from(previous.cap.rawResponse).toString('utf8')).result?.status==='TESTS_PASS')
           || result.consumedInvocations!==previousRound+(now.binding.normalization?.consumedInvocations??0))
           fail('OWNER_UNCERTAIN','previous Initial prefix is not an eligible failed check');
@@ -583,6 +584,8 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
     }
     if(coveragePrefix?.testCoverageCorrection)
       assertTestCoverageCorrectionWork(coveragePrefix.testCoverageCorrection,previous.lastWork,observed.manifest);
+    if(coveragePrefix?.testCoverageClarification && !same(previous.lastWork,observed.manifest))
+      fail('EVIDENCE_STALE','coverage clarification cannot follow a product correction');
     if(productDrift) {
       if(now.binding.normalization || !previous || productDrift.class!=='product-drift'
         || productDrift.sourceOperationAttemptId!==now.owner.operationAttemptId
@@ -627,7 +630,8 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
       responseFile:path.join(now.root,`round-${round}.response.json`)};
     if(!previousRound && responseVariant) now.record.responseVariant=responseVariant;
     await persistAllocation(now.marker,now.record);
-    return {phase:'dispatch-reserved',nextAction:'spawn-and-bind',owner:now.owner,
+    return {phase:'dispatch-reserved',nextAction:coveragePrefix?.testCoverageClarification?'bind-same-agent':'spawn-and-bind',owner:now.owner,
+      ...(coveragePrefix?.testCoverageClarification?{testCoverageClarification:coveragePrefix.testCoverageClarification}:{}),
       originFile,requestFile:now.record.runner.requestFile,requestSha256:sha(json(request)),
       verificationHelper:here,dispatchId,round,
       ...(responseVariant?{responseVariant}:{})};
@@ -648,11 +652,16 @@ export async function bindNative(handle,agentId) {
     if(now.record.phase!=='working' || now.record.runner?.status!=='reserved'
       || now.record.runner.agentId!==null || await maybe(path.join(now.root,`round-${round}.agent.json`)))
       fail('OWNER_UNCERTAIN','native binding already exists or is uncertain');
+    const previousPrefix=now.owner.operation==='EXECUTE_SLICE'&&round>1
+      ?await capturedImplementationPrefix({...now,record:{...now.record,runner:{...now.record.runner,round:round-1}}}):null;
+    const clarification=previousPrefix?.testCoverageClarification;
+    if(clarification && agentId!==clarification.agentId)
+      fail('OWNER_MISMATCH','coverage clarification requires the same producer');
     for(let index=1;index<round;index+=1)
-      if((await readJson(path.join(now.root,`round-${index}.agent.json`))).agentId===agentId)
+      if((await readJson(path.join(now.root,`round-${index}.agent.json`))).agentId===agentId && !clarification)
         fail('OWNER_MISMATCH','a fresh native agent is required for each findings round');
     const image=await requireA1(now);
-    if(now.binding.normalization){
+    if(now.binding.normalization && !clarification){
       const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
       const current=continuity.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
       const bundle=parseCurrentJson(Buffer.from(image.files.get(current.evidence.path)).toString('utf8'));
@@ -881,7 +890,9 @@ async function nativeCorrectionFeedback(op,image,round) {
     const receipt=parseCurrentJson(Buffer.from(capture.receipt).toString('utf8'));
     const response=parseCurrentJson(Buffer.from(capture.rawResponse).toString('utf8'));
     const result=response.result??response;
-    diagnostic=receipt.captureFailure??`${result.status}: ${result.failures??result.blockers??result.evidence}`;
+    diagnostic=previous.result.testCoverageClarification
+      ?`testCoverageOmissions proof is missing; clarify only these approved obligations: ${JSON.stringify(previous.result.testCoverageClarification.missingWork)}`
+      :receipt.captureFailure??`${result.status}: ${result.failures??result.blockers??result.evidence}`;
   } else if(op.binding.normalization) {
     const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
     const current=continuity.deliveries.find(item=>item.deliveryId===op.owner.deliveryId);
@@ -1025,8 +1036,8 @@ export async function captureNative(handle,toolResultFile,{reviewTriageFile=null
   const op=await load(handle);
   const tool=await readJson(toolResultFile);
   const reviewTriage=reviewTriageFile===null?null:await readJson(reviewTriageFile);
-  if(reviewTriage!==null&&op.owner.operation!=='VALIDATE_SLICE')
-    fail('FORMAL_RECOVERY_NOT_ELIGIBLE','review triage belongs only to formal validation');
+  if(reviewTriage!==null&&!['VALIDATE_SLICE','EXECUTE_SLICE'].includes(op.owner.operation))
+    fail('FORMAL_RECOVERY_NOT_ELIGIBLE','review triage belongs only to formal validation or EXECUTE coverage clarification');
   if(typeof tool.agentId!=='string' || tool.status!=='completed' || typeof tool.finalResponse!=='string')
     fail('OWNER_UNCERTAIN','official concluded tool result is required');
   return withExecutionPublicationLock(op.workspace,async()=>{
@@ -1137,7 +1148,18 @@ export async function captureNative(handle,toolResultFile,{reviewTriageFile=null
       captureFailure:parseFailure,error:null,testedState,verification:observation,
       ...(reviewTriage===null?{}:{reviewTriage})};
     await put(path.join(now.root,`round-${round}.receipt.json`),receipt);
-    let initialRejection=false,coverageCorrection=null;
+    const previousClarification=initialExecute&&round>1
+      ?(await capturedImplementationPrefix({...now,record:{...now.record,runner:{...now.record.runner,round:round-1}}},image)).testCoverageClarification:null;
+    const refuseClarification=async diagnostic=>{
+      now.record.runner.status='captured';now.record.runner.captureClass='coverage-clarification-rejected';
+      await persistAllocation(now.marker,now.record);
+      return {phase:'captured',rawResponseSha256:sha(raw),status:null,nextAction:'blocked',
+        captureClass:'coverage-clarification-rejected',diagnostic,replayed:false};
+    };
+    if(previousClarification&&parseFailure&&!projectionFailure&&!bindingFailure&&!headBindingFailure
+      &&parseFailure!=='native result HEAD differs from verified product Git HEAD')
+      return refuseClarification(parseFailure);
+    let initialRejection=false,coverageCorrection=null,coverageClarification=null;
     if(!parseFailure && auxiliary) {
       try {
         const rounds=[];
@@ -1152,6 +1174,7 @@ export async function captureNative(handle,toolResultFile,{reviewTriageFile=null
               previous:{bundleBytes:image.files.get(current.evidence.path),counters:current.counters},rounds});
           initialRejection=composed.outcome==='rejected';
           coverageCorrection=initialExecute?composed.testCoverageCorrection??null:null;
+          coverageClarification=initialExecute?composed.testCoverageClarification??null:null;
         } else {
           const verified=await inspectPostConversionFindingsPrefix({context:now.context,
             snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,
@@ -1161,6 +1184,7 @@ export async function captureNative(handle,toolResultFile,{reviewTriageFile=null
             fail('EVIDENCE_STALE','captured findings prefix differs from native response');
         }
       } catch(error) {
+        if(previousClarification&&error.code==='FORMAL_RECOVERY_NOT_ELIGIBLE')return refuseClarification(error.message);
         if(error.code==='RUNNER_RESULT_REJECTED' && !bindingFailure && !headBindingFailure) {
           now.record.runner.status='captured';
           now.record.runner.captureClass='findings-rejection';
@@ -1197,16 +1221,17 @@ export async function captureNative(handle,toolResultFile,{reviewTriageFile=null
       fail('RUNNER_RESULT_REJECTED',`native final response preserved but rejected: ${parseFailure}`);
     // Syntax alone cannot establish a completed-profile judgment. In particular
     // NEEDS_FIX must carry its active blocker before this capture can publish.
-    if((completedProfile && !parseFailure && !auxiliary)||reviewTriage!==null)await capturedComposition(now);
+    if((completedProfile && !parseFailure && !auxiliary)||reviewTriage!==null&&!initialExecute)await capturedComposition(now);
     if(reviewTriage!==null) {
-      now.record.runner.captureClass='formal-review-incomplete';await persistAllocation(now.marker,now.record);
+      now.record.runner.captureClass=initialExecute?'coverage-proof-incomplete':'formal-review-incomplete';await persistAllocation(now.marker,now.record);
     }
     return {phase:'captured',rawResponseSha256:sha(raw),status,
       nextAction:initialRejection?'publish'
-        :initialExecute && parseFailure?'publish':auxiliary && (status==='TESTS_FAIL' || coverageCorrection)
+        :initialExecute && parseFailure?'publish':auxiliary && (status==='TESTS_FAIL' || coverageCorrection || coverageClarification)
         && round+(now.binding.normalization?.consumedInvocations??0)<MAX_NATIVE_PRODUCER_TURNS?'reserve-dispatch'
         :initialExecute && now.owner.preparationRevision===1 && status==='BLOCKED'?'blocked':'publish',
-      ...(coverageCorrection?{testCoverageCorrection:coverageCorrection}:{}),captureClass:now.record.runner.captureClass,replayed:false};
+      ...(coverageCorrection?{testCoverageCorrection:coverageCorrection}:{}),
+      ...(coverageClarification?{testCoverageClarification:coverageClarification}:{}),captureClass:now.record.runner.captureClass,replayed:false};
   });
 }
 
@@ -1419,6 +1444,8 @@ export async function cleanup(handle) {
 }
 
 async function capturedComposition(op) {
+  if(op.record.runner?.captureClass==='coverage-clarification-rejected')
+    fail('FORMAL_RECOVERY_NOT_ELIGIBLE','coverage clarification did not supply admissible proof; publication and normalization are blocked');
   const auxiliary=op.owner.operation!=='VALIDATE_SLICE';
   if(op.owner.preparationRevision===1 && op.owner.operation==='VALIDATE_SLICE'
     && op.record.runner?.captureClass==='initial-rejection')
@@ -1661,11 +1688,19 @@ export async function resume(handle) {
   }
   if(['candidate_promoted','activation_written','backup_created'].includes(phase))
     return {phase,nextAction:'classify-publication',owner:op.owner};
+  if(runner?.status==='captured'&&runner.captureClass==='coverage-clarification-rejected')
+    return {phase:'captured',nextAction:'blocked',captureClass:runner.captureClass,
+      responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes)};
+  const previousClarification=op.owner.operation==='EXECUTE_SLICE'&&runner?.round>1
+    &&['running','captured'].includes(runner.status)
+    ?(await capturedImplementationPrefix({...op,record:{...op.record,runner:{...runner,round:runner.round-1}}})).testCoverageClarification:null;
+  const clarificationSource=previousClarification?{priorTestCoverageClarification:previousClarification}:{};
   if(runner?.status==='captured' && op.owner.operation==='EXECUTE_SLICE' && runner.resultStatus==='BLOCKED'
     && runner.captureClass!=='initial-rejection') {
-    const prefix=await capturedImplementationPrefix(op),correction=prefix.testCoverageCorrection;
-    return {phase:'captured',status:'BLOCKED',nextAction:correction?'reserve-dispatch':op.owner.preparationRevision===1?'blocked':'publish',
-      owner:op.owner,...(correction?{testCoverageCorrection:correction}:{}),responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes)};
+    const prefix=await capturedImplementationPrefix(op),correction=prefix.testCoverageCorrection,clarification=prefix.testCoverageClarification;
+    return {phase:'captured',status:'BLOCKED',nextAction:correction||clarification?'reserve-dispatch':op.owner.preparationRevision===1?'blocked':'publish',
+      owner:op.owner,...clarificationSource,...(correction?{testCoverageCorrection:correction}:{}),...(clarification?{testCoverageClarification:clarification}:{}),
+      responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes)};
   }
   if(runner?.status==='captured') return {phase:'captured',nextAction:op.owner.preparationRevision===1
       && (op.owner.operation==='VALIDATE_SLICE' && runner.captureClass==='initial-rejection'
@@ -1679,7 +1714,7 @@ export async function resume(handle) {
     ...(['EXECUTE_SLICE','APPLY_FINDINGS'].includes(op.owner.operation) && runner.productDrift
       && runner.resultStatus==='TESTS_PASS' && runner.round===runner.productDrift.sourceRound
       ?{nextAction:'reserve-dispatch'}:{})};
-  if(runner?.status==='running') return {phase:'running',nextAction:'await-same-agent',agentId:runner.agentId};
+  if(runner?.status==='running') return {phase:'running',nextAction:'await-same-agent',agentId:runner.agentId,...clarificationSource};
   if(runner?.status==='reserved') return {phase:'dispatch-reserved',nextAction:'bind-same-agent-or-block'};
   if(runner?.status==='uncertain') return {phase:'uncertain',nextAction:'stop-and-diagnose'};
   return {phase,nextAction:'reserve-dispatch'};

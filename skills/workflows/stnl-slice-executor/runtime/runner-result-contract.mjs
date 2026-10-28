@@ -21,6 +21,35 @@ export function nativeCheckRoundMatches(value, ordinal) {
   return value===`${ordinal}/5` || ordinal<=3 && value===`${ordinal}/3`;
 }
 
+// A principal's explicit semantic disposition, authenticated by either current
+// evidence producer. This validates its bindings, not the truth of free prose.
+export function validateReviewTriage(triage,{owner,requestSha256,responseSha256,status,commands,obligations,hasFindings=false}) {
+  const reject=message=>{throw Object.assign(new Error(message),{code:'FORMAL_RECOVERY_NOT_ELIGIBLE'});};
+  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+  const keys=['format','owner','requestSha256','responseSha256','category','inputsAvailable','externalBlockers','missingWork'];
+  if(!triage||typeof triage!=='object'||Array.isArray(triage)
+    ||!same(Object.keys(triage).sort(),keys.sort())
+    ||triage.format!=='stnl-formal-review-triage-v1'||triage.category!=='incomplete-review'
+    ||!/^sha256:[a-f0-9]{64}$/u.test(requestSha256??'')||!/^sha256:[a-f0-9]{64}$/u.test(responseSha256??'')
+    ||!same(triage.owner,owner)||triage.requestSha256!==requestSha256||triage.responseSha256!==responseSha256)
+    reject('incomplete-review triage is not bound to this owner, request and literal response');
+  if(status!=='BLOCKED'||hasFindings||commands.some(item=>item.exit!==0)
+    ||triage.inputsAvailable!==true||!Array.isArray(triage.externalBlockers)||triage.externalBlockers.length
+    ||!Array.isArray(triage.missingWork)||!triage.missingWork.length)
+    reject('triage requires incomplete review with available inputs, no external blocker, findings or failed checks');
+  const approved=new Set(obligations.map(item=>item.id)),seen=new Set();
+  for(const item of triage.missingWork) {
+    if(!item||typeof item!=='object'||Array.isArray(item)
+      ||!same(Object.keys(item).sort(),['evidence','obligationId','remainingWork'])
+      ||!approved.has(item.obligationId)||seen.has(item.obligationId)
+      ||['evidence','remainingWork'].some(key=>typeof item[key]!=='string'||!item[key].trim()
+        ||/^(none|pending|n\/a|unknown)$/iu.test(item[key].trim())))
+      reject('triage must identify concrete missing canonical work and its evidence');
+    seen.add(item.obligationId);
+  }
+  return triage;
+}
+
 export class RunnerVerdictEvidenceError extends Error {
   constructor(operation, status, failedCommands, message = null) {
     super(message ?? `${operation} ${status} contradicts ${failedCommands.length} marked verification command(s) with non-zero exit`);

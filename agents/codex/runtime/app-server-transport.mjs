@@ -704,7 +704,18 @@ async function assertGenericContractLoad(items, bundle, cwd, binding) {
 
 // Only scoped read APIs. A completed wait/mailbox or parent agent message never
 // certifies the child. No resume/start/followup, recipe, private path or synthesis.
-export async function readAppServerChild(rpc, { binding, bundle, cwd, continuation = null, initialization = false }) {
+function concludedChildMessage(turn,items) {
+  requireThat(new Set(items.map(item=>item.id)).size===items.length,'duplicate child history items');
+  const final=items.filter(item=>item.type==='agentMessage').at(-1);
+  requireThat(final&&(final.phase==='final_answer'||final.phase==null)
+    &&id(final.id)&&typeof final.text==='string'&&final.text.length>0,'child final response missing/incomplete');
+  if((turn.itemsView??'full')==='full') {
+    const copy=turn.items?.filter(item=>item.type==='agentMessage').at(-1);
+    requireThat(copy?.id===final.id&&copy.text===final.text&&copy.phase===final.phase,'public child surfaces disagree');
+  }
+  return final;
+}
+export async function readAppServerChild(rpc, { binding, bundle, cwd, continuation = null, initialization = false, priorCaptures = [] }) {
   await assertAppServerBundle(bundle); await physical(cwd, true);
   const { binding: current, items: parentItems } = await parentBinding(rpc, binding);
   requireThat(Object.keys(current).every(key => current[key] === binding[key]), 'child binding changed');
@@ -719,7 +730,7 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd, continuati
     && thread.reasoningEffort === bundle.runner.effort,
   'child metadata foreign, forked or version differs');
   const turns = await pages(rpc, 'thread/turns/list', { threadId: binding.agentThreadId, itemsView: 'full' });
-  requireThat(turns.length === (continuation === null ? 1 : 2),
+  requireThat(priorCaptures.length<=1 && turns.length === (continuation === null ? 1 : 2)+priorCaptures.length,
     'fresh child has no admitted completed successful turn sequence (failed=COUNT)');
   const invalidTurn=turns.findIndex(turn=>!id(turn?.id)||turn.status!=='completed'||turn.error!=null);
   requireThat(invalidTurn===-1,`fresh child has no admitted completed successful turn sequence (failed=TURN; ${publicTurnDiagnostic(turns[invalidTurn])})`);
@@ -747,36 +758,39 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd, continuati
     assertConcludedInitialization(firstItems,cwd,binding);
     await assertGenericContractLoad(firstItems, bundle, cwd, binding);
   }
+  for(const [index,prior] of priorCaptures.entries()) {
+    const previousTurn=turns[index+(continuation===null?0:1)];
+    requireThat(prior.turnId===previousTurn.id&&prior.binding.agentPath===binding.agentPath
+      &&prior.binding.agentThreadId===binding.agentThreadId,'clarification public prefix identity differs');
+    const previousItems=await pages(rpc,'thread/items/list',{threadId:binding.agentThreadId,turnId:previousTurn.id});
+    assertRunnerActivities(previousItems,binding);
+    if(continuation===null)await assertGenericContractLoad(previousItems,bundle,cwd,binding);
+    const previousFinal=concludedChildMessage(previousTurn,previousItems);
+    requireThat(previousFinal.text===prior.toolResult.finalResponse,'clarification first public response changed');
+    await physical(prior.file);
+    const metadata=await fs.lstat(prior.file);
+    requireThat(metadata.nlink===1&&Buffer.from(JSON.stringify(prior.toolResult)+'\n').equals(await fs.readFile(prior.file)),
+      'saved first child envelope absent/aliased/divergent');
+  }
   const turn = turns.at(-1);
   const items = await pages(rpc, 'thread/items/list', { threadId: binding.agentThreadId, turnId: turn.id });
   assertRunnerActivities(items,binding);
   if(initialization)assertConcludedInitialization(items,cwd,binding);
   if (items.some(deniedShellTemporaryFile)) throw fail('SANDBOX_COMMAND_DENIED: runner implicit temporary file denial');
   if (continuation === null) await assertGenericContractLoad(items, bundle, cwd, binding);
-  requireThat(new Set(items.map(item => item.id)).size === items.length, 'duplicate child history items');
-  const messages = items.filter(item => item.type === 'agentMessage');
-  const final = messages.at(-1);
-  requireThat(final && (final.phase === 'final_answer' || final.phase == null)
-    && id(final.id) && typeof final.text === 'string' && final.text.length > 0,
-    'child final response missing/incomplete');
-  // When full turn items are supplied, independently require the same complete
-  // item; summary views are not used as a source of text.
-  if ((turn.itemsView ?? 'full') === 'full') {
-    const copy = turn.items?.filter(item => item.type === 'agentMessage').at(-1);
-    requireThat(copy?.id === final.id && copy.text === final.text && copy.phase === final.phase,
-      'public child surfaces disagree');
-  }
+  const final=concludedChildMessage(turn,items);
   for (const item of parentItems) {
     const state = item.type === 'collabAgentToolCall' ? item.agentsStates?.[binding.agentThreadId] : null;
     if (state?.status === 'completed' && state.message != null) {
       requireThat(state.message === final.text || original !== null
-        && state.message === original.finalResponse, 'completed parent tool report disagrees with child text');
+        && state.message === original.finalResponse || priorCaptures.some(prior=>state.message===prior.toolResult.finalResponse),
+        'completed parent tool report disagrees with child text');
     }
   }
   requireThat(Buffer.from(final.text, 'utf8').toString('utf8') === final.text, 'invalid UTF-8 response');
   await assertAppServerBundle(bundle);
   return { agentId: binding.agentPath, status: 'completed', finalResponse: final.text,
-    ...(continuation === null ? {} : { preVerificationContinuation: continuation }) };
+    ...(continuation === null || priorCaptures.length ? {} : { preVerificationContinuation: continuation }) };
 }
 
 // Existing capture-native accepts this envelope. Never overwrite an earlier

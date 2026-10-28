@@ -280,7 +280,7 @@ export function nativeRunnerContext(operation, bundle, eventsFile) {
     + `Transport captures the complete public child response without interpreting it. After the child completes, wait within the existing operation deadline for its complete native.child.completed record in ${eventsFile}; match binding.agentPath to that child and pass toolResultFile unchanged to the official capture-native command. Do not author an envelope or copy/strip mailbox text. A missing record is not permission to synthesize evidence or start another turn. Bind before verification and perform capture/publication yourself through the existing controller.\n`
     + 'If the controller issues native.child.continuation.admitted in that same event file, the first result is retained initialization, not a judgment. While this principal is still active, follow up once with the same agent to complete the unchanged request through its verificationHelper/originFile; do not spawn a replacement, repeat a started recipe, or capture the initialization. Wait for the later native.child.completed and use its distinct toolResultFile. No admission event means no continuation permission.\n'
     + (['EXECUTE_SLICE', 'APPLY_FINDINGS'].includes(operation)
-      ? 'The selected operation includes the approved implementation/corrections and preparation of reusable tests. The controller nextAction names its next command; it does not replace that work. Complete the approved work and test preparation before delegating read-only verification. The child must not implement.\n' : 'The independent child judges the complete canonical criteria; tests alone are not the authority. For the explicitly requested integral judgment reserve-dispatch --terminal before spawn. For a rejected or incomplete review follow the Formal corrective credit section of the selected skill runner-invocation guide and the public controller handoff; preserve all literal responses and its separate triage when required. The manager does not decide recovery eligibility. The caller permits up to four corrections across this stage, not four per agent or error category. Do not stop solely for recurrence before two eligible corrective opportunities across this stage; thereafter stop when the same obligation remains unmet without demonstrated correction; a changed generic error message alone is not progress. Preserve every response and let the controller admit only an eligible correction.\n');
+      ? 'The selected operation includes the approved implementation/corrections and preparation of reusable tests. The controller nextAction names its next command; it does not replace that work. Complete the approved work and test preparation before delegating read-only verification. The child must not implement. For EXECUTE BLOCKED with missing structured coverage proof, read the complete response and perform the selected skill guide triage before its first capture. Only a public testCoverageClarification handoff permits following up with that same child in the next reserved round. Preserve the first response, bind the same child to the new origin and keep the product unchanged until proof is admitted.\n' : 'The independent child judges the complete canonical criteria; tests alone are not the authority. For the explicitly requested integral judgment reserve-dispatch --terminal before spawn. For a rejected or incomplete review follow the Formal corrective credit section of the selected skill runner-invocation guide and the public controller handoff; preserve all literal responses and its separate triage when required. The manager does not decide recovery eligibility. The caller permits up to four corrections across this stage, not four per agent or error category. Do not stop solely for recurrence before two eligible corrective opportunities across this stage; thereafter stop when the same obligation remains unmet without demonstrated correction; a changed generic error message alone is not progress. Preserve every response and let the controller admit only an eligible correction.\n');
 }
 
 export function assertNativeLauncher(prompt, context) {
@@ -599,6 +599,7 @@ export async function loadProduct(snapshot) {
   const workspace = await import(pathToFileURL(path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/execution-workspace.mjs')).href);
   return { ...execution, ...readiness, ...provider, ...current, ...kernel, ...projection, ...evidence, ...proof,
     prepareNativeContinuation:operationController.prepareNativeContinuation,
+    resume:operationController.resume,
     readOwnedFile: publication.readOwnedFile, resolveExecutionFilesystemRoots: publication.resolveExecutionFilesystemRoots,
     validateCurrentOperationAllocationBinding: publication.validateCurrentOperationAllocationBinding,
     resolveCurrentExecutionContext: workspace.resolveCurrentExecutionContext,
@@ -861,7 +862,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
               let number = entries.find(item => item.turnId === undefined)?.number;
               if (number === undefined) {
                 const permitted=state.preVerificationContinuation;
-                const continuation=permitted?.grant&&permitted.binding.agentThreadId===binding.agentThreadId;
+                const continuation=permitted?.grant&&permitted.binding.agentThreadId===binding.agentThreadId&&entries.length===1;
                 const index=continuation?reserved.indexOf(permitted.reservation):0;
                 const reservation=index<0?null:reserved.splice(index,1)[0];
                 if (!reservation) {
@@ -895,10 +896,20 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           onFormalObserved: async (binding, designation) => updateLedger(runRoot, ledger => {
             const entries = ledger.turns.filter(item => item.threadId === binding.agentThreadId);
             const continued=state.preVerificationContinuation?.grant?.binding.agentThreadId===binding.agentThreadId;
-            if(entries.length!==1&&!(continued&&entries.length===2))fail('formal child has multiple admitted turns');
-            for(const entry of entries) {
-              if(entry.designation&&JSON.stringify(entry.designation)!==JSON.stringify(designation))fail('formal ledger designation changed');
-              Object.assign(entry,{childKind:'formal',designation});
+            const {turnId,...currentDesignation}=designation,clarification=designation.clarification;
+            if(entries.length!==1&&!(continued&&entries.length===2)&&!(clarification&&entries.length===(continued?3:2)))
+              fail('formal child has multiple admitted turns');
+            if(clarification) {
+              const previous=entries.find(item=>item.designation&&!item.designation.clarification)?.designation;
+              if(!previous||clarification.agentId!==binding.agentPath||clarification.round!==previous.round
+                ||designation.round!==previous.round+1||entries.filter(entry=>entry.turnId===turnId).length!==1
+                ||entries.at(-1).turnId!==turnId
+                ||['operationAttemptId','operationId','dispatchId'].some(key=>previous[key]!==designation[key]))
+                fail('formal clarification ledger lineage differs');
+            }
+            for(const entry of entries.filter(entry=>!clarification||entry.turnId===turnId)) {
+              if(!clarification&&entry.designation&&JSON.stringify(entry.designation)!==JSON.stringify(currentDesignation))fail('formal ledger designation changed');
+              Object.assign(entry,{childKind:'formal',designation:currentDesignation});
             }
             assertOperationalCorrections(ledger.turns,{caseId,slice,operation});
             if(new Set(ledger.turns.filter(item=>item.operation===operation&&item.childKind==='formal'
