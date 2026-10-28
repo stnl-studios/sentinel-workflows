@@ -178,8 +178,9 @@ async function sealedBlockingFormal(f) {
   return inspection;
 }
 
-test('Initial first APPLY semantic refusal publishes from the same captured bytes after partial failure',async()=>{
+test('Initial first APPLY semantic refusal publishes from the same captured bytes after partial failure',async t=>{
   const f=await fixture();
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   const predecessor=await sealedBlockingFormal(f);
   const started=await begin({specPath:f.specPath,slice:'slice-01',
     expectedActivationId:predecessor.activationId,operation:'APPLY_FINDINGS'});
@@ -198,7 +199,7 @@ test('Initial first APPLY semantic refusal publishes from the same captured byte
   await fs.writeFile(foreign,JSON.stringify({agentId:'foreign-agent',status:'completed',finalResponse})+'\n');
   await assert.rejects(captureNative(started.handle,foreign),error=>error.code==='OWNER_MISMATCH');
   const captured=await captureNative(started.handle,file);
-  assert.equal(captured.captureClass,'initial-rejection');
+  assert.equal(captured.captureClass,'findings-rejection');
   assert.equal(captured.nextAction,'publish');
   assert.equal(captured.rawResponseSha256,digest(Buffer.from(finalResponse)));
   assert.equal((await captureNative(started.handle,file)).replayed,true);
@@ -231,13 +232,17 @@ test('Initial first APPLY semantic refusal publishes from the same captured byte
   await assert.rejects(fs.lstat(path.join(owned,'round-2.origin.json')),error=>error.code==='ENOENT');
   const a=await inspectCurrentExecution(f.specPath),b=await inspectQualityExecution(f.specPath);
   assert.deepEqual(a,b);
-  assert.equal(a.state,'VALIDATION_BLOCKED');
-  assert.equal(a.normalHandoff,null);
-  assert.equal(a.deliveries[0].persistedValidation,'uncertain');
+  assert.equal(a.state,'VALIDATION_NEEDS_FIX');
+  assert.equal(a.deliveries[0].formalStatus,'NEEDS_FIX','a recorded auxiliary refusal grants no formal acceptance');
+  assert.equal(a.normalHandoff?.operation,'APPLY_FINDINGS');
+  assert.equal(a.deliveries[0].persistedValidation,'revalidation-required');
   assert.deepEqual(a.deliveries[0].counters,
     {implementationChecks:1,findingsChecks:0,validationAttempts:1,findings:1});
   assert.deepEqual(a.deliveries[1].counters,
     {implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0});
+  const corrected=await bConclude(f,'APPLY_FINDINGS',{successor:true});
+  assert.equal(corrected.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  assert.deepEqual(await fs.readFile(path.join(owned,'round-1.response.json')),responseBefore);
 });
 
 test('Initial first APPLY valid BLOCKED stays distinct from semantic refusal',async()=>{
@@ -262,8 +267,9 @@ test('Initial first APPLY valid BLOCKED stays distinct from semantic refusal',as
   assert.equal(captured.captureClass,'formal-response');
 });
 
-test('Initial first APPLY malformed native response cannot enter semantic refusal',async()=>{
+test('Initial first APPLY malformed native response retains refusal and admits only a correction',async t=>{
   const f=await fixture();
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   const predecessor=await sealedBlockingFormal(f);
   const started=await begin({specPath:f.specPath,slice:'slice-01',
     expectedActivationId:predecessor.activationId,operation:'APPLY_FINDINGS'});
@@ -274,11 +280,19 @@ test('Initial first APPLY malformed native response cannot enter semantic refusa
   await verifyNative(dispatch.originFile);
   const file=path.join(f.root,'controlled-apply-schema-defect.json');
   await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:'{"invalid":'})+'\n');
-  await assert.rejects(captureNative(started.handle,file),error=>error.code==='RUNNER_RESULT_REJECTED');
-  const handleFile=path.join(f.root,'controlled-apply-schema-handle.json');
-  await fs.writeFile(handleFile,JSON.stringify(started.handle)+'\n');
-  const resumed=JSON.parse((await run(process.execPath,[operationCli,'resume','--handle',handleFile])).stdout);
-  assert.equal(resumed.nextAction,'stop-and-diagnose');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.captureClass,'findings-rejection');assert.equal(captured.nextAction,'publish');
+  assert.equal(captured.rawResponseSha256,digest(Buffer.from('{"invalid":')));
+  assert.equal((await captureNative(started.handle,file)).replayed,true);
+  const rejected=await publish(started.handle);assert.equal(rejected.transition.outcome,'rejected');
+  const image=await inspectCurrentExecution(f.specPath);
+  assert.equal(image.normalHandoff?.operation,'APPLY_FINDINGS');
+  assert.equal(image.deliveries[0].counters.findingsChecks,0,'malformed content is never an accepted check');
+  const corrected=await bConclude(f,'APPLY_FINDINGS',{successor:true});
+  assert.equal(corrected.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  const row=JSON.parse(Buffer.from(corrected.image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(corrected.image.files.get(row.evidence.path)));
+  assert.ok(bundle.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')==='{"invalid":'));
 });
 
 test('Initial new native judgment binds HEAD without runner transcription',async()=>{
@@ -532,25 +546,26 @@ test(`Initial coverage correction rejects ${fault} and preserves its first concl
   await assert.rejects(fs.stat(path.join(path.dirname(f.dispatch.originFile),'round-2.origin.json')),{code:'ENOENT'});
 });
 
-test('Initial exhausted coverage correction remains BLOCKED after three calls and cannot publish',async t=>{
+test('Initial exhausted coverage correction remains BLOCKED after five calls and cannot publish',async t=>{
   const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   await installCurrentInitial(f);const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');let dispatch=first;
-  for(const round of [1,2,3]) {
-    await fs.writeFile(path.join(f.root,'src/pay.mjs'),round<3?`export const pay=()=>"broken${round}";\n`:'export const pay=()=>"paid";\n');
+  for(const round of [1,2,3,4,5]) {
+    await fs.writeFile(path.join(f.root,'src/pay.mjs'),round<5?`export const pay=()=>"broken${round}";\n`:'export const pay=()=>"paid";\n');
     if(round>1)dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
     const agentId=`exhausted-coverage-${round}`;await bindNative(started.handle,agentId);const measured=await verifyNative(dispatch.originFile);
-    const {head,...result}=initialPayload(round,round<3?'TESTS_FAIL':'BLOCKED');result.commands=measured.commands;
-    if(round===3){result.blockers='Zero-amount assertion remains absent.';result.testCoverageOmissions=[{obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),evidence:'No assertion for the zero-amount requirement.',expectedCorrection:'Add the approved missing test.'}];}
+    const {head,...result}=initialPayload(round,round<5?'TESTS_FAIL':'BLOCKED');result.commands=measured.commands;result.automaticCheckRound=`${round}/5`;
+    if(round===5){result.blockers='Zero-amount assertion remains absent.';result.testCoverageOmissions=[{obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),evidence:'No assertion for the zero-amount requirement.',expectedCorrection:'Add the approved missing test.'}];}
     const file=path.join(f.root,`exhausted-${round}.json`);await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
-    const captured=await captureNative(started.handle,file);assert.equal(captured.nextAction,round<3?'reserve-dispatch':'blocked');
+    const captured=await captureNative(started.handle,file);assert.equal(captured.nextAction,round<5?'reserve-dispatch':'blocked');
   }
   assert.equal((await resume(started.handle)).nextAction,'blocked');
   await assert.rejects(reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
   await assert.rejects(publish(started.handle));
 });
 
-test('Initial malformed native response cannot enter the concluded semantic refusal profile',async()=>{
+test('Initial malformed native response persists a refusal without granting acceptance',async t=>{
   const f=await fixture();
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   await installCurrentInitial(f);
   const {started,dispatch}=await reserved(f);
   await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
@@ -560,8 +575,15 @@ test('Initial malformed native response cannot enter the concluded semantic refu
   const file=path.join(f.root,'controlled-schema-tool.json');
   await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:'{"invalid":'})+'\n');
   const captured=await captureNative(started.handle,file);
-  assert.equal(captured.captureClass,'findings-rejection');
-  await assert.rejects(publish(started.handle),error=>error.code==='RUNNER_RESULT_REJECTED');
+  assert.equal(captured.captureClass,'initial-rejection');
+  assert.equal((await captureNative(started.handle,file)).replayed,true);
+  const published=await publish(started.handle);assert.equal(published.transition.outcome,'rejected');
+  const image=await captureCurrentExecution(f.specPath);
+  assert.equal(image.inspection.deliveries[0].counters.implementationChecks,0);
+  assert.equal(image.inspection.normalHandoff?.operation,'EXECUTE_SLICE');
+  const row=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(image.files.get(row.evidence.path)));
+  assert.ok(bundle.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')==='{"invalid":'));
 });
 
 for(const terminal of [false,true])test(`Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal use one selected variant${terminal?' with terminal request binding':''}`,async()=>{
@@ -1131,9 +1153,14 @@ const incompleteReviewTriage=({request,requestBytes,finalResponse})=>({
 test('formal recovery budget is shared by initialization and successor with no identity reset',()=>{
   const inherited={operation:'VALIDATE_SLICE',status:'settled',round:1,consumedInvocations:1};
   assert.deepEqual(formalRecoveryBudget(1),{consumedInvocations:1,resumable:true});
-  assert.deepEqual(formalRecoveryBudget(2),{consumedInvocations:2,resumable:false});
-  assert.deepEqual(formalRecoveryBudget(1,inherited),{consumedInvocations:2,resumable:false});
-  for(const [turns,lineage] of [[2,inherited],[1,{...inherited,consumedInvocations:2}],[1,{...inherited,status:'exhausted'}],[3,null],[0,null]])
+  assert.deepEqual(formalRecoveryBudget(2),{consumedInvocations:2,resumable:true});
+  assert.deepEqual(formalRecoveryBudget(1,inherited),{consumedInvocations:2,resumable:true});
+  assert.deepEqual(formalRecoveryBudget(2,inherited),{consumedInvocations:3,resumable:true});
+  assert.deepEqual(formalRecoveryBudget(1,{...inherited,round:4,consumedInvocations:4}),{consumedInvocations:5,resumable:false});
+  assert.deepEqual(formalRecoveryBudget(2,{...inherited,round:3,consumedInvocations:3}),{consumedInvocations:5,resumable:false});
+  for(const [turns,lineage] of [[2,{...inherited,round:4,consumedInvocations:4}],
+    [1,{...inherited,consumedInvocations:5}],[1,{...inherited,round:2}],
+    [1,{...inherited,status:'exhausted'}],[3,null],[0,null]])
     assert.throws(()=>formalRecoveryBudget(turns,lineage),e=>e.code==='FORMAL_RECOVERY_NOT_ELIGIBLE');
 });
 
@@ -1207,12 +1234,19 @@ test('formal recovery preserves three incomplete refusals and exhausts after two
   await assert.rejects(normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:image.inspection.activationId}));
 });
 
-test('formal recovery cannot change terminal scope or reuse the predecessor identity',async()=>{
+for(const exhausted of [false,true])test(`formal recovery keeps terminal scope, identity and shared continuation margin (${exhausted?'last producer':'eligible correction'})`,async t=>{
   const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
-  const first=await normalizedFormal(f,{invalid:true,responseVariant:'stnl-current-native-judgment-v1'});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  let first;
+  for(let i=0;i<(exhausted?4:1);i++) {
+    first=await normalizedFormal(f,{successor:i>0,responseVariant:'stnl-current-native-judgment-v1',responseMutation:value=>{
+      const [key,replacement]=[['status','INVALID'],['commands',[]],['evidence',0],['findingReferences',{}]][i];
+      value.result[key]=replacement;return value;
+    }});
+  }
   const image=await inspectCurrentExecution(f.specPath),next=await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:image.activationId});
   await assert.rejects(reserveDispatch(next.handle,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'}),e=>e.code==='FORMAL_RECOVERY_NOT_ELIGIBLE');
-  await reserveDispatch(next.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const dispatch=await reserveDispatch(next.handle,{responseVariant:'stnl-current-native-judgment-v1'});
   const source=JSON.parse(await fs.readFile(first.dispatch.originFile));
   const agent=JSON.parse(await fs.readFile(path.join(path.dirname(first.dispatch.originFile),'round-1.agent.json')));
   assert.notEqual(source.owner.operationAttemptId,next.owner.operationAttemptId);
@@ -1220,8 +1254,23 @@ test('formal recovery cannot change terminal scope or reuse the predecessor iden
   await bindNative(next.handle,'fresh-independent-successor');
   const initialization=path.join(f.root,'successor-initialization.json');
   await fs.writeFile(initialization,JSON.stringify({agentId:'fresh-independent-successor',status:'completed',finalResponse:'Initialization only'}));
-  assert.equal(await prepareNativeContinuation(next.handle,{toolResultFile:initialization,firstTurnId:'second-owner-initial-turn',binding:{}}),null,
-    'new owner cannot stack initialization continuation on the spent target credit');
+  const binding={parentThreadId:'mechanical-parent-thread',parentTurnId:'mechanical-parent-turn',
+    agentPath:'fresh-independent-successor',agentThreadId:'mechanical-successor-thread',model:'gpt-6-luna',effort:'medium'};
+  const options={toolResultFile:initialization,firstTurnId:'second-owner-initial-turn',binding};
+  if(exhausted) {
+    assert.equal(await prepareNativeContinuation(next.handle,options),null,'new owner cannot reset the four consumed producer turns');
+  } else {
+    await assert.rejects(prepareNativeContinuation(next.handle,{...options,binding:{}}),error=>{
+      assert.equal(error.code,'INVALID_CURRENT_IMAGE');assert.match(error.message,/continuation public binding/u);return true;
+    });
+    assert.deepEqual(await prepareNativeContinuation(next.handle,{...options,commit:false}),{eligible:true});
+    const admitted=await prepareNativeContinuation(next.handle,options);
+    assert.equal(admitted.replayed,false);assert.deepEqual(admitted.grant.binding,binding);
+    assert.equal(admitted.grant.firstToolResultSha256,digest(await fs.readFile(initialization)));
+    const replay=await prepareNativeContinuation(next.handle,options);
+    assert.equal(replay.replayed,true);assert.deepEqual(replay.grant,admitted.grant);
+  }
+  await assert.rejects(fs.stat(path.join(path.dirname(dispatch.originFile),'round-1.verification.json')),{code:'ENOENT'},'initialization observation must not execute the recipe');
 });
 
 for(const kind of ['standalone','lifecycle'])test(`Initial ${kind} pending cleanup excludes every fresh family until its own recovery finishes`,async()=>{

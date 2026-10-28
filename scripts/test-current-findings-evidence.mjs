@@ -348,7 +348,18 @@ test('A04 high-water check ids, failure terminal and incomplete prefix',()=>{
   assert.equal(result.consumedInvocations,3);assert.equal(result.counters.findingsChecks,3);
   assert.deepEqual(result.bundle.findingsChecks.map(item=>item.id),['findings-check-01','findings-check-02','findings-check-03']);
   const fourth=clone(third.cap);rebindRequest(fourth,item=>{item.round=4;item.checkId='findings-check-04';});
-  assert.throws(()=>compose(f.base,[first.cap,second.cap,third.cap,fourth],f.owner),failure('INVALID_CURRENT_IMAGE'));
+  assert.throws(()=>compose(f.base,[first.cap,second.cap,third.cap,fourth],f.owner),failure('EVIDENCE_STALE','previous check link'));
+  const rounds=[first,second,third];
+  for(const round of [4,5]) {
+    const previous=rounds.at(-1);
+    rounds.push(applyCapture({base:f.base,owner:f.owner,round,status:'TESTS_FAIL',exit:1,
+      before:manifest(3),after:manifest(3),previousCheck:{id:previous.request.checkId,roundCaptureSha256:roundLink(previous.cap)},
+      result:{...applyPayload(round,'TESTS_FAIL',1),automaticCheckRound:`${round}/5`}}));
+  }
+  const exhausted=compose(f.base,rounds.map(item=>item.cap),f.owner);
+  assert.equal(exhausted.consumedInvocations,5);assert.equal(exhausted.counters.findingsChecks,5);
+  const sixth=clone(rounds.at(-1).cap);rebindRequest(sixth,item=>{item.round=6;item.checkId='findings-check-06';});
+  assert.throws(()=>compose(f.base,[...rounds.map(item=>item.cap),sixth],f.owner),failure('INVALID_CURRENT_IMAGE'));
   for(const checkId of ['findings-check-01','findings-check-03']) {
     const changed=clone(second.cap);rebindRequest(changed,item=>{item.checkId=checkId;});
     assert.throws(()=>compose(f.base,[first.cap,changed,third.cap],f.owner),failure('INVALID_CURRENT_IMAGE','check ID'));

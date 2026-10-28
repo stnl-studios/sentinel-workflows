@@ -1669,8 +1669,7 @@ export async function resume(handle) {
   }
   if(runner?.status==='captured') return {phase:'captured',nextAction:op.owner.preparationRevision===1
       && (op.owner.operation==='VALIDATE_SLICE' && runner.captureClass==='initial-rejection'
-        || ['EXECUTE_SLICE','APPLY_FINDINGS'].includes(op.owner.operation)
-          && runner.captureClass==='findings-rejection')
+        || op.owner.operation==='EXECUTE_SLICE' && runner.captureClass==='findings-rejection')
       ?'blocked':op.record.preparation?.candidateComposition
         && op.record.normalization?.status!=='settled'?'normalize':'publish',owner:op.owner,
     responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes),

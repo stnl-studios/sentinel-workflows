@@ -35,13 +35,13 @@ test('F01 completed A remains literal through NEEDS_FIX, APPLY and independent f
   assert.equal(after.inspection.state,'VALIDATION_BLOCKED');
 });
 
-for(const statuses of [['TESTS_FAIL','TESTS_PASS'],['TESTS_FAIL','TESTS_FAIL','TESTS_PASS'],['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL']])
+for(const statuses of [['TESTS_FAIL','TESTS_PASS'],['TESTS_FAIL','TESTS_FAIL','TESTS_PASS'],Array(5).fill('TESTS_FAIL')])
 test(`F02 completed findings preserves rounds and budget ${statuses.join('/')}`,async t=>{
   const f=await completedBlockingCase(t),start=await startCompletedApply(f);
-  for(const status of statuses) {
-    const round=await completedApplyRound(f,start,{status,edit:status==='TESTS_PASS'?HELLO:null});
+  for(const [index,status] of statuses.entries()) {
+    const round=await completedApplyRound(f,start,{status,edit:status==='TESTS_PASS'?HELLO:`export const greeting="broken-${index}";\n`});
     assert.equal(round.measured.commands[0].exit,status==='TESTS_PASS'?0:1);
-    assert.equal((await resume(start.handle)).nextAction,status==='TESTS_FAIL'&&round.dispatch.round<3?'reserve-dispatch':'publish');
+    assert.equal((await resume(start.handle)).nextAction,status==='TESTS_FAIL'&&round.dispatch.round<5?'reserve-dispatch':'publish');
   }
   await assert.rejects(()=>reserveDispatch(start.handle));
   await publish(start.handle);const image=await captureCurrentExecution(f.specPath);
@@ -53,10 +53,25 @@ test(`F02 completed findings preserves rounds and budget ${statuses.join('/')}`,
     const next=await startCompletedApply(f);await completedApplyRound(f,next,{edit:HELLO});await publish(next.handle);
     await completedFormal(f,{references:'finding-01',dispositions:'finding-01=resolved'});
     const final=await captureCurrentExecution(f.specPath);
-    assert.equal(final.inspection.deliveries[0].counters.findingsChecks,4);
+    assert.equal(final.inspection.deliveries[0].counters.findingsChecks,statuses.length+1,'all failed checks plus the new successful cycle remain counted');
     assert.equal(final.inspection.deliveries[0].counters.validationAttempts,5);
     assert.equal(final.inspection.deliveries[0].counters.findings,1);
   }
+});
+
+test('F02 repeated failed findings without author correction stops after two corrective opportunities',async t=>{
+  const f=await completedBlockingCase(t),start=await startCompletedApply(f);const sources=[];
+  let operationRoot;
+  for(let index=0;index<3;index++) {
+    const round=await completedApplyRound(f,start,{status:'TESTS_FAIL'});
+    operationRoot=path.dirname(round.dispatch.originFile);
+    sources.push({file:round.tool,bytes:await fs.readFile(round.tool)});
+  }
+  await assert.rejects(reserveDispatch(start.handle),error=>{
+    assert.equal(error.code,'EVIDENCE_INCOMPLETE');assert.match(error.message,/no demonstrated author correction/u);return true;
+  });
+  for(const source of sources)assert.deepEqual(await fs.readFile(source.file),source.bytes);
+  await assert.rejects(fs.stat(path.join(operationRoot,'round-4.origin.json')),{code:'ENOENT'});
 });
 
 test('F03 completed APPLY recovers exact bytes in new processes through partial candidate and lost acknowledgment',async t=>{
