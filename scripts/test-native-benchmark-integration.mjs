@@ -52,7 +52,7 @@ test('offline collection joins a started author after budget stop without changi
   const fixture = await allocateOfflineFixture(repo);
   const gate = Promise.withResolvers(), entered = Promise.withResolvers();
   let backend;
-  t.after(async () => { gate.resolve(); await backend?.settled?.(); await finishOfflineFixture(fixture); });
+  t.after(async () => { gate.resolve(); await backend?.settled?.(); await finishOfflineFixture(fixture); backend=null; });
   const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
   const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
   const actual = (await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
@@ -144,7 +144,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
 for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'findings-two-cycles'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','test-coverage-correction'],...['plan-redelivery','plan-redelivery-twice','plan-redelivery-four','plan-redelivery-exhausted','plan-redelivery-missing-file','plan-redelivery-divergent-file','plan-redelivery-drift','plan-redelivery-foreign','plan-redelivery-no-allocation','plan-redelivery-denied','plan-redelivery-uncertain'].map(fault=>['fresh',fault]),['fresh','formal-successor'],['fresh','formal-recovered-apply-rejection'],['fresh','formal-two-corrections'],['fresh','formal-four-corrections'],['fresh','findings-format-corrections'],['fresh','formal-observe-inventory'],['fresh','formal-observe-wait-timeout'],['fresh','execute-producer-corrections'],['fresh','findings-producer-corrections'],['fresh','findings-producer-mixed'],['fresh','formal-exhausted'],['fresh','formal-incomplete'],['fresh','formal-incomplete-exhausted'],['fresh','formal-continuation-exhausted'],['fresh','formal-continuation-correction'], ['fresh','review-correction'],['fresh','review-correction-four'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
-  t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
+  t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); backend=null; });
   const configurationPath = path.join(fixture.root, 'benchmarks/sentinel-todo/benchmark.json');
   const configuration = JSON.parse(await fs.readFile(configurationPath));
   configuration.contextPolicy = { regime, authorContinuityOperations: regime === 'fresh' ? [] : ['PLAN', 'EXECUTE_SLICE', 'SPEC_CLOSE'] };
@@ -597,7 +597,7 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
 test('literal manager entry parses ordinary run --case A and retains its normal Node metadata', async t => {
   const fixture = await allocateOfflineFixture(repo);
   const backends = [];
-  t.after(async () => { await Promise.all(backends.map(backend => backend.settled())); await finishOfflineFixture(fixture); });
+  t.after(async () => { await Promise.all(backends.map(backend => backend.settled())); await finishOfflineFixture(fixture); backends.length=0; });
   const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
   const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
   const actual = (await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
@@ -641,7 +641,7 @@ test('literal manager entry parses ordinary run --case A and retains its normal 
 for (const fault of ['findings-cycle', 'review-correction', 'plan-redelivery','plan-redelivery-twice']) test(`focal resume preserves a valid ${fault} correction through close without resetting its ledger`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
-  t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
+  t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); backend=null; });
   const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
   const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
   const actual = (await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
@@ -735,7 +735,7 @@ for (const fault of ['foreign-child','grandchildren','budget','unexpected-plan-c
   const fixture = await allocateOfflineFixture(repo);
   let backend;
   let terminalPendingObservations = 0;
-  t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
+  t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); backend=null; });
   const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
   const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
   const actual = (await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
@@ -863,6 +863,7 @@ test('public case finalizer accepts its closed evidence while a sibling ledger o
       await manager.releaseReservation(runRoot, sibling.runner, 48);
     }
     await finishOfflineFixture(fixture);
+    backend=null;
   });
   const configurationPath = path.join(fixture.root, 'benchmarks/sentinel-todo/benchmark.json');
   const configuration = JSON.parse(await fs.readFile(configurationPath));
@@ -908,7 +909,7 @@ test('public case finalizer accepts its closed evidence while a sibling ledger o
 
 test('FULL operational checkpoint preserves accepted A/C and resumes only eligible B', {timeout:180000}, async t=>{
   const fixture=await allocateOfflineFixture(repo),backends=new Map();
-  t.after(async()=>{await Promise.all([...backends.values()].map(x=>x.settled()));await finishOfflineFixture(fixture);});
+  t.after(async()=>{await Promise.all([...backends.values()].map(x=>x.settled()));await finishOfflineFixture(fixture);backends.clear();});
   const url=p=>pathToFileURL(path.join(fixture.root,p)).href;
   const manager=await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
   const actual=(await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;
@@ -973,7 +974,7 @@ test('FULL operational checkpoint preserves accepted A/C and resumes only eligib
 for (const boundary of ['before-admission', 'in-flight']) test(`FULL stops sibling admission after a terminal case (${boundary})`, { timeout: 120000 }, async t => {
   const fixture = await allocateOfflineFixture(repo), entered = Promise.withResolvers(), release = Promise.withResolvers();
   const backends = new Map(); let running;
-  t.after(async () => { release.resolve(); await running?.catch(() => {}); await Promise.all([...backends.values()].map(x => x.settled())); await finishOfflineFixture(fixture); });
+  t.after(async () => { release.resolve(); await running?.catch(() => {}); await Promise.all([...backends.values()].map(x => x.settled())); await finishOfflineFixture(fixture); backends.clear(); });
   const url = relative => pathToFileURL(path.join(fixture.root, relative)).href;
   const manager = await import(url('benchmarks/sentinel-todo/runtime/benchmark-manager.mjs'));
   const actual = (await import(url('agents/codex/runtime/native-provider.mjs'))).createNativeProvider;

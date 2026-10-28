@@ -70,7 +70,7 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
     if (checkpointStates.has(info.status)) remove = false;
     for (const entry of await fs.readdir(runRoot, { withFileTypes: true })) if (entry.isDirectory() && /^case-[abc]$/u.test(entry.name)) {
       const state = await optional(path.join(runRoot, entry.name, 'case-state.json'));
-      if (!state || !['PASS', 'BLOCKED', 'CANCELLED', ...checkpointStates].includes(state.status)
+      if (!state || !['PASS', 'FAIL', 'BLOCKED', 'CANCELLED', ...checkpointStates].includes(state.status)
         || state.privateHomeSuspended || state.privateHomeCleanupError) throw new Error('OFFLINE_FIXTURE_RETAINED: case is not settled');
       const activeFile = path.join(runRoot, entry.name, 'tmp/stnl-runner-broker/active.json');
       const active = await optional(activeFile);

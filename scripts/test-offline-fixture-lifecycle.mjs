@@ -183,3 +183,17 @@ test('collection racing an atomic allocation rename fails rather than omitting t
     finally { fs.rename = rename; fs.lstat = lstat; }
   }
 });
+
+// A failed independent oracle is a settled outcome, not an active manager.
+test('a settled FAIL case archives without changing the failed outcome', async t => {
+  const fixture = await allocateOfflineFixture();
+  const run = path.join(fixture.root, 'benchmark-temp/run-tiny'), selected = path.join(run, 'case-b');
+  await fs.mkdir(selected, { recursive: true });
+  await fs.writeFile(path.join(run, 'run.json'), '{"status":"BLOCKED"}');
+  await fs.writeFile(path.join(run, 'summary.json'), '{"status":"BLOCKED"}');
+  const state = '{"status":"FAIL","caseId":"B"}';
+  await fs.writeFile(path.join(selected, 'case-state.json'), state);
+  const archive = await finishOfflineFixture(fixture, { remove: false });
+  t.after(async () => { await fs.rm(archive, { recursive: true, force: true }); await finishOfflineFixture(fixture); });
+  assert.equal(await fs.readFile(path.join(archive, 'benchmark-temp/run-tiny/case-b/case-state.json'), 'utf8'), state);
+});
