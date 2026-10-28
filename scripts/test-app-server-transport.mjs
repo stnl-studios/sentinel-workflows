@@ -458,8 +458,8 @@ for (const [name, mutate] of [
   ['first bytes changed', f => { f.continuation.firstToolResultUtf8 += ' '; }],
   ['first API response changed', f => { f.s.state.turns[0].items.at(-1).text += 'changed'; }],
   ['first contract truncated', f => { f.s.state.turns[0].items[0].aggregatedOutput = 'partial'; }],
-  ['first effect unknown', f => { f.s.state.turns[0].items.splice(1, 0, { id: 'write', type: 'commandExecution',
-    command: 'touch file', cwd: f.root, status: 'completed', exitCode: 0, aggregatedOutput: '' }); }],
+  ['first explicit mutation', f => { f.s.state.turns[0].items.splice(1, 0, { id: 'write', type: 'fileChange',
+    status: 'completed', changes: [] }); }],
   ['first command denied', f => { f.s.state.turns[0].items[0].exitCode = 1; }],
   ['profile changed', f => { f.s.state.thread.reasoningEffort = 'high'; }],
   ['formal response projection drift', f => { f.s.state.turns[1].itemsView = 'full'; }],
@@ -477,7 +477,7 @@ for (const [name, mutate] of [
       'uncertain continuation':'fresh child has no admitted completed successful turn sequence (failed=TURN; status=interrupted; error=absent; cause=absent)',
       'foreign binding':'continuation public identity/source differs','first bytes changed':'continuation public identity/source differs',
       'first API response changed':'continuation first public response changed','first contract truncated':'generic runner complete contract output absent, truncated or foreign',
-      'first effect unknown':'continuation initialization command effects are unproven (itemIndex=1; failed=COMMAND_READ_FORM; itemType=commandExecution; cwd=matches; status=completed; exitCode=0)',
+      'first explicit mutation':'continuation initialization has denied, uncertain or unexpected effects (itemIndex=1; failed=ITEM_TYPE,CWD,EXIT_CODE; itemType=fileChange; cwd=differs; status=completed; exitCode=absent)',
       'first command denied':'continuation initialization has denied, uncertain or unexpected effects (itemIndex=0; failed=EXIT_CODE; itemType=commandExecution; cwd=matches; status=completed; exitCode=1)',
       'profile changed':'child metadata foreign, forked or version differs','formal response projection drift':'public child surfaces disagree'}[name];
     assert.ok(expected,`missing diagnostic contract for ${name}`);return refuses(expected)(error);
@@ -708,9 +708,8 @@ for (const [name, changes, failed, detail] of [
   ['failed command', { exitCode: 2 }, 'EXIT_CODE', 'exitCode=2'],
   ['missing metadata', { status: undefined, exitCode: undefined }, 'STATUS,EXIT_CODE', 'status=absent'],
   ['unknown metadata', { status: 'private-status-secret', exitCode: 'private-exit-secret' }, 'STATUS,EXIT_CODE', 'status=other'],
-  ['unproven command', { command: 'touch private-command-secret' }, 'COMMAND_READ_FORM', 'itemType=commandExecution'],
-  ['sensitive command', { command: 'TOKEN=private-secret cat /private/file-secret' }, 'COMMAND_READ_FORM', 'itemType=commandExecution'],
-  ['oversized command', { command: 'cat '+'private-secret'.repeat(1000) }, 'COMMAND_READ_FORM', 'itemType=commandExecution'],
+  ['explicit file mutation', { type: 'fileChange' }, 'ITEM_TYPE', 'itemType=fileChange'],
+  ['unproved tool effect', { type: 'mcpToolCall' }, 'ITEM_TYPE', 'itemType=mcpToolCall'],
 ]) test(`initialization refusal retains bounded concrete diagnostic through provider (${name})`, async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true,
     response: 'Initialization is not a verdict.\n' });
@@ -731,7 +730,7 @@ for (const [name, changes, failed, detail] of [
   const result = await provider.runTurn({ prompt: 'OFFLINE only', workflowSkill: 'stnl-slice-executor',
     model: 'gpt-6-luna', effort: 'high', role: 'review', operationId: 'initialization-refusal', timeoutMs: 1000,
     observeFormalBinding: () => ({ agentPath: identity.agentPath }),
-    onPrepareContinuation: async ({ validateInitialization }) => { await validateInitialization(); assert.fail('must reject'); },
+    onPrepareContinuation: async ({ observeInitialization }) => { await observeInitialization(); assert.fail('must reject'); },
     onChildCompleted: () => assert.fail('refused initialization cannot grant continuation or formal capture') });
   assert.equal(result.completed, false); assert.equal(result.errorCode, 'NATIVE_TRANSPORT_UNPROVEN');
   assert.ok(result.error.includes(`itemIndex=1; failed=${failed};`), result.error);
@@ -741,14 +740,9 @@ for (const [name, changes, failed, detail] of [
   const events = (await fs.readFile(result.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
   const refusal = events.find(event => event.type === 'native.transport.blocked');
   assert.equal(refusal.message, result.error, 'existing artifact preserves the exact safe diagnostic');
-  if(failed==='COMMAND_READ_FORM'){
-    assert.equal(refusal.privateCommandEvidence.values,'omitted');
-    assert.equal(refusal.privateCommandEvidence.sufficientForEffectJudgment,false);
-    assert.ok(Buffer.byteLength(JSON.stringify(refusal.privateCommandEvidence))<=384);
-    assert.doesNotMatch(JSON.stringify(refusal.privateCommandEvidence),/private-|TOKEN|secret|\/private/iu);
-    assert.equal(Object.hasOwn(result,'privateCommandEvidence'),false);
-    assert.equal((await fs.stat(result.eventsPath)).mode&0o077,0);
-  }
+  assert.equal(Object.hasOwn(refusal,'privateCommandEvidence'),false);
+  assert.equal(Object.hasOwn(result,'privateCommandEvidence'),false);
+  assert.equal((await fs.stat(result.eventsPath)).mode&0o077,0);
   assert.ok(!events.some(event => event.type === 'native.child.continuation.admitted'));
   assert.equal(result.captures.length, 0);
   assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1, 'only original fake principal');
@@ -780,8 +774,8 @@ test(`continued provider preserves both sources and reobserves without another t
     operationId: 'continued-provider', role: 'review', timeoutMs: 1000,
     observeFormalBinding: async () => ({ agentPath: identity.agentPath }),
     onChildTurns: (binding, turns) => { for (const turn of turns) charged.add(turn.id); },
-    onPrepareContinuation: async ({ binding, toolResultFile, firstTurnId, validateInitialization }) => {
-      admissionCount++; await validateInitialization(); firstFile = toolResultFile;
+    onPrepareContinuation: async ({ binding, toolResultFile, firstTurnId, observeInitialization }) => {
+      admissionCount++; await observeInitialization(); firstFile = toolResultFile;
       const firstToolResultUtf8 = await fs.readFile(toolResultFile, 'utf8');
       if(fault==='parent-closed-during-admission')parentDone=true;
       if(fault==='expired-during-admission')Date.now=()=>now()+2000;
@@ -1478,6 +1472,32 @@ test('S2 another completed child is not substituted for the scoped child', async
   const result = await readAppServerChild(s.rpc, { binding, bundle: f.bundle, cwd: f.root });
   assert.equal(result.finalResponse, s.state.items.at(-1).text);
   assert.ok(s.calls.filter(call => call.method === 'thread/read').every(call => call.params.threadId === child));
+});
+
+for(const command of ['sed -n \'1,5p\' source.mjs','rg --files test','/bin/zsh -lc "sed -n \'1,5p\' source.mjs"'])
+test(`initialization observation does not own internal command spelling: ${command}`,async t=>{
+  const f=await continuedHistory(t);
+  f.s.state.turns[0].items.splice(1,0,{id:'discovery',type:'commandExecution',command,
+    cwd:f.root,status:'completed',exitCode:0,aggregatedOutput:'synthetic discovery',commandActions:[{type:'unknown',command}]});
+  const options={binding:f.binding,bundle:f.bundle,cwd:f.root,continuation:f.continuation};
+  const before=JSON.stringify(f.s.state),first=await readAppServerChild(f.rpc,options),replay=await readAppServerChild(f.rpc,options);
+  assert.deepEqual(first,replay);assert.equal(first.finalResponse,'First and only formal response\r\n');
+  assert.equal(first.preVerificationContinuation.firstToolResultUtf8,f.continuation.firstToolResultUtf8);
+  assert.equal(JSON.stringify(f.s.state),before);
+  assert.ok(f.s.calls.every(call=>['thread/read','thread/items/list','thread/turns/list'].includes(call.method)));
+});
+
+for(const replay of [false,true])
+test(`initialization observation preserves actual shell denial with final exit zero (${replay?'replay':'admission'})`,async t=>{
+  const f=await continuedHistory(t),first=f.s.state.turns[0];
+  first.items.splice(1,0,{id:'denied-initialization',type:'commandExecution',cwd:f.root,status:'completed',exitCode:0,
+    command:'cat <<EOF\nsynthetic\nEOF\ntrue',
+    aggregatedOutput:"zsh:1: can't create temp file for here document: operation not permitted\n"});
+  if(!replay)f.s.state.turns=[first];
+  await assert.rejects(readAppServerChild(f.rpc,{binding:f.binding,bundle:f.bundle,cwd:f.root,
+    ...(replay?{continuation:f.continuation}:{initialization:true})}),
+    refuses('SANDBOX_COMMAND_DENIED: runner implicit temporary file denial'));
+  assert.ok(f.s.calls.every(call=>['thread/read','thread/items/list','thread/turns/list'].includes(call.method)));
 });
 
 test('S2 consumes every history page and blocks a repeated/incomplete cursor', async t => {

@@ -771,7 +771,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           onDispatched: checkpoint,
           observeFormalBinding: () => observeFormalRunner({ product, specPath, operation, slice }),
           validateRetainedCaptures: async captures => assertNativeCaptures(await product.captureCurrentExecution(specPath), captures, product),
-          onPrepareContinuation: async ({binding,toolResultFile,firstTurnId,validateInitialization}) => {
+          onPrepareContinuation: async ({binding,toolResultFile,firstTurnId,observeInitialization}) => {
             const prior=state.preVerificationContinuation;
             if(prior&&prior.binding.agentThreadId!==binding.agentThreadId)return null;
             const input={product,specPath,operation,slice,binding,toolResultFile,firstTurnId};
@@ -782,7 +782,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
                 fail('continuation admission remains uncertain; do not repeat');
               return prior.grant;
             }
-            await validateInitialization();
+            await observeInitialization();
             const reservation=await reserveExtraRunner({runRoot,runId:path.basename(runRoot),caseId,operation,slice,sequence,limit:turnLimit,continuationBinding:binding});
             reserved.push(reservation);
             state.preVerificationContinuation={binding,firstTurnId,reservation,grant:null};

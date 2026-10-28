@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { connectAppServer, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   startAppServerTurn, readAppServerTurn, bindAppServerChild, readAppServerChild, writeNativeToolResult,
   deniedShellTemporaryFile, persistAppServerStderrSample, observeAppServerChild,
-  nativeTransportError as blocked, nativeFailure, publicTurnStatus, publicTurnDiagnostic,nativeCommandEvidence } from './app-server-transport.mjs';
+  nativeTransportError as blocked, nativeFailure, publicTurnStatus, publicTurnDiagnostic } from './app-server-transport.mjs';
 
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const wait = (ms, signal) => new Promise((resolve, reject) => {
@@ -102,7 +102,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         let grant=continuations.get(binding.agentPath)??null;
         const count=views.get(binding.agentThreadId)?.turns.length??1;
         const firstTurnId=views.get(binding.agentThreadId)?.turns[0]?.id;
-        const validateInitialization=()=>readAppServerChild(rpc,{binding,bundle,cwd:workspace,initialization:true});
+        const observeInitialization=()=>readAppServerChild(rpc,{binding,bundle,cwd:workspace,initialization:true});
         if(grant) {
           const original=JSON.parse(grant.firstToolResultUtf8);
           const sourcePin=[{binding,toolResultFile:stem+'.json',finalResponseSha256:sha(original.finalResponse)}];
@@ -111,7 +111,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           if(!(await fs.readFile(stem+'.json')).equals(Buffer.from(grant.firstToolResultUtf8)))throw blocked('continuation first bytes changed');
           if(!continuationChecked.has(binding.agentPath)) {
             if(!parentActive||typeof onPrepareContinuation!=='function')throw blocked('continuation cannot be readmitted after principal termination');
-            const confirmed=await hook('onPrepareContinuation',onPrepareContinuation,{binding,toolResultFile:stem+'.json',firstTurnId:grant.firstTurnId,validateInitialization});
+            const confirmed=await hook('onPrepareContinuation',onPrepareContinuation,{binding,toolResultFile:stem+'.json',firstTurnId:grant.firstTurnId,observeInitialization});
             if(JSON.stringify(confirmed)!==JSON.stringify(grant))throw blocked('persisted continuation differs from controller');
             continuationChecked.add(binding.agentPath);
           }
@@ -126,7 +126,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           const original=await pin(binding,observed,stem+'.json',firstResponses,
             previousReady.filter(e=>e.binding?.agentPath===binding.agentPath));
           if(parentActive&&onPrepareContinuation!==null&&!captures.has(binding.agentPath)) {
-            grant=await hook('onPrepareContinuation',onPrepareContinuation,{binding,toolResultFile:original.file,firstTurnId,validateInitialization});
+            grant=await hook('onPrepareContinuation',onPrepareContinuation,{binding,toolResultFile:original.file,firstTurnId,observeInitialization});
             if(grant) {
               // Admission may have raced a long read/checkpoint with termination.
               // Keep the controller's grant, but expose no permission after the
@@ -373,7 +373,6 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         let evidenceStatus='retained';
         try { await record({ type: 'native.transport.blocked', code: primary.code,
           message: primary.message, dispatch, dispatchAttempted, stderrSample,
-          ...(nativeCommandEvidence(primary)?{privateCommandEvidence:nativeCommandEvidence(primary)}:{}),
           ...(secondaryFailures.length?{secondaryFailures}:{}) }); }
         catch(secondary) { const safe=nativeFailure(secondary,'evidence');evidenceStatus='unavailable';
           secondaryFailures.push({stage:'evidence',code:safe.code,message:safe.message}); }

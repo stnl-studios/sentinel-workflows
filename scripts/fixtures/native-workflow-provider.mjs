@@ -211,7 +211,10 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         const read=contractRead();read.aggregatedOutput=await fs.readFile(path.join(snapshot,'agents/codex/.codex/agents/stnl_validation_runner.toml'),'utf8');
         child.turns.push({id:randomUUID(),status:'completed',error:null,itemsView:'full',items:[
           {id:randomUUID(),type:'reasoning',summary:[],content:[]},
-          read,{id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Arbitrary initialization; no verification yet.'}]});
+          read,...(fault==='pre-verification-continuation'?[{id:'initialization-discovery',type:'commandExecution',
+            command:'/bin/zsh -lc "sed -n \'1,5p\' package.json"',cwd:workspace,status:'completed',exitCode:0,
+            aggregatedOutput:'Synthetic discovery only; no command executed by this fixture.',commandActions:[]}]:[]),
+          {id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Arbitrary initialization; no verification yet.'}]});
         turn.items.push({id:randomUUID(),type:'subAgentActivity',kind:'completed',agentPath,agentThreadId:childId});
         const eventPath=/record in (.+?); match binding\.agentPath/u.exec(prompt)?.[1];
         const deadline=Date.now()+10000;let admittedContinuation;

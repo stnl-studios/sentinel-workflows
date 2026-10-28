@@ -417,6 +417,11 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     const initialization=backend.threads.get(cap.binding.agentThreadId).turns[0];
     assert.equal(initialization.items[0].type,'reasoning');
     assert.deepEqual(initialization.items[0].content,[]);
+    if(fault==='pre-verification-continuation') {
+      const discovery=initialization.items.find(item=>item.id==='initialization-discovery');
+      assert.equal(discovery.type,'commandExecution');assert.equal(discovery.exitCode,0);
+      assert.match(discovery.command,/sed -n/);
+    }
     assert.equal(grant.firstTurnId,state.preVerificationContinuation.firstTurnId);
     assert.notEqual(JSON.parse(grant.firstToolResultUtf8).finalResponse,cap.toolResult.finalResponse);
     const events=(await fs.readFile(op.turn.eventsPath,'utf8')).trim().split('\n').map(JSON.parse);
