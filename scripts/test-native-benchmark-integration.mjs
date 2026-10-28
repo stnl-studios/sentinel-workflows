@@ -141,7 +141,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'findings-two-cycles'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','test-coverage-correction'],['fresh','formal-successor'],['fresh','formal-recovered-apply-rejection'],['fresh','formal-two-corrections'],['fresh','formal-four-corrections'],['fresh','findings-format-corrections'],['fresh','formal-observe-inventory'],['fresh','formal-observe-wait-timeout'],['fresh','execute-producer-corrections'],['fresh','findings-producer-corrections'],['fresh','findings-producer-mixed'],['fresh','formal-exhausted'],['fresh','formal-incomplete'],['fresh','formal-incomplete-exhausted'],['fresh','formal-continuation-exhausted'],['fresh','formal-continuation-correction'], ['fresh','review-correction'],['fresh','review-correction-four'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'findings-two-cycles'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','test-coverage-correction'],...['plan-redelivery','plan-redelivery-twice','plan-redelivery-four','plan-redelivery-exhausted','plan-redelivery-missing-file','plan-redelivery-divergent-file','plan-redelivery-drift','plan-redelivery-foreign','plan-redelivery-no-allocation','plan-redelivery-denied','plan-redelivery-uncertain'].map(fault=>['fresh',fault]),['fresh','formal-successor'],['fresh','formal-recovered-apply-rejection'],['fresh','formal-two-corrections'],['fresh','formal-four-corrections'],['fresh','findings-format-corrections'],['fresh','formal-observe-inventory'],['fresh','formal-observe-wait-timeout'],['fresh','execute-producer-corrections'],['fresh','findings-producer-corrections'],['fresh','findings-producer-mixed'],['fresh','formal-exhausted'],['fresh','formal-incomplete'],['fresh','formal-incomplete-exhausted'],['fresh','formal-continuation-exhausted'],['fresh','formal-continuation-correction'], ['fresh','review-correction'],['fresh','review-correction-four'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
   t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
@@ -315,6 +315,21 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
     assert.equal(ledger.total,9);assert.equal(ledger.reservations.length,0);
   }
+  if(fault?.startsWith('plan-redelivery') && !['plan-redelivery','plan-redelivery-twice','plan-redelivery-four'].includes(fault)) {
+    const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json')));
+    const ledger=JSON.parse(await fs.readFile(path.join(runRoot,'.turn-ledger.json')));
+    const count=fault==='plan-redelivery-exhausted'?9:fault==='plan-redelivery-missing-file'?4:
+      ['plan-redelivery-denied','plan-redelivery-uncertain','plan-redelivery-no-allocation'].includes(fault)?2:3;
+    assert.equal(result.status,'BLOCKED');
+    assert.equal(backend.calls.filter(c=>c.method==='turn/start').length,count,'only eligible bounded delivery corrections are admitted');
+    assert.equal(ledger.total,count,'every original/corrective dispatch remains charged');
+    assert.equal(backend.operations.some(o=>(fault==='plan-redelivery-exhausted'?['EXECUTE_SLICE','SPEC_CLOSE']:['REVIEW_PLAN','EXECUTE_SLICE','SPEC_CLOSE']).includes(o.operation)),false);
+    if(!['plan-redelivery-denied','plan-redelivery-uncertain'].includes(fault))assert.equal(ledger.reservations.length,0);
+    if(fault==='plan-redelivery-exhausted')assert.equal(state.terminal.blocker,'PREPARATION_HANDOFF_REDELIVERY_EXHAUSTED');
+    if(fault==='plan-redelivery-missing-file')assert.equal(state.terminal.blocker,'PREPARATION_HANDOFF_NO_CORRECTION_PROGRESS');
+    if(['plan-redelivery-denied','plan-redelivery-uncertain'].includes(fault))assert.ok(ledger.turns.some(t=>t.state==='uncertain'),'uncertain dispatch is not refunded');
+    return;
+  }
   assert.equal(result.status, 'PASS', JSON.stringify({result,evidenceHistory,errors:[...backend.threads.values()].flatMap(thread=>thread.turns.filter(turn=>turn.error).map(turn=>turn.error))}));
   if(['formal-two-corrections','formal-four-corrections','findings-format-corrections'].includes(fault)) {
     const state=JSON.parse(await fs.readFile(path.join(runRoot,'case-a/case-state.json')));
@@ -374,17 +389,18 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
   }
   const findingsCycles = fault === 'findings-two-cycles' ? 2 : ['findings-cycle','findings-format-corrections','findings-producer-corrections','findings-producer-mixed','formal-recovered-apply-rejection'].includes(fault) ? 1 : 0;
   const extra = 2 * findingsCycles;
-  const preparationExtra = fault==='review-correction-four'?8:fault?.startsWith('review-correction') ? 2 : 0;
+  const redeliveryExtra = fault==='plan-redelivery-twice'?2:['plan-redelivery','plan-redelivery-four'].includes(fault)?1:0;
+  const preparationExtra = fault==='plan-redelivery-four'?6:fault==='review-correction-four'?8:fault?.startsWith('review-correction') ? 2 : 0;
   const refusalChild=['formal-two-corrections','findings-producer-mixed','formal-recovered-apply-rejection'].includes(fault)?2:['formal-four-corrections','execute-producer-corrections'].includes(fault)?4:['findings-format-corrections','findings-producer-corrections','findings-producer-mixed'].includes(fault)?3:['formal-successor','formal-incomplete','formal-continuation-correction'].includes(fault)?1:0;
   const continuationChild=['pre-verification-continuation','formal-continuation-correction'].includes(fault)?1:0;
   const coverageChildren=fault==='test-coverage-correction'?2:0;
   const auxiliaryCalls = fault === 'review-correction-aux' ? 3 : fault === 'aux-run-eight' ? 8
     : ['aux-followup', 'aux-followup-interrupt', 'aux-descendant'].includes(fault) ? 2 : fault?.startsWith('aux-') ? 1 : 0;
-  assert.deepEqual(backend.operations.map(item => item.operation), ['SPEC_INIT', 'PLAN', 'REVIEW_PLAN',
+  assert.deepEqual(backend.operations.map(item => item.operation), fault==='plan-redelivery-four'?['SPEC_INIT','PLAN','REVIEW_PLAN','PLAN','REVIEW_PLAN','PLAN','REVIEW_PLAN','PLAN','PLAN','REVIEW_PLAN','EXECUTE_SLICE','VALIDATE_SLICE','SPEC_CLOSE']:['SPEC_INIT', 'PLAN', ...Array(redeliveryExtra).fill('PLAN'), 'REVIEW_PLAN',
     ...Array.from({length:preparationExtra/2},()=>['PLAN','REVIEW_PLAN']).flat(),
     'EXECUTE_SLICE', 'VALIDATE_SLICE', ...Array.from({ length: findingsCycles }, () => ['APPLY_FINDINGS', 'VALIDATE_SLICE']).flat(), 'SPEC_CLOSE'],
   'the manager follows each public handoff once, retaining the separate independent review');
-  assert.equal(result.operations, 6 + extra + preparationExtra); assert.equal(result.runnerTurns, 2 + extra + refusalChild + auxiliaryCalls + continuationChild + coverageChildren); assert.equal(result.mainTurns, 6 + extra + preparationExtra);
+  assert.equal(result.operations, 6 + extra + preparationExtra + redeliveryExtra); assert.equal(result.runnerTurns, 2 + extra + refusalChild + auxiliaryCalls + continuationChild + coverageChildren); assert.equal(result.mainTurns, 6 + extra + preparationExtra + redeliveryExtra);
   const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
   if (fault === 'findings-two-cycles') {
     const first = evidenceHistory.find(item => item.nextOperation === 'VALIDATE_SLICE'
@@ -430,9 +446,22 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
     assert.ok(continued.toolResultFile.endsWith('.continued.json'));
     assert.equal((await fs.readFile(continued.toolResultFile.replace('.continued.json','.json'),'utf8')),grant.firstToolResultUtf8);
   }
+  if (redeliveryExtra) {
+    const failedIndex=fault==='plan-redelivery-four'?7:1;
+    const first=JSON.parse(await fs.readFile(state.operations[failedIndex].evidencePath));
+    const corrected=JSON.parse(await fs.readFile(state.operations[failedIndex+redeliveryExtra].evidencePath));
+    assert.deepEqual(first.outcome,{result:'NEEDS_FIX',blocker:'PREPARATION_HANDOFF_REDELIVERY'});
+    if(fault!=='plan-redelivery-four')assert.equal(first.preparation,null,'a recovery request is not an accepted handoff');
+    assert.equal(corrected.preparation.candidateExecutionRoot,first.handoffRedelivery.candidateExecutionRoot);
+    const literal=await fs.readFile(path.join(runRoot,'case-a/tmp/literal-plan-return.json'),'utf8');
+    assert.deepEqual(corrected.preparation,JSON.parse(literal));
+    assert.deepEqual(corrected.preparation.authority,first.handoffRedelivery.authority);
+    assert.equal(first.handoffRedelivery.allocationSha256,corrected.handoffRedeliveryConsumed.allocationSha256);
+    assert.match(await fs.readFile(corrected.promptFile,'utf8'),/handoff re-delivery only/u);
+  }
   if (preparationExtra) {
     const read = async index => JSON.parse(await fs.readFile(state.operations[index].evidencePath));
-    const first = await read(2), correction = await read(3), second = await read(2+preparationExtra);
+    const first = await read(2), correction = await read(3), second = await read(2+preparationExtra+redeliveryExtra);
     assert.deepEqual(first.outcome, { result: 'NEEDS_FIX', blocker: 'PREPARATION_REVIEW_NOT_APPROVED' });
     assert.match(first.turn.response, /Offline preparation review declined/u);
     assert.equal(first.officialReadback.execution.state, 'NO_EXECUTION');
@@ -488,12 +517,12 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
   await assert.rejects(fs.lstat(path.join(state.specPath, 'execution')), { code: 'ENOENT' });
   assert.equal(backend.calls.some(call => /account|login|config\/value/.test(call.method)), false);
   const authors = backend.operations.filter(item => ['SPEC_INIT', 'PLAN', 'EXECUTE_SLICE', 'SPEC_CLOSE'].includes(item.operation));
-  assert.equal(new Set(authors.map(item => item.threadId)).size, regime === 'fresh' ? 4 + preparationExtra/2 : 1);
+  assert.equal(new Set(authors.map(item => item.threadId)).size, regime === 'fresh' ? 4 + preparationExtra/2 + redeliveryExtra : 1);
   const reviews = backend.operations.filter(item => ['REVIEW_PLAN', 'VALIDATE_SLICE'].includes(item.operation));
   assert.equal(new Set(reviews.map(item => item.threadId)).size, 2 + findingsCycles + preparationExtra/2);
   assert.ok(reviews.every(item => !authors.some(author => author.threadId === item.threadId)));
   const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
-  assert.equal(ledger.total, 8 + 2 * extra + preparationExtra + refusalChild + auxiliaryCalls + continuationChild + coverageChildren); assert.equal(ledger.reservations.length, 0);
+  assert.equal(ledger.total, 8 + 2 * extra + preparationExtra + redeliveryExtra + refusalChild + auxiliaryCalls + continuationChild + coverageChildren); assert.equal(ledger.reservations.length, 0);
   assert.ok(ledger.turns.every(turn => turn.state === 'completed'));
   assert.equal(ledger.turns.filter(turn => turn.childKind === 'auxiliary').length, auxiliaryCalls);
   assert.equal(ledger.turns.filter(turn => turn.childKind === 'formal').length, 2 + extra + refusalChild + continuationChild + coverageChildren);
@@ -609,7 +638,7 @@ test('literal manager entry parses ordinary run --case A and retains its normal 
   await assert.rejects(fs.lstat(path.join(fixture.root,'benchmark-temp/.active-run.json')),{code:'ENOENT'});
 });
 
-for (const fault of ['findings-cycle', 'review-correction']) test(`focal resume preserves a valid ${fault} correction through close without resetting its ledger`, async t => {
+for (const fault of ['findings-cycle', 'review-correction', 'plan-redelivery','plan-redelivery-twice']) test(`focal resume preserves a valid ${fault} correction through close without resetting its ledger`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
   t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); });
@@ -623,7 +652,7 @@ for (const fault of ['findings-cycle', 'review-correction']) test(`focal resume 
   } };
   const context = process.env.NODE_TEST_CONTEXT; delete process.env.NODE_TEST_CONTEXT;
   try {
-    const initialOperations = fault === 'findings-cycle' ? 5 : 3;
+    const initialOperations = fault === 'findings-cycle' ? 5 : fault==='plan-redelivery'?2:3;
     assert.equal(await manager.main(['run', '--case', 'A', '--max-operations', String(initialOperations), '--json'], { offline }), 0);
     const runId = (await fs.readdir(path.join(fixture.root, 'benchmark-temp'))).find(name => name.startsWith('run-'));
     const root = path.join(fixture.root, 'benchmark-temp', runId), stateFile = path.join(root, 'case-a/case-state.json');
@@ -633,7 +662,7 @@ for (const fault of ['findings-cycle', 'review-correction']) test(`focal resume 
     const originalJournal = JSON.parse(await fs.readFile(journalFile)), originalLedger = JSON.parse(await fs.readFile(path.join(root, '.turn-ledger.json')));
     const originalSnapshot = await fs.readFile(path.join(root, 'snapshot.json'));
     const evidence = await Promise.all(stopped.operations.map(async operation => [operation.evidencePath, await fs.readFile(operation.evidencePath)]));
-    if (fault === 'findings-cycle') {
+    if (fault === 'findings-cycle'||fault?.startsWith('plan-redelivery')) {
       const runFile = path.join(root, 'run.json'), ledgerFile = path.join(root, '.turn-ledger.json');
       const runBytes = await fs.readFile(runFile), stateBytes = await fs.readFile(stateFile), ledgerBytes = await fs.readFile(ledgerFile);
       const calls = backend.calls.length;
@@ -644,6 +673,7 @@ for (const fault of ['findings-cycle', 'review-correction']) test(`focal resume 
         value => { value.contextPolicy = { regime: 'foreign', authorContinuityOperations: [] }; },
         value => { value.operations.at(-1).outcome = { result: 'BLOCKED', blocker: 'DENIED' }; },
         value => { value.mainTurns++; },
+        ...(fault?.startsWith('plan-redelivery')?[value=>{value.handoffRedelivery.source.threadId='foreign-original';},value=>{value.handoffRedelivery.authority.artifactHashes[0].sha256='sha256:'+'0'.repeat(64);}]:[]),
         value => { value.operations.at(-1).evidencePath = path.join(root, 'foreign.json'); },
       ]) {
         const invalid = structuredClone(stopped); tamper(invalid);
@@ -654,6 +684,17 @@ for (const fault of ['findings-cycle', 'review-correction']) test(`focal resume 
           assert.deepEqual(await fs.readFile(ledgerFile), ledgerBytes);
           assert.equal(backend.calls.length, calls, 'invalid resume admits no call');
         } finally { await fs.writeFile(stateFile, stateBytes); }
+      }
+      if(fault==='plan-redelivery-twice') {
+        const originFile=stopped.operations[1].evidencePath,originBytes=await fs.readFile(originFile),origin=JSON.parse(originBytes);
+        origin.turn.threadId='foreign-original-thread';origin.turn.authorThread.threadId='foreign-original-thread';
+        try {
+          await fs.writeFile(originFile,JSON.stringify(origin));
+          await assert.rejects(manager.main(['run','--resume',runId,'--max-operations','2','--json'],{offline}));
+          assert.deepEqual(await fs.readFile(runFile),runBytes,'bad origin never activates the stopped run');
+          assert.deepEqual(await fs.readFile(ledgerFile),ledgerBytes,'no reservation, cost or refund from forged origin');
+          assert.equal(backend.calls.length,calls,'forged first origin admits no model call');
+        } finally {await fs.writeFile(originFile,originBytes);}
       }
       const journalBytes = await fs.readFile(journalFile);
       try {
@@ -681,9 +722,9 @@ for (const fault of ['findings-cycle', 'review-correction']) test(`focal resume 
     const closed = JSON.parse(await fs.readFile(stateFile)), final = JSON.parse(await fs.readFile(closed.finalizer.rawPath));
     const ledger = JSON.parse(await fs.readFile(path.join(root, '.turn-ledger.json')));
     assert.equal(closed.status, 'PASS'); assert.equal(final.finalExecutionState, 'SPEC_CLOSED');
-    assert.equal(ledger.total, fault === 'findings-cycle' ? 12 : 10);
+    assert.equal(ledger.total, fault === 'findings-cycle' ? 12 : fault==='plan-redelivery'?9:10);
     assert.equal(ledger.reservations.length, 0); assert.ok(ledger.turns.every(turn => turn.state === 'completed'));
-    assert.equal(backend.calls.filter(call => call.method === 'turn/start').length, 8, 'only the original and subsequent parent turns are dispatched');
+    assert.equal(backend.calls.filter(call => call.method === 'turn/start').length, fault==='plan-redelivery'?7:8, 'only the original and subsequent parent turns are dispatched');
     assert.deepEqual(await fs.readFile(path.join(root, 'snapshot.json')), originalSnapshot);
     assert.deepEqual(await fs.readFile(stopped.finalizer.rawPath), originalRaw);
     for (const [file, bytes] of evidence) assert.deepEqual(await fs.readFile(file), bytes);

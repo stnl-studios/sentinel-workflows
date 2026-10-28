@@ -161,14 +161,54 @@ export function contextPolicy(configuration) {
   return structuredClone(policy);
 }
 
-export async function preparationHandoff(product, specPath, commandResults) {
+export async function preparationHandoff(product, specPath, commandResults, redelivery = null) {
   const candidates = commandResults.filter(item => item?.status === 'AWAITING_REVIEW'
     && item.publication === 'not-started' && typeof item.candidateExecutionRoot === 'string');
-  if (candidates.length !== 1) fail('PLAN has no single official AWAITING_REVIEW return');
+  if (candidates.length !== 1) throw Object.assign(new Error('PLAN has no single official AWAITING_REVIEW return'),
+    {code:'NATIVE_EVIDENCE_UNPROVEN',preparationHandoffMissing:candidates.length===0});
   const request = candidates[0];
+  if(redelivery!==null&&request.candidateExecutionRoot!==redelivery.candidateExecutionRoot)
+    fail('re-delivered PLAN belongs to another candidate');
   const owned = await product.assertPreparationCandidate(request.candidateExecutionRoot, specPath);
   if (owned.root !== request.candidateExecutionRoot) fail('PLAN root differs from its public ownership proof');
+  if (redelivery !== null && !equal(request, {status:'AWAITING_REVIEW',
+    candidateExecutionRoot:redelivery.candidateExecutionRoot,authority:redelivery.authority,publication:'not-started'}))
+    fail('re-delivered PLAN return differs from the retained candidate/authority/hashes');
   return structuredClone(request);
+}
+
+// A request to re-deliver is not a handoff or an approval. Only public DRAFT
+// allocation facts select the root; no path is extracted from model prose.
+// Initial serialization is read-only. Never re-run prepare or publication here.
+export async function preparationRedelivery(product, specPath, {workspace,turn=null,previous=null}) {
+  if (turn !== null && (turn.completed!==true || turn.turnStarted!==true || turn.terminalObserved!==true
+    || turn.errorCode || turn.error || !turn.threadId || !turn.turnId
+    || turn.authorThread?.threadId!==turn.threadId || turn.authorThread?.cwd!==workspace
+    || turn.authorThread?.role!=='author')) fail('PLAN re-delivery requires a proven completed author turn');
+  if((turn?.commandResults??[]).some(item=>['BLOCKED','FAIL'].includes(item?.status)
+    || item?.publication && item.publication!=='not-started'))fail('PLAN reports a real refusal or publication effect');
+  const roots=[...new Set((turn?.commandResults??[]).filter(item=>item?.status==='DRAFT'
+    && typeof item.candidateExecutionRoot==='string').map(item=>item.candidateExecutionRoot))];
+  if ((previous===null && roots.length!==1) || roots.some(root=>previous!==null&&root!==previous.candidateExecutionRoot))
+    fail('PLAN re-delivery has no unique same public DRAFT allocation');
+  const root=previous?.candidateExecutionRoot??roots[0];
+  const current=await product.inspectExecutionState(specPath);
+  if(current.state!=='NO_EXECUTION') fail('PLAN re-delivery cannot advance or replace execution');
+  const owned=await product.assertPreparationCandidate(root,specPath);
+  if(owned.root!==root || owned.marker.operation!=='PLAN' || owned.marker.source!==null
+    || owned.marker.expectedActivationId!==null) fail('PLAN re-delivery is not an owned Initial allocation');
+  const projected=await product.serializePlanPathClaims({specPath,candidateExecutionRoot:root});
+  if(projected.status!=='PASS' || projected.authority?.requirementsAuthority!==current.requirementsAuthority)
+    fail('PLAN re-delivery authority differs from current requirements');
+  const after=await product.assertPreparationCandidate(root,specPath);
+  if(!equal(after.marker,owned.marker))fail('PLAN allocation changed during observation');
+  const source=previous?.source??{threadId:turn.threadId,turnId:turn.turnId,workspace,specPath};
+  if(!source.threadId||!source.turnId||source.workspace!==workspace||source.specPath!==specPath)
+    fail('PLAN re-delivery source identity differs');
+  const proof={candidateExecutionRoot:root,allocationSha256:sha(Buffer.from(JSON.stringify(owned.marker))),
+    authority:projected.authority,source};
+  if(previous!==null&&!equal(proof,previous))fail('PLAN re-delivery allocation/authority/hashes changed');
+  return proof;
 }
 
 export function assertNativeCaptures(image, captures, { restoreCaptureSources } = {}) {

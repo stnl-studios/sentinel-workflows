@@ -31,6 +31,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
   const automatic = true;
   let interrupted = false;
   let preparation = null;
+  let retainedPlanReturn = null;
   function command(items, result) { items.push({ id: randomUUID(), type: 'commandExecution', status: 'completed',
     exitCode: 0, aggregatedOutput: JSON.stringify(result) }); }
   async function authored(operation, prompt, thread, turn) {
@@ -79,7 +80,26 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       await author(path.join(snapshot, 'skills/workflows/stnl-spec-lifecycle-manager/examples/validator-fixtures/ready'), candidate);
       command(turn.items, await publishCandidate('INIT', specPath, candidate));
     } else if (operation === 'PLAN') {
-      if (preparation && fault?.startsWith('review-correction')) {
+      if (retainedPlanReturn && fault?.startsWith('plan-redelivery')) {
+        if (!prompt.includes('handoff re-delivery only') || !prompt.includes(preparation.candidateExecutionRoot)
+          || !prompt.includes('Do not rerun')) throw new Error('redelivery lacks exact candidate and concrete feedback');
+        const attempt=operations.filter(item=>item.operation==='PLAN').length-1;
+        if(fault==='plan-redelivery-missing-file') {
+          turn.items.push({id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'The preserved original file is absent; no handoff invented.'});return;
+        }
+        if(fault==='plan-redelivery-exhausted'||fault==='plan-redelivery-twice'&&attempt<2) {
+          command(turn.items,{status:'DRAFT',candidateExecutionRoot:preparation.candidateExecutionRoot});
+          return;
+        }
+        const original = await fs.readFile(retainedPlanReturn, 'utf8'),value=JSON.parse(original);
+        if(fault==='plan-redelivery-divergent-file')value.authority.artifactHashes[0].sha256='sha256:'+'0'.repeat(64);
+        if(fault==='plan-redelivery-foreign')value.candidateExecutionRoot+='-foreign';
+        if(fault==='plan-redelivery-drift')await fs.appendFile(path.join(preparation.candidateExecutionRoot,'plans/slice-01.md'),'\nUnapproved change during re-delivery.\n');
+        command(turn.items, value);
+        return;
+      }
+      if (preparation && (fault?.startsWith('review-correction')
+        || ['plan-redelivery-four','plan-redelivery-exhausted'].includes(fault))) {
         if (!prompt.includes(`CANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}`)
           || !prompt.includes('bounded author correction') || !prompt.includes('Offline preparation review declined')) throw new Error('author correction lacks exact candidate/feedback');
         await assertPreparationCandidate(preparation.candidateExecutionRoot, specPath);
@@ -93,10 +113,16 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         command(turn.items, await preparePlanCandidate({ candidateExecutionRoot: preparation.candidateExecutionRoot }));
         command(turn.items, await serializePlanPathClaims({ specPath, candidateExecutionRoot: preparation.candidateExecutionRoot }));
         preparation = await publishPreparationCandidate({ specPath, candidateExecutionRoot: preparation.candidateExecutionRoot });
-        command(turn.items, preparation);
+        if(['plan-redelivery-four','plan-redelivery-exhausted'].includes(fault)
+          && operations.filter(item=>item.operation==='PLAN').length===4) {
+          retainedPlanReturn=path.join(caseRoot,'tmp/literal-plan-return.json');
+          await fs.writeFile(retainedPlanReturn,JSON.stringify(preparation)+'\n');
+          command(turn.items,{});turn.items.at(-1).aggregatedOutput=JSON.stringify({stdoutFile:retainedPlanReturn})+'\n'+JSON.stringify({status:preparation.status});
+        } else command(turn.items, preparation);
         return;
       }
       const allocated = await preparePreparationCandidate({ specPath, operation: 'PLAN' });
+      if (fault?.startsWith('plan-redelivery')) command(turn.items, allocated);
       const current = await inspectCurrentExecution(specPath);
       for (const [name, bytes] of initialArtifacts({ form: 'lifecycle' })) {
         if (name.includes('slice-02')) continue;
@@ -109,7 +135,17 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         await fs.mkdir(path.dirname(destination), { recursive: true }); await fs.writeFile(destination, text);
       }
       preparation = await publishPreparationCandidate({ specPath, candidateExecutionRoot: allocated.candidateExecutionRoot });
-      command(turn.items, preparation);
+      if (fault?.startsWith('plan-redelivery')&&!['plan-redelivery-four','plan-redelivery-exhausted'].includes(fault)) {
+        retainedPlanReturn = path.join(caseRoot, 'tmp/literal-plan-return.json');
+        await fs.writeFile(retainedPlanReturn, JSON.stringify(preparation) + '\n');
+        command(turn.items, {});
+        turn.items.at(-1).aggregatedOutput = JSON.stringify({ stdoutFile: retainedPlanReturn }) + '\n'
+          + JSON.stringify({ status: preparation.status, candidateExecutionRoot: preparation.candidateExecutionRoot });
+        if(fault==='plan-redelivery-missing-file')await fs.unlink(retainedPlanReturn);
+        if(fault==='plan-redelivery-no-allocation')turn.items=turn.items.filter(item=>!item.aggregatedOutput?.includes('"status":"DRAFT"'));
+        if(fault==='plan-redelivery-denied')turn.items.push({id:randomUUID(),type:'commandExecution',status:'completed',exitCode:1,
+          command:"zsh -lc 'cat <<EOF\nsynthetic\nEOF'",aggregatedOutput:"zsh:1: can't create temp file for here document: operation not permitted\n"});
+      } else command(turn.items, preparation);
       if (fault === 'unexpected-plan-child') {
         const childId = randomUUID();
         threads.set(childId, { id: childId, parentThreadId: thread.id, cliVersion: '0.163.0',
@@ -120,8 +156,9 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       }
     } else if (operation === 'REVIEW_PLAN') {
       if (!prompt.includes(`CANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}`)) throw new Error('fixture root was not passed to the independent review');
-      if (fault?.startsWith('review-correction') && (operations.filter(item => item.operation === 'REVIEW_PLAN').length === 1
-        || fault === 'review-correction-twice'||fault==='review-correction-four'&&operations.filter(item=>item.operation==='REVIEW_PLAN').length<=4)) {
+      if ((fault?.startsWith('review-correction') && (operations.filter(item => item.operation === 'REVIEW_PLAN').length === 1
+        || fault === 'review-correction-twice'||fault==='review-correction-four'&&operations.filter(item=>item.operation==='REVIEW_PLAN').length<=4))
+        || ['plan-redelivery-four','plan-redelivery-exhausted'].includes(fault)&&operations.filter(item=>item.operation==='REVIEW_PLAN').length<=3) {
         turn.items.push({ id: randomUUID(), type: 'agentMessage', phase: 'final_answer',
           text: 'Offline preparation review declined: author must correct the recipe dependency review; no approval or publication.' });
         return;
@@ -364,6 +401,9 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       const thread = threads.get(params.threadId);
       if (!thread) throw new Error('foreign public thread query');
       if (method === 'thread/turns/list') {
+        if(fault==='plan-redelivery-uncertain'&&operations.at(-1)?.operation==='PLAN'
+          &&thread.parentThreadId===null&&thread.turns.at(-1)?.status==='completed')
+          throw Object.assign(new Error('OFFLINE uncertain observation after PLAN'),{code:'EIO'});
         const target = fault === 'interrupt-close' ? 'SPEC_CLOSE' : fault === 'review-correction-interrupt' ? 'PLAN' : 'EXECUTE_SLICE';
         if (['interrupt-execute', 'interrupt-close', 'aux-followup-interrupt', 'review-correction-interrupt'].includes(fault) && !interrupted
           && (fault !== 'review-correction-interrupt' || operations.filter(item=>item.operation==='PLAN').length === 2)

@@ -400,6 +400,25 @@ test('B11 — v2 rejects premature PLAN, LOCAL approval, promotion, terminal rea
   assert.notEqual(event(journal, 'SPEC_CLOSE', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_CLOSED']).status, 0);
 });
 
+test('v2 journal records only marked Initial handoff re-delivery before independent review',async t=>{
+  const root=await temporaryRoot(t,'sentinel-plan-redelivery-journal'),journal=path.join(root,'journal.json');
+  await initV2Journal(journal);
+  requireSuccess(event(journal,'SPEC_INIT','SPEC','GPT-6.1-Sol','medium','PASS',['--resulting-state','SPEC_READY']),'init');
+  requireSuccess(event(journal,'PLAN','PLAN','GPT-6-Luna','high','NEEDS_FIX',['--resulting-state','NO_EXECUTION']),'missing delivery');
+  const before=await fs.readFile(journal);
+  for(const args of [
+    ['PLAN','PLAN','PASS',['--resulting-state','NO_EXECUTION']],
+    ['REVIEW_PLAN','REVIEW_VALIDATE','PASS',['--resulting-state','MATERIALIZED_PRISTINE']],
+    ['EXECUTE_SLICE','EXECUTE','PASS',['--slice','slice-01']],
+  ])assert.notEqual(event(journal,args[0],args[1],'GPT-6-Luna','high',args[2],args[3]).status,0);
+  assert.deepEqual(await fs.readFile(journal),before,'no acceptance or phase advance from a missing handoff');
+  requireSuccess(event(journal,'PLAN','PLAN','GPT-6-Luna','high','NEEDS_FIX',['--resulting-state','NO_EXECUTION','--retry','true']),'first correction');
+  requireSuccess(event(journal,'PLAN','PLAN','GPT-6-Luna','high','PASS',['--resulting-state','NO_EXECUTION','--retry','true']),'literal delivery');
+  requireSuccess(event(journal,'REVIEW_PLAN','REVIEW_VALIDATE','GPT-6-Luna','high','PASS',['--resulting-state','MATERIALIZED_PRISTINE']),'independent review');
+  const saved=await readJson(journal);assert.equal(saved.events.filter(e=>e.retry===true).length,2);
+  assert.equal(saved.events.filter(e=>e.result==='NEEDS_FIX').length,2);
+});
+
 test('v2 journal admits only one contiguous refused Initial review correction', async t => {
   const root = await temporaryRoot(t, 'sentinel-review-correction-journal'), journal = path.join(root, 'journal.json');
   await initV2Journal(journal);

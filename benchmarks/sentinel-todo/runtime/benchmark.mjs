@@ -516,10 +516,20 @@ function assertV2Sequence(events) {
     }
     if (phase === 'READY_FOR_PLAN') {
       if (event.operation !== 'PLAN') throw new CliError('v2 ready SPEC must advance directly to PLAN');
-      phase = 'EXECUTION';
+      phase = event.result==='NEEDS_FIX'&&event.resultingState==='NO_EXECUTION'
+        ? 'EXPECT_HANDOFF_REDELIVERY':'EXECUTION';
+      continue;
+    }
+    if(phase==='EXPECT_HANDOFF_REDELIVERY') {
+      if(event.operation!=='PLAN'||event.retry!==true||event.resultingState!=='NO_EXECUTION'
+        ||!['PASS','NEEDS_FIX'].includes(event.result))throw new CliError('v2 handoff re-delivery requires a marked correction without execution');
+      if(event.result==='PASS')phase='EXPECT_PREPARATION_REVIEW';
       continue;
     }
     if (phase === 'EXPECT_PREPARATION_CORRECTION') {
+      if(event.operation==='PLAN'&&event.result==='NEEDS_FIX'&&event.resultingState==='NO_EXECUTION'&&event.retry===true) {
+        phase='EXPECT_HANDOFF_REDELIVERY';continue;
+      }
       if (event.operation !== 'PLAN' || event.result !== 'PASS' || event.resultingState !== 'NO_EXECUTION') {
         throw new CliError('v2 refused Initial review requires one author correction without execution');
       }

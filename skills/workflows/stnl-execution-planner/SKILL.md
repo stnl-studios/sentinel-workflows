@@ -39,7 +39,9 @@ Keep the complete draft isolated. `publish-task-candidate.mjs --spec-path SPEC_P
 
 ## Output
 
-At AWAITING_REVIEW, report the exact isolated candidate root, source activation when present, current requirements authority, artifact paths and returned review request to the caller, then stop and return control. The caller invokes REVIEW_PLAN in an independent context; do not start or delegate that next operation from PLAN or REPLAN. No implementation, formal validation or self-approval.
+At AWAITING_REVIEW, report the exact isolated candidate root, source activation when present, current requirements authority, artifact paths and review request when returned by the producer to the caller, then stop and return control. The caller invokes REVIEW_PLAN in an independent context; do not start or delegate that next operation from PLAN or REPLAN. No implementation, formal validation or self-approval.
+
+If the caller requests only re-delivery of an Initial handoff whose preparation remains unchanged, expose the complete literal preserved producer return as one JSON command output. Do not reconstruct it from a summary, rerun planning/preparation/publication, change artifacts or invoke REVIEW_PLAN. Report an absent or changed original instead of inventing a handoff; the caller still validates the allocation, authority and artifact hashes.
 
 ## REPLAN
 

@@ -9,7 +9,7 @@ import { admitOperation, assertNativeLauncher, budgetSnapshot, decideOutcome, gu
   providerConfigurationError,
   initializeTurnBudget, nextHandoff, recoverableRunnerHandoff, settleTurn, startReservedTurn } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 import * as manager from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
-import { assertNativeCaptures } from '../benchmarks/sentinel-todo/runtime/native-evidence.mjs';
+import { assertNativeCaptures, preparationHandoff, preparationRedelivery } from '../benchmarks/sentinel-todo/runtime/native-evidence.mjs';
 import { nativeOperationCase } from './fixtures/current-native-operation.mjs';
 import { normalizedFormal } from './fixtures/current-native-normalization.mjs';
 import { captureCurrentExecution } from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
@@ -19,6 +19,43 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MANAGER = path.join(ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs');
 const RECOVERY_BUDGETS = JSON.parse(await fs.readFile(path.join(ROOT,
   'benchmarks/sentinel-todo/benchmark.json'), 'utf8')).cases.find((item) => item.id === 'A').budgets;
+
+test('PLAN re-delivery requires complete observation and the same public allocation/authority',async()=>{
+  const workspace='/controlled/workspace',specPath=workspace+'/spec',root=workspace+'/tmp/candidate';
+  const marker={operation:'PLAN',source:null,expectedActivationId:null,allocationId:'owned-allocation'};
+  const authority={requirementsAuthority:'sha256:requirements',artifactHashes:[{path:'plan.md',sha256:'sha256:plan'}]};
+  const turn={completed:true,turnStarted:true,terminalObserved:true,threadId:'author',turnId:'turn',
+    authorThread:{threadId:'author',cwd:workspace,role:'author'},
+    commandResults:[{status:'DRAFT',candidateExecutionRoot:root}]};
+  const product={inspectExecutionState:async()=>({state:'NO_EXECUTION',requirementsAuthority:authority.requirementsAuthority}),
+    assertPreparationCandidate:async selected=>({root:selected,marker:structuredClone(marker)}),
+    serializePlanPathClaims:async()=>({status:'PASS',authority:structuredClone(authority)})};
+  const proof=await preparationRedelivery(product,specPath,{workspace,turn});
+  assert.equal(proof.candidateExecutionRoot,root);
+  assert.equal(proof.status,undefined,'proof requests correction, never grants AWAITING_REVIEW');
+  const literal={status:'AWAITING_REVIEW',candidateExecutionRoot:root,authority,publication:'not-started'};
+  assert.deepEqual(await preparationHandoff(product,specPath,[literal],proof),literal);
+  const anotherAuthor={...turn,threadId:'corrector',turnId:'corrector-turn',authorThread:{...turn.authorThread,threadId:'corrector'}};
+  assert.deepEqual(await preparationRedelivery(product,specPath,{workspace,turn:anotherAuthor,previous:proof}),proof,
+    'a new actor does not reset the original proof');
+  for(const mutate of [t=>{t.completed=false;},t=>{t.turnStarted=null;},t=>{t.terminalObserved=false;},
+    t=>{t.errorCode='PERMISSION_REQUIRED';},t=>{t.authorThread.threadId='foreign';},t=>{t.authorThread.cwd='/foreign';},
+    t=>{t.commandResults=[];},t=>{t.commandResults.push({status:'DRAFT',candidateExecutionRoot:root+'-other'});}]) {
+    const invalid=structuredClone(turn);mutate(invalid);
+    await assert.rejects(preparationRedelivery(product,specPath,{workspace,turn:invalid}),e=>e.code==='NATIVE_EVIDENCE_UNPROVEN');
+  }
+  for(const mutate of [p=>{p.candidateExecutionRoot+='-foreign';},p=>{p.authority.requirementsAuthority+='-foreign';},
+    p=>{p.authority.artifactHashes[0].sha256+='-changed';},p=>{p.publication='confirmed';},p=>{p.extra='partial projection';}]) {
+    const invalid=structuredClone(literal);mutate(invalid);
+    await assert.rejects(preparationHandoff(product,specPath,[invalid],proof),e=>e.code==='NATIVE_EVIDENCE_UNPROVEN');
+  }
+  for(const changed of [
+    {...product,inspectExecutionState:async()=>({state:'MATERIALIZED_PRISTINE'})},
+    {...product,assertPreparationCandidate:async()=>({root,marker:{...marker,allocationId:'foreign'}})},
+    {...product,serializePlanPathClaims:async()=>({status:'PASS',authority:{...authority,artifactHashes:[]}})},
+  ])await assert.rejects(preparationRedelivery(changed,specPath,{workspace,previous:proof}),e=>e.code==='NATIVE_EVIDENCE_UNPROVEN');
+  await assert.rejects(preparationHandoff(product,specPath,[literal,literal],proof),e=>e.preparationHandoffMissing===false);
+});
 
 test('operational corrections share a stage across categories, owners and replay',()=>{
   const rows=[];

@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertSnapshotIntegrity, createSnapshot } from './benchmark-snapshot.mjs';
 import { createReporter } from './benchmark-ui.mjs';
 import { budgetViolation, artifactMetrics } from './benchmark.mjs';
-import { contextPolicy, preparationHandoff, assertNativeCaptures,
+import { contextPolicy, preparationHandoff, preparationRedelivery, assertNativeCaptures,
   retainBeforeClose, finishCloseEvidence, validateNativeLedger, observeFormalRunner,prepareFormalContinuation, operationalCorrectionUsage } from './native-evidence.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -351,6 +351,8 @@ export function decideOutcome(operation, readback, completed, readinessResult = 
   if (execution?.error || BLOCKED_STATES.has(execution?.state)) {
     return { result: 'BLOCKED', blocker: execution?.error ? 'OFFICIAL_READBACK_ERROR' : `OFFICIAL_${execution.state}` };
   }
+  if(operation==='PLAN' && readback.handoffRedelivery && execution?.state==='NO_EXECUTION')
+    return {result:'NEEDS_FIX',blocker:'PREPARATION_HANDOFF_REDELIVERY'};
   if (['PLAN', 'REPLAN'].includes(operation) && readback.preparation?.status === 'AWAITING_REVIEW') {
     if (operation === 'PLAN' && !['EMPTY', 'NO_EXECUTION'].includes(execution?.state)) return { result: 'BLOCKED', blocker: 'PLAN_ADVANCED_FLOW' };
     if (operation === 'REPLAN' && readback.preparation.expectedActivationId
@@ -383,6 +385,7 @@ export function nextHandoff(operation, readback, readinessResult = null) {
   }
   if (operation === 'SPEC_RESUME') return { operation: 'SPEC_READINESS', slice: null };
   if (operation === 'SPEC_PROMOTE') return { operation: 'PLAN', slice: null };
+  if(operation==='PLAN' && readback.handoffRedelivery)return {operation:'PLAN',slice:null};
   if (['PLAN', 'REPLAN'].includes(operation) && readback.preparation?.status === 'AWAITING_REVIEW') return { operation: 'REVIEW_PLAN', slice: null };
   if (operation === 'REVIEW_PLAN' && decideOutcome(operation, readback, true, readinessResult).blocker
     === 'PREPARATION_REVIEW_NOT_APPROVED') return { operation: 'PLAN', slice: null };
@@ -404,11 +407,13 @@ export function focalResumeHandoff({ state, evidence, readback, ledger, runId, p
     || evidence.sequence !== state.operations.length || evidence.operation !== recorded.operation
     || evidence.slice !== recorded.slice || !isDeepStrictEqual(evidence.outcome, recorded.outcome)
     || !isDeepStrictEqual(state.preparation ?? null, evidence.preparation ?? null)
+    || !isDeepStrictEqual(state.handoffRedelivery ?? null, evidence.handoffRedelivery ?? null)
     || !isDeepStrictEqual(state.readiness ?? null, evidence.readinessResult ?? null)) fail('case is not safely resumable');
   validateNativeLedger(ledger, state, runId, { settled: true });
   if (!isDeepStrictEqual(readback.execution, evidence.officialReadback?.execution)
     || !isDeepStrictEqual(readback.lifecycle, evidence.officialReadback?.lifecycle)) fail('official state changed since stop');
-  const current = { ...readback, preparation: state.preparation ?? null, product };
+  const current = { ...readback, preparation: state.preparation ?? null,
+    handoffRedelivery:state.handoffRedelivery??null, product };
   if (!isDeepStrictEqual(decideOutcome(recorded.operation, current, true, state.readiness ?? null), recorded.outcome)) {
     fail('saved outcome does not match official state');
   }
@@ -424,6 +429,22 @@ function assertCaseIdentity(state, { workspace, specPath, policy }) {
 function assertResumeScope(previousScope, mode) {
   if (previousScope !== mode && (previousScope !== 'focal' || mode !== 'case')) fail('resume cannot silently change the measured scope');
 }
+async function revalidatePlanRedelivery({product,runRoot,caseRoot,state,specPath,workspace,proof}) {
+  const origins=[];
+  for(const [index,operation] of state.operations.entries())if(operation.operation==='PLAN'&&operation.threadId===proof.source.threadId) {
+    if(path.dirname(operation.evidencePath)!==caseRoot)fail('PLAN delivery origin is not case-owned');
+    const origin=JSON.parse((await product.readOwnedFile(operation.evidencePath)).bytes);
+    if(origin.turn?.turnId===proof.source.turnId)origins.push({origin,index});
+  }
+  if(origins.length!==1)fail('PLAN delivery has no single retained original turn');
+  const {origin,index}=origins[0],ledger=await readJson(ledgerPath(runRoot));
+  if(origin.operation!=='PLAN'||origin.slice!==null||origin.turn?.threadId!==proof.source.threadId
+    ||!isDeepStrictEqual(origin.handoffRedelivery,proof)||origin.sequence!==index+1
+    ||ledger.turns.filter(row=>row.caseId===state.caseId&&row.sequence===index+1&&row.operation==='PLAN'
+      &&row.role==='main'&&row.state==='completed'&&row.threadId===proof.source.threadId).length!==1)
+    fail('PLAN delivery origin/ledger binding differs');
+  return preparationRedelivery(product,specPath,{workspace,turn:origin.turn,previous:proof});
+}
 async function readFocalResumeHandoff({ product, runRoot, caseRoot, state, expected, mode }) {
   assertCaseIdentity(state, expected);
   assertResumeScope((await readJson(path.join(caseRoot, 'journal.json'))).runMode, mode);
@@ -431,6 +452,8 @@ async function readFocalResumeHandoff({ product, runRoot, caseRoot, state, expec
   const evidencePath = state.operations?.at(-1)?.evidencePath;
   if (typeof evidencePath !== 'string' || path.dirname(evidencePath) !== caseRoot) fail('stopped evidence is not case-owned');
   const evidence = JSON.parse((await product.readOwnedFile(evidencePath)).bytes);
+  if(state.handoffRedelivery)await revalidatePlanRedelivery({product,runRoot,caseRoot,state,specPath,
+    workspace:expected.workspace,proof:state.handoffRedelivery});
   return focalResumeHandoff({ state, evidence, readback: await officialReadback(product, specPath),
     ledger: await readJson(ledgerPath(runRoot)), runId: path.basename(runRoot), product });
 }
@@ -648,6 +671,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
     contextPolicy: policy, authorThread: null, threads: {}, runnerTurns: 0, mainTurns: 0 };
   assertCaseIdentity(state, { workspace, specPath, policy });
   let target = { operation: 'SPEC_INIT', slice: null }, readiness = null, preparation = null;
+  let handoffRedelivery=resume?state.handoffRedelivery??null:null;
   let pending = resume ? state.pendingObservation ?? null : null;
   if (resume) {
     if (pending !== null) {
@@ -693,6 +717,13 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       await assertSnapshotIntegrity(runRoot);
       const before = await officialReadback(product, specPath);
       const preceding = state.operations.slice(0, sequence - 1).at(-1);
+      let redeliverySource=null;
+      if(handoffRedelivery!==null) {
+        if(operation!=='PLAN'||preceding?.outcome?.blocker!=='PREPARATION_HANDOFF_REDELIVERY')fail('PLAN re-delivery has no preceding corrective return');
+        redeliverySource=await readJson(preceding.evidencePath);
+        if(!isDeepStrictEqual(redeliverySource.handoffRedelivery,handoffRedelivery))fail('PLAN re-delivery evidence differs');
+        await revalidatePlanRedelivery({product,runRoot,caseRoot,state,specPath,workspace,proof:handoffRedelivery});
+      }
       const correctingPreparation = operation === 'PLAN' && preceding?.operation === 'REVIEW_PLAN'
         && preceding.outcome?.result === 'NEEDS_FIX'
         && preceding.outcome.blocker === 'PREPARATION_REVIEW_NOT_APPROVED';
@@ -735,6 +766,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           : readiness?.verdict === 'FINDINGS' ? JSON.stringify(readiness.findings) : '',
         REPLAN_REASON: 'Follow the exact current public requirements and handoff.' })
         + (operation === 'REVIEW_PLAN' || correctingPreparation ? `\nCANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}\n` : '')
+        + (handoffRedelivery ? `\nThis is handoff re-delivery only, not another planning/publication operation. CANDIDATE_EXECUTION_ROOT=${handoffRedelivery.candidateExecutionRoot}\nThe preceding completed turn did not expose one complete official AWAITING_REVIEW JSON return. Re-deliver the exact full return from the preserved producer stdout file as one JSON command output. Do not rerun prepare, serialization, publication or planning; do not change any artifact or fabricate the return. If the original is unavailable, report that fact. The caller will independently revalidate ownership, requirements authority and all artifact hashes; no approval or phase transition is inherited.\nEXPECTED_AUTHORITY_SHA256=${hash(JSON.stringify(handoffRedelivery.authority))}\nExpected artifact hashes: ${JSON.stringify(handoffRedelivery.authority.artifactHashes)}\nPrior literal response (context, not proof):\n${redeliverySource.turn.response}\n` : '')
         + (correctingPreparation ? '\nThis is a bounded author correction of the existing unapproved Initial candidate, whose ownership and source were checked by the caller. Reuse that allocation; do not allocate another PLAN root or use REPLAN. Inspect the canonical authority and justify corrections from the prior review feedback below. Run the existing prepare-plan-candidate.mjs and serialize-plan-paths.mjs producers, then publish without a review decision to return AWAITING_REVIEW. No approval is inherited; return control for a new independent REVIEW_PLAN.\nPrior review feedback (not an approval or a replacement authority):\n'
           + refusedReview.turn.response + '\n' : '')
         + (operation === 'VALIDATE_SLICE' ? '\nSolicito validação integral terminal do estado atual quando admissível pelo contrato normal; se não for admissível, reporte o bloqueio. Não certifique COMPLETE com julgamento apenas local.\n' : '')
@@ -897,17 +929,23 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       const readback = await officialReadback(product, specPath);
       let outcome = { result: 'BLOCKED', blocker: turn.errorCode ?? 'NATIVE_TRANSPORT_UNPROVEN',
         ...(turn.stderrSample ? { stderrSample: turn.stderrSample } : {}) };
-      let captureProof = null, closeEvidence = null;
+      let captureProof = null, closeEvidence = null, handoffRedeliveryConsumed=null;
       if (turn.completed) try {
         if (operation === 'PLAN' || operation === 'REPLAN') {
-          const revised = await preparationHandoff(product, specPath, turn.commandResults);
-          if (correctingPreparation) {
+          let revised;
+          if(handoffRedelivery)await preparationRedelivery(product,specPath,{workspace,previous:handoffRedelivery});
+          try { revised=await preparationHandoff(product,specPath,turn.commandResults,handoffRedelivery); }
+          catch(error) {
+            if(operation!=='PLAN'||error.preparationHandoffMissing!==true)throw error;
+            handoffRedelivery=await preparationRedelivery(product,specPath,{workspace,turn,previous:handoffRedelivery});
+          }
+          if (correctingPreparation && revised) {
             if (revised.candidateExecutionRoot !== preparation.candidateExecutionRoot
               || revised.authority?.requirementsAuthority !== preparation.authority.requirementsAuthority) fail('author correction replaced the refused candidate/authority');
             const current = await product.serializePlanPathClaims({ specPath, candidateExecutionRoot: revised.candidateExecutionRoot });
             if (hash(JSON.stringify(current.authority)) !== hash(JSON.stringify(revised.authority))) fail('author correction handoff differs from current serialization');
           }
-          preparation = revised;
+          if(revised) { preparation=revised;handoffRedeliveryConsumed=handoffRedelivery;handoffRedelivery=null; }
         }
         if (operation === 'SPEC_READINESS') {
           if (product.readinessSnapshot(specPath).snapshotSha256 !== beforeReadiness.snapshotSha256) fail('READINESS mutated its snapshot');
@@ -919,7 +957,14 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           closeEvidence = await finishCloseEvidence({ product, pre: preClose, commandResults: turn.commandResults });
           await atomicJson(path.join(caseRoot, 'terminal-evidence.json'), closeEvidence);
         }
-        outcome = decideOutcome(operation, { ...readback, preparation }, true, readiness);
+        outcome = decideOutcome(operation, { ...readback, preparation, handoffRedelivery }, true, readiness);
+        if(outcome.blocker==='PREPARATION_HANDOFF_REDELIVERY') {
+          const used=operationalCorrectionUsage((await readJson(ledgerPath(runRoot))).turns,{caseId,slice,operation});
+          if(used>=MAX_OPERATIONAL_CORRECTIONS)outcome={result:'BLOCKED',blocker:'PREPARATION_HANDOFF_REDELIVERY_EXHAUSTED'};
+          else if(used>=2 && redeliverySource && turn.response===redeliverySource.turn.response
+            && isDeepStrictEqual(turn.commandResults,redeliverySource.turn.commandResults))
+            outcome={result:'BLOCKED',blocker:'PREPARATION_HANDOFF_NO_CORRECTION_PROGRESS'};
+        }
         if (operation === 'REVIEW_PLAN' && outcome.blocker === 'PREPARATION_REVIEW_NOT_APPROVED') {
           const priorReviews = state.operations.slice(0, sequence - 1).filter(item => item.operation === 'REVIEW_PLAN');
           if (priorReviews.length >= MAX_OPERATIONAL_CORRECTIONS || typeof turn.response !== 'string' || !turn.response.trim()) {
@@ -969,12 +1014,13 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           inheritedAuthorHistory: prior !== null }, turn, normalizedUsage: null, captureProof,
         runner: { turns: startedChildren.size, capturedReceipts: turn.captures.length },
         officialReadback: { lifecycle: readback.lifecycle, execution: readback.execution }, preparation,
+        handoffRedelivery,handoffRedeliveryConsumed,
         readinessResult: readiness, closeEvidence: closeEvidence ? path.join(caseRoot, 'terminal-evidence.json') : null,
         journal: journalResult, outcome });
       const recorded = { operation, slice, outcome, evidencePath, threadId: turn.threadId };
       if (pending === null) state.operations.push(recorded); else state.operations[sequence - 1] = recorded;
       if (turn.completed && ['PASS', 'NEEDS_FIX'].includes(outcome.result)) state.pendingObservation = null;
-      state.readiness = readiness; state.preparation = preparation;
+      state.readiness = readiness; state.preparation = preparation;state.handoffRedelivery=handoffRedelivery;
       await atomicJson(stateFile, state);
       terminal = outcome;
       announce({ runId: path.basename(runRoot), caseId, operation, slice, result: outcome.result,
@@ -982,7 +1028,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         ...await budgetSnapshot(runRoot), artifacts: caseRoot });
       if (outcome.result === 'BLOCKED' || outcome.result === 'FAIL') break;
       pending = null;
-      target = nextHandoff(operation, { ...readback, preparation, product }, readiness);
+      target = nextHandoff(operation, { ...readback, preparation, handoffRedelivery, product }, readiness);
       if (!target && operation !== 'SPEC_CLOSE') { terminal = { result: 'BLOCKED', blocker: 'NO_OFFICIAL_HANDOFF' }; break; }
     }
   } catch (error) {
