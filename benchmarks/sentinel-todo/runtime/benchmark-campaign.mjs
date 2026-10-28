@@ -6,9 +6,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { compareMeasurements, validateMeasurementReport, exportMeasurement } from './benchmark-measurement.mjs';
-import { currentFunctionalIdentity } from './benchmark-snapshot.mjs';
-import { privateHomeNeverCreated, settledNativeCase,preflightFullResume } from './benchmark-manager.mjs';
+import { validateMeasurementReport } from './benchmark-measurement.mjs';
+import { privateHomeNeverCreated, settledNativeCase } from './benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNTIME = path.join('benchmarks', 'sentinel-todo', 'runtime');
@@ -16,7 +15,7 @@ const BASELINE = path.join('benchmarks', 'sentinel-todo', 'baselines', 'baseline
 const MEASUREMENTS = path.join('benchmarks', 'sentinel-todo', 'measurements');
 const RUN_MARKER = 'sentinel-todo-run-v2\n';
 const CAMPAIGN_MARKER = 'sentinel-todo-campaign-v1\n';
-const TERMINAL = new Set(['PASS', 'BLOCKED', 'FAIL', 'ABORTED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'NOT_RUN', 'CAMPAIGN_COMPLETE']);
+const TERMINAL = new Set(['PASS', 'BLOCKED', 'FAIL', 'ABORTED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'RECOVERY_STOP', 'NOT_RUN', 'CAMPAIGN_COMPLETE']);
 const readJson = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
 const exists = async (file) => fs.lstat(file).then(() => true, (error) => { if (error.code === 'ENOENT') return false; throw error; });
 
@@ -143,21 +142,27 @@ async function command(root, relative, args, signal, capture = false) {
 }
 
 function adapters(root) {
+  // Recovery control may be newer; all measurement readers and managers remain
+  // those of the explicitly selected, unchanged measured checkout.
+  const measured = name => import(pathToFileURL(path.join(root, RUNTIME, name)).href);
   return {
     gitState: () => realGitState(root),
     processes: knownProcesses,
-    identity: () => currentFunctionalIdentity(),
+    identity: async () => (await measured('benchmark-snapshot.mjs')).currentFunctionalIdentity(),
+    snapshot: async id => (await measured('benchmark-snapshot.mjs')).assertSnapshotIntegrity(path.join(root,'benchmark-temp',id)),
+    isProcessAlive: pid => { try { process.kill(pid,0); return true; } catch(error) { if(error.code==='ESRCH')return false; throw error; } },
+    recoveryVersion: async () => ({head:realGitState(ROOT).head,sha256:digest(await fs.readFile(fileURLToPath(import.meta.url)))}),
     verify: (signal) => command(root, path.join(RUNTIME, 'benchmark.mjs'), ['verify'], signal),
     runFull: (signal,{maxOperations}={}) => command(root, path.join(RUNTIME, 'benchmark-manager.mjs'),
       ['run', '--full',...(maxOperations===undefined?[]:['--max-operations',String(maxOperations)])], signal),
     resumeFull: (id,signal,{maxOperations}={}) => command(root,path.join(RUNTIME,'benchmark-manager.mjs'),
       ['run','--resume',id,...(maxOperations===undefined?[]:['--max-operations',String(maxOperations)])],signal),
-    preflightFullResume,
+    preflightFullResume: async id => (await measured('benchmark-manager.mjs')).preflightFullResume(id),
     cleanRun: (runId) => command(root, path.join(RUNTIME, 'benchmark-manager.mjs'), ['clean', '--run', runId], new AbortController().signal, true),
     export: (runId, output, signal) => command(root, path.join(RUNTIME, 'benchmark-measurement.mjs'),
       ['export', '--run', runId, '--output', output], signal, true),
-    exportMeasurement: (runId) => exportMeasurement(runId),
-    compare: (baseline, report) => compareMeasurements(baseline, report),
+    exportMeasurement: async runId => (await measured('benchmark-measurement.mjs')).exportMeasurement(runId),
+    compare: async (baseline, report) => (await measured('benchmark-measurement.mjs')).compareMeasurements(baseline, report),
   };
 }
 
@@ -177,7 +182,7 @@ function distribution(reports, getter) {
       maxRuns: values.filter(({ value }) => value === sorted.at(-1)).map(({ run }) => run) } };
 }
 
-export function campaignSummary({ campaignId, head, startedAt, endedAt, baselineRef, reports, comparisons, plannedRuns }) {
+export function campaignSummary({ campaignId, head, startedAt, endedAt, baselineRef, reports, comparisons, plannedRuns, recovery = null }) {
   if (!Number.isSafeInteger(plannedRuns) || plannedRuns < 1 || reports.length !== plannedRuns || comparisons.length !== plannedRuns) {
     throw blocked('BLOCKED_SUMMARY', `${plannedRuns} reports and comparisons are required`);
   }
@@ -208,6 +213,8 @@ export function campaignSummary({ campaignId, head, startedAt, endedAt, baseline
   return { schemaVersion: 1, campaignId, benchmarkId: a.benchmarkId, benchmarkVersion: a.benchmarkVersion,
     baseline: baselineRef, head, profile: a.run.profile,
     sourceFunctionalSha256: a.provenance.sourceFunctionalSha256, startedAt, endedAt,
+    ...(recovery?{controlRecovery:{contract:recovery.contract,controller:recovery.controller,recoveredAt:recovery.recoveredAt,
+      originalStateSha256:recovery.originalStateSha256,binding:recovery.binding,managerExit:null,campaignExit:null}}:{}),
     status: 'CAMPAIGN_COMPLETE', comparability: comparisons.every(row => row.directlyComparable && !row.profileExperiment) ? 'PASS' : 'unavailable', plannedRuns, completedRuns: reports.length, successRate: 1,
     runs: reports.map((report, index) => ({ index: index + 1, runId: report.run.id, status: report.run.status,
       cases: Object.fromEntries(report.cases.map((row) => [row.id, row.status])),
@@ -253,6 +260,173 @@ async function promote(root, campaignId, files, signal) {
   return destination;
 }
 
+// This is a stop-only recovery of local control records, never a producer retry.
+// A missing process exit stays unknown; complete measured evidence is revalidated
+// under the explicitly approved recovery contract instead of inventing exit 0.
+export async function recoverCompletedCampaign({root=ROOT,campaignId,hooks={}}={}) {
+  if(!/^campaign-[a-z0-9-]{8,}$/u.test(campaignId??'')
+    ||path.resolve(root)!==await fs.realpath(root))throw blocked('BLOCKED_RECOVERY','invalid measured root or campaign');
+  const api={...adapters(root),...hooks},scratch=path.join(root,'benchmark-temp');
+  const dir=path.join(scratch,campaignId),stateFile=path.join(dir,'state.json');
+  const plain=async file=>{const stat=await fs.lstat(file);
+    if(!stat.isFile()||stat.isSymbolicLink())throw blocked('BLOCKED_RECOVERY','control is not a plain file');
+    return fs.readFile(file);};
+  const meta=await fs.lstat(dir);
+  if(!meta.isDirectory()||meta.isSymbolicLink()
+    ||(await plain(path.join(dir,'.sentinel-campaign-owned'))).toString()!==CAMPAIGN_MARKER)
+    throw blocked('BLOCKED_RECOVERY','campaign ownership differs');
+  // Reuse the manager's existing exclusion point. This is explicitly control
+  // recovery, not a model admission or a fabricated active producer run.
+  const activeLock=path.join(scratch,'.active-run.json');
+  // A live controller must not even see a transient recovery exclusion between
+  // its FULLs. Check before claiming, then check again under the owned lock.
+  if((await api.processes()).length)throw blocked('BLOCKED_ACTIVE','campaign or recorded controller is still alive');
+  const markerBefore=path.join(scratch,'.campaign-active.json');
+  if(await exists(markerBefore)) {
+    const ownerBefore=JSON.parse(await plain(markerBefore));
+    if(!Number.isSafeInteger(ownerBefore.pid)||ownerBefore.pid<1)throw blocked('BLOCKED_RECOVERY','invalid controller marker');
+    if(await api.isProcessAlive(ownerBefore.pid))throw blocked('BLOCKED_ACTIVE','campaign or recorded controller is still alive');
+  }
+  const activeBytes=Buffer.from(JSON.stringify({kind:'campaign-recovery',campaignId,runId:null,
+    pid:process.pid,token:randomUUID(),startedAt:new Date().toISOString()})+'\n');
+  try {await fs.writeFile(activeLock,activeBytes,{flag:'wx',mode:0o600});}
+  catch(error){if(error.code==='EEXIST')throw blocked('BLOCKED_ACTIVE','another run or recovery owns the existing lock');throw error;}
+  try {
+  const originalBytes=await plain(stateFile),current=JSON.parse(originalBytes);
+  const sealed=value=>{const {stateSha256,...body}=value;return stateSha256===digest(JSON.stringify(body));};
+  const replay=current.status==='RECOVERY_STOP';
+  const state=replay?JSON.parse(current.recovery?.originalStateBytes??'null'):current;
+  if(!sealed(current)||!state||!sealed(state)||state.status!=='ACTIVE'||state.campaignId!==campaignId
+    ||!Array.isArray(state.completed)||state.completed.length!==0||state.runIndex!==1||state.runId!==null
+    ||state.pendingCheckpoint!==null||!Number.isFinite(Date.parse(state.startedAt)))
+    throw blocked('BLOCKED_RECOVERY','not an exclusive uncheckpointed first FULL');
+  // With no pre-dispatch runId in the old state, only an otherwise empty,
+  // single-campaign/single-run scratch can establish an unambiguous binding.
+  const dirs=(await fs.readdir(scratch,{withFileTypes:true})).filter(x=>x.isDirectory());
+  const runs=dirs.filter(x=>x.name.startsWith('run-'));
+  if(dirs.length!==2||runs.length!==1||dirs.filter(x=>x.name.startsWith('campaign-')).some(x=>x.name!==campaignId)
+    ||!/^run-[a-z0-9-]+$/u.test(runs[0]?.name??''))throw blocked('BLOCKED_RECOVERY','ambiguous run origin');
+  const runId=runs[0].name,runRoot=path.join(scratch,runId);
+  await assertNoSymlinks(scratch);
+  if(await fs.readFile(path.join(dir,'.sentinel-campaign-owned'),'utf8')!==CAMPAIGN_MARKER
+    ||await fs.readFile(path.join(runRoot,'.sentinel-benchmark-owned'),'utf8')!==RUN_MARKER
+    )throw blocked('BLOCKED_RECOVERY','ownership differs');
+  const freeze=state.freeze,manifest=await readJson(path.join(root,'benchmarks/sentinel-todo/benchmark.json'));
+  const base=await api.gitState(),source=await api.identity();
+  if(!freeze||freeze.head!==base.head||freeze.sourceFunctionalSha256!==source.sha256
+    ||freeze.configurationSha256!==digest(JSON.stringify(manifest))||!Number.isSafeInteger(freeze.plannedRuns)
+    ||freeze.plannedRuns<1)throw blocked('BLOCKED_RECOVERY','measured freeze differs');
+  const marker=path.join(scratch,'.campaign-active.json');
+  const markerBytes=await exists(marker)?await plain(marker):null;
+  const initialMarker=replay?current.recovery?.originalMarkerBytes:markerBytes?.toString();
+  const owner=JSON.parse(initialMarker??'null');
+  if(!owner||!Number.isSafeInteger(owner.pid)||owner.pid<1||!Number.isFinite(Date.parse(owner.startedAt))
+    ||Date.parse(owner.startedAt)>Date.parse(state.startedAt))throw blocked('BLOCKED_RECOVERY','missing original controller marker');
+  const inactive=async()=>{
+    if((await api.processes()).length||await api.isProcessAlive(owner.pid))
+      throw blocked('BLOCKED_ACTIVE','campaign or recorded controller is still alive');
+    if(!activeBytes.equals(await plain(activeLock)))throw blocked('BLOCKED_ACTIVE','recovery exclusion was lost');
+  };
+  await inactive();
+  if(markerBytes&&markerBytes.toString()!==initialMarker)throw blocked('BLOCKED_RECOVERY','controller marker changed');
+  const controls=new Map();
+  const control=async relative=>{const bytes=await plain(path.join(runRoot,relative));controls.set(relative,bytes);return JSON.parse(bytes);};
+  const run=await control('run.json'),summary=await control('summary.json'),ledger=await control('.turn-ledger.json');
+  const snapshot=await api.snapshot(runId);
+  if(run.runId!==runId||!isDeepStrictEqual(run.cases,['A','B','C'])||run.mode!=='full'||run.status!=='PASS'||run.profile!==manifest.productionProfile.id
+    ||run.snapshot?.baseSha!==base.head||!isDeepStrictEqual(run.snapshot,snapshot)
+    ||run.snapshot.sourceFunctionalSha256!==source.sha256||run.configurationSha256!==freeze.configurationSha256
+    ||run.controllerSha256!==digest(await plain(path.join(root,RUNTIME,'benchmark-manager.mjs')))
+    ||Date.parse(run.startedAt)<Date.parse(state.startedAt)||!Number.isFinite(Date.parse(run.startedAt))
+    ||!Number.isFinite(Date.parse(run.endedAt))||Date.parse(run.endedAt)<Date.parse(run.startedAt)
+    ||summary.runId!==runId||summary.mode!=='full'||summary.status!=='PASS'
+    ||summary.snapshotSha256!==snapshot.snapshotSha256||summary.sourceFunctionalSha256!==source.sha256
+    ||ledger.limit!==manifest.turnBudget.maxTurnsPerRun||ledger.total!==ledger.turns?.length
+    ||!Array.isArray(ledger.reservations)||ledger.reservations.length!==0
+    ||!Array.isArray(ledger.turns)||ledger.turns.some(x=>!['completed','not_dispatched'].includes(x.state)||x.childKind==='pending'))
+    throw blocked('BLOCKED_RECOVERY','FULL is not demonstrably terminal and settled');
+  for(const id of ['A','B','C']) {
+    const row=await control(`case-${id.toLowerCase()}/case-state.json`);
+    if(summary.cases?.[id]?.status!=='PASS'||row.caseId!==id||!settledNativeCase(row,ledger)
+      ||row.integrity!=='PASS'||row.terminal?.result!=='PASS'||row.terminal.blocker!==null
+      ||row.finalizer?.exitCode!==0)throw blocked('BLOCKED_RECOVERY','case finalization is not a known PASS');
+  }
+  const report=validateMeasurementReport(await api.exportMeasurement(runId),{qualify:true});
+  if(report.run.id!==runId||report.run.mode!=='full'||report.run.status!=='PASS'
+    ||report.run.profile!==manifest.productionProfile.id||report.benchmarkId!==manifest.benchmarkId
+    ||report.benchmarkVersion!==manifest.benchmarkVersion||report.provenance.sourceFunctionalSha256!==source.sha256
+    ||report.provenance.baseSha!==base.head||report.provenance.snapshotSha256!==snapshot.snapshotSha256
+    ||report.cases.length!==3||['A','B','C'].some(id=>report.cases.find(x=>x.id===id)?.status!=='PASS'))
+    throw blocked('BLOCKED_RECOVERY','export does not prove this measured FULL');
+  let baseline=null;
+  if(freeze.baselineRef?.sha256) {
+    if(freeze.baselineRef.path!==BASELINE)throw blocked('BLOCKED_RECOVERY','baseline path differs');
+    const bytes=await plain(path.join(root,BASELINE));
+    if(digest(bytes)!==freeze.baselineRef.sha256)throw blocked('BLOCKED_RECOVERY','baseline bytes differ');
+    baseline=validateMeasurementReport(JSON.parse(bytes));
+  } else if(freeze.baselineRef?.status!=='unavailable')throw blocked('BLOCKED_RECOVERY','baseline proof missing');
+  const comparison=baseline&&baseline.benchmarkVersion===manifest.benchmarkVersion&&baseline.run.profile===report.run.profile
+    ?await api.compare(baseline,report):{directlyComparable:false,profileExperiment:false,
+      mismatches:[baseline?'baseline version/profile differs':freeze.baselineRef.reason],deltas:'unavailable'};
+  const outputs=[['run-01.json',report],['compare-01.json',comparison]].map(([name,value])=>
+    ({file:path.join(dir,name),bytes:Buffer.from(JSON.stringify(value,null,2)+'\n')}));
+  // Validate all partial outputs before creating any new one. Never replace a
+  // divergent report, including on replay after a partially completed recovery.
+  for(const output of outputs)if(await exists(output.file)&&!output.bytes.equals(await plain(output.file)))
+    throw blocked('BLOCKED_RECOVERY','partial export or comparison differs');
+  const binding={origin:'reconstructed-from-exclusive-terminal-run',campaignId,runId,
+    controls:Object.fromEntries([...controls].map(([name,bytes])=>[name,digest(bytes)]))};
+  if(replay&&(!isDeepStrictEqual(current.recovery?.binding,binding)
+    ||current.recovery.originalStateSha256!==digest(Buffer.from(current.recovery.originalStateBytes))
+    ||current.recovery.managerExit!==null||current.recovery.campaignExit!==null
+    ||current.runId!==null||current.pendingCheckpoint!==null||current.runIndex!==2
+    ||!isDeepStrictEqual(current.freeze,freeze)||current.completed?.length!==1
+    ||current.completed[0].runId!==runId||current.completed[0].index!==1
+    ||current.completed[0].reportSha256!==digest(outputs[0].bytes)
+    ||current.completed[0].comparisonSha256!==digest(outputs[1].bytes)))
+    throw blocked('BLOCKED_RECOVERY','recovery checkpoint differs');
+  if(replay) {
+    const {stateSha256:oldSeal,...oldBody}=state;
+    const {stateSha256:currentSeal,...currentBody}=current;
+    const expected={...oldBody,status:'RECOVERY_STOP',runIndex:2,completed:current.completed,recovery:current.recovery};
+    if(!isDeepStrictEqual(currentBody,expected)||current.recovery.contract!=='terminal-full-recovery-v1'
+      ||!Number.isFinite(Date.parse(current.recovery.recoveredAt)))
+      throw blocked('BLOCKED_RECOVERY','recovery checkpoint immutable fields differ');
+  }
+  const controller=await api.recoveryVersion();
+  if(!controller?.head||!/^sha256:[a-f0-9]{64}$/u.test(controller.sha256)
+    ||replay&&!isDeepStrictEqual(current.recovery.controller,controller))throw blocked('BLOCKED_RECOVERY','recovery controller differs');
+  await inactive();
+  if((await api.gitState()).head!==base.head||(await api.identity()).sha256!==source.sha256
+    ||!isDeepStrictEqual(report,await api.exportMeasurement(runId))
+    ||!originalBytes.equals(await plain(stateFile)))throw blocked('BLOCKED_RECOVERY','evidence changed during recovery');
+  for(const [name,bytes]of controls)if(!bytes.equals(await plain(path.join(runRoot,name))))
+    throw blocked('BLOCKED_RECOVERY','terminal controls changed during recovery');
+  if((await runIds(scratch)).size!==1)throw blocked('BLOCKED_RECOVERY','run origin changed during recovery');
+  for(const output of outputs) {
+    try {await fs.writeFile(output.file,output.bytes,{flag:'wx',mode:0o600});}
+    catch(error){if(error.code!=='EEXIST'||!output.bytes.equals(await plain(output.file)))throw error;}
+  }
+  if(!replay)await updateCampaignState(stateFile,{...state,status:'RECOVERY_STOP',runIndex:2,
+    completed:[{index:1,runId,reportSha256:digest(outputs[0].bytes),comparisonSha256:digest(outputs[1].bytes)}],
+    recovery:{contract:'terminal-full-recovery-v1',controller,recoveredAt:new Date().toISOString(),
+      originalStateBytes:originalBytes.toString(),originalStateSha256:digest(originalBytes),originalMarkerBytes:initialMarker,
+      managerExit:null,campaignExit:null,binding}});
+  // Keep the stale marker until the new checkpoint is durable. Only this exact
+  // dead owner's marker can be removed; a changed/live owner remains a blocker.
+  await inactive();
+  if(await exists(marker)) {
+    if((await plain(marker)).toString()!==initialMarker)throw blocked('BLOCKED_RECOVERY','controller marker changed after checkpoint');
+    await fs.unlink(marker);
+  }
+  return {status:'RECOVERY_STOP',campaignId,runId,completedRuns:1,plannedRuns:freeze.plannedRuns,
+    managerExit:null,campaignExit:null,recoveryController:controller};
+  } finally {
+    if(!activeBytes.equals(await plain(activeLock)))throw blocked('BLOCKED_ACTIVE','recovery lock changed; foreign lock preserved');
+    await fs.unlink(activeLock);
+  }
+}
+
 export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, runs = undefined,
   resumeId=null,maxOperations=undefined } = {}) {
   if (runs !== undefined && (!Number.isSafeInteger(runs) || runs < 1)) throw blocked('BLOCKED_CONFIG', 'runs must be a positive integer');
@@ -285,6 +459,11 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, 
       baselineRef = { path: BASELINE, runId: baseline.run.id, sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}` };
     } catch (error) { baselineRef.reason = `baseline unavailable: ${error.code ?? error.message}`; }
     if ((await api.processes()).length) throw blocked('BLOCKED_ACTIVE', 'another benchmark process is alive');
+    let recoveredCheckpoint=false;
+    if(resumeId!==null&&(await readJson(path.join(scratch,resumeId,'state.json'))).status==='RECOVERY_STOP') {
+      await recoverCompletedCampaign({root,campaignId:resumeId,hooks:api});
+      recoveredCheckpoint=true;
+    }
     await assertSafeScratch(scratch);
     checkCancel();
     say('LOCK');
@@ -313,11 +492,14 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, 
       state={status:'ACTIVE',campaignId:id,freeze,startedAt:new Date().toISOString(),completed:[],runIndex:1,runId:null,pendingCheckpoint:null};
     } else {
       state=await readJson(path.join(campaignRoot,'state.json'));
+      if(state.recovery&&!isDeepStrictEqual(state.recovery.controller,await api.recoveryVersion()))
+        throw blocked('BLOCKED_RESUME','recovery controller version differs');
       const {stateSha256,...sealed}=state;
-      if(state.status!=='FOCAL_STOP'||state.campaignId!==id||!isDeepStrictEqual(state.freeze,freeze)
+      if((state.status!=='FOCAL_STOP'&&!(recoveredCheckpoint&&state.status==='RECOVERY_STOP'))||state.campaignId!==id||!isDeepStrictEqual(state.freeze,freeze)
         ||stateSha256!==digest(JSON.stringify(sealed))||!Number.isFinite(Date.parse(state.startedAt))
-        ||!Array.isArray(state.completed)||state.runIndex!==state.completed.length+1||state.runIndex>plannedRuns
-        ||!/^run-[a-z0-9-]+$/u.test(state.runId??'')||!/^sha256:[a-f0-9]{64}$/u.test(state.pendingCheckpoint??''))
+        ||!Array.isArray(state.completed)||state.runIndex!==state.completed.length+1||state.runIndex>plannedRuns+(recoveredCheckpoint?1:0)
+        ||(recoveredCheckpoint?(state.runId!==null||state.pendingCheckpoint!==null)
+          :!/^run-[a-z0-9-]+$/u.test(state.runId??'')||!/^sha256:[a-f0-9]{64}$/u.test(state.pendingCheckpoint??'')))
         throw blocked('BLOCKED_RESUME','campaign has no matching safe FULL checkpoint');
       for(const [offset,accepted]of state.completed.entries()) {
         const n=offset+1,name=`run-${String(n).padStart(2,'0')}.json`,comparisonName=`compare-${String(n).padStart(2,'0')}.json`;
@@ -333,15 +515,17 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, 
           throw blocked('BLOCKED_RESUME','campaign accepted report or evidence differs');
         reports.push(report);comparisons.push(JSON.parse(comparisonBytes));files[name]=path.join(campaignRoot,name);
       }
+      if(!recoveredCheckpoint) {
       const pending=await readJson(path.join(scratch,state.runId,'run.json'));
       if(pending.runId!==state.runId||pending.mode!=='full'||pending.status!=='FOCAL_STOP'
         ||pending.snapshot?.sourceFunctionalSha256!==source.sha256||pending.resumeCheckpoint!==state.pendingCheckpoint)
         throw blocked('BLOCKED_RESUME','pending FULL identity/checkpoint differs');
       await api.preflightFullResume(state.runId);
+      }
     }
     const startedAt=state.startedAt;
     ownsState=true;await updateCampaignState(path.join(campaignRoot,'state.json'),{...state,status:'ACTIVE'});
-    const resumeIndex=resumeId===null?null:state.runIndex;
+    const resumeIndex=resumeId===null||recoveredCheckpoint?null:state.runIndex;
     for (index = state.completed.length+1; index <= plannedRuns; index += 1) {
       checkCancel();
       if ((await api.gitState()).head !== base.head || (await api.identity()).sha256 !== source.sha256) {
@@ -410,7 +594,7 @@ export async function runCampaign({ root = ROOT, hooks = {}, campaignId = null, 
     checkCancel();
     say('SUMMARY');
     const campaign = campaignSummary({ campaignId: id, head: base.head, startedAt, endedAt: new Date().toISOString(),
-      baselineRef, reports, comparisons, plannedRuns });
+      baselineRef, reports, comparisons, plannedRuns,recovery:state.recovery??null });
     files['campaign-summary.json'] = path.join(campaignRoot, 'campaign-summary.json');
     await writeJson(files['campaign-summary.json'], campaign);
     checkCancel();
@@ -629,7 +813,7 @@ export function parseCampaignArgs(argv) {
   const functional = argv[0] === '--functional';
   const rest = functional ? argv.slice(1) : argv;
   const options={mode:functional?'functional':'campaign'},seen=new Set();
-  const usage='usage: benchmark-campaign.mjs [--functional] [--runs N] [--resume campaign-id] [--max-operations N] | --help';
+  const usage='usage: benchmark-campaign.mjs [--functional] [--runs N] [--resume campaign-id] [--max-operations N] | --recover-completed campaign-id --root measured-checkout | --help';
   for(let i=0;i<rest.length;i+=2) {
     const flag=rest[i],value=rest[i+1];
     if(seen.has(flag)||typeof value!=='string')throw blocked('BLOCKED_CONFIG',usage);seen.add(flag);
@@ -637,9 +821,13 @@ export function parseCampaignArgs(argv) {
       const n=Number(value);
       if(!/^[0-9]+$/u.test(value)||!Number.isSafeInteger(n)||n<1)throw blocked('BLOCKED_CONFIG',usage);
       options[flag==='--runs'?'runs':'maxOperations']=n;
-    } else if(flag==='--resume'&&!functional&&/^campaign-[a-z0-9-]{8,}$/u.test(value))options.resumeId=value;
+    } else if(flag==='--recover-completed'&&!functional&&/^campaign-[a-z0-9-]{8,}$/u.test(value)) {options.mode='recover';options.campaignId=value;}
+    else if(flag==='--root'&&!functional&&path.isAbsolute(value))options.root=value;
+    else if(flag==='--resume'&&!functional&&/^campaign-[a-z0-9-]{8,}$/u.test(value))options.resumeId=value;
     else throw blocked('BLOCKED_CONFIG',usage);
   }
+  if(options.mode==='recover'&&(!options.root||options.resumeId||options.runs||options.maxOperations)
+    ||options.mode!=='recover'&&options.root&&!options.resumeId)throw blocked('BLOCKED_CONFIG',usage);
   return options;
 }
 
@@ -649,7 +837,8 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
     if (options.mode === 'help') {
       const config = await readJson(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'));
       console.log(`Functional ${config.campaign.fullRuns}-full campaign: npm run benchmark\nFormal ${config.campaign.fullRuns}-full campaign: npm run benchmark:campaign\nOverride: npm run benchmark[:campaign] -- --runs N`);
-    } else if (options.mode === 'functional') await runFunctionalBenchmark({ runs: options.runs });
-    else await runCampaign({ runs: options.runs,resumeId:options.resumeId,maxOperations:options.maxOperations });
+    } else if(options.mode==='recover')console.log(JSON.stringify(await recoverCompletedCampaign(options)));
+    else if (options.mode === 'functional') await runFunctionalBenchmark({ runs: options.runs });
+    else await runCampaign({ root:options.root,runs: options.runs,resumeId:options.resumeId,maxOperations:options.maxOperations });
   } catch (error) { console.error(`${error.code ?? 'BLOCKED'}: ${error.message}`); process.exitCode = error.exitCode ?? 1; }
 }

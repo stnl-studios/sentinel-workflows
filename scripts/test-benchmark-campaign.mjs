@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import * as campaignRuntime from '../benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs';
+import { createHash } from 'node:crypto';
 import { campaignSummary, runCampaign, runFunctionalBenchmark, parseCampaignArgs } from '../benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs';
 import { currentFunctionalIdentity } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 import { PRODUCT_CONTRACT, PRODUCT_CHECK_IDS, productInstrumentIdentity } from '../benchmarks/sentinel-todo/runtime/product-acceptance.mjs';
@@ -34,7 +36,7 @@ function currentFixtureReport(baseline, manifest, runId) {
 }
 
 async function fixture(t, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-campaign-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-campaign-test-')));
   t.after(() => process.env.STNL_OFFLINE_KEEP_FIXTURES==='1'?undefined:fs.rm(root, { recursive: true, force: true }));
   for (const name of [BASELINE, MANIFEST]) {
     const target = path.join(root, name);
@@ -703,3 +705,223 @@ for (const variant of ['failed-run', 'failed-case', 'missing-case', 'duplicate-r
     assert.throws(() => campaignSummary({ campaignId: 'campaign-summary-negative', reports, comparisons: [{}, {}], plannedRuns: 2 }), /distinct coherent passing FULLs/u);
   });
 }
+
+// Reuse the campaign fixture's synthetic reports; never a real product receipt.
+async function interruptedCompletedFixture(t) {
+  const f=await fixture(t,{plannedRuns:3});
+  const hash=b=>'sha256:'+createHash('sha256').update(b).digest('hex');
+  const id='campaign-test-12345678',runId='run-fixture-1',startedAt=new Date(Date.now()-1000).toISOString();
+  const dir=path.join(f.scratch,id);await fs.mkdir(dir,{recursive:true});
+  await fs.writeFile(path.join(dir,'.sentinel-campaign-owned'),'sentinel-todo-campaign-v1\n');
+  const manager=path.join(f.root,'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs');
+  await fs.mkdir(path.dirname(manager),{recursive:true});await fs.writeFile(manager,'// TEST-ONLY measured manager\n');
+  const manifest=JSON.parse(await fs.readFile(path.join(f.root,MANIFEST)));
+  const baseline=await fs.readFile(path.join(f.root,BASELINE));
+  const state={status:'ACTIVE',campaignId:id,freeze:{head:'fixture-head',sourceFunctionalSha256:IDENTITY,
+    configurationSha256:hash(JSON.stringify(manifest)),plannedRuns:3,
+    baselineRef:{path:BASELINE,runId:'run-test-only-baseline',sha256:hash(baseline)}},
+    startedAt,completed:[],runIndex:1,runId:null,pendingCheckpoint:null};
+  await f.hooks.runFull();
+  const runRoot=path.join(f.scratch,runId),run=JSON.parse(await fs.readFile(path.join(runRoot,'run.json')));
+  Object.assign(run,{configurationSha256:state.freeze.configurationSha256,controllerSha256:hash(await fs.readFile(manager)),
+    profile:manifest.productionProfile.id,cases:['A','B','C'],startedAt,endedAt:new Date().toISOString()});
+  Object.assign(run.snapshot,{baseSha:'fixture-head',snapshotSha256:'sha256:'+'c'.repeat(64)});
+  await fs.writeFile(path.join(runRoot,'run.json'),JSON.stringify(run));
+  await fs.writeFile(path.join(runRoot,'summary.json'),JSON.stringify({runId,status:'PASS',mode:'full',
+    snapshotSha256:run.snapshot.snapshotSha256,sourceFunctionalSha256:IDENTITY,
+    cases:Object.fromEntries(['A','B','C'].map(caseId=>[caseId,{caseId,status:'PASS'}]))}));
+  const ledger={version:1,limit:manifest.turnBudget.maxTurnsPerRun,total:3,reservations:[],
+    turns:['A','B','C'].map(caseId=>({caseId,state:'completed'}))};
+  await fs.writeFile(path.join(runRoot,'.turn-ledger.json'),JSON.stringify(ledger));
+  for(const caseId of ['A','B','C']) {
+    const caseRoot=path.join(runRoot,'case-'+caseId.toLowerCase());await fs.mkdir(caseRoot);
+    const rawPath=path.join(caseRoot,'raw.json');await fs.writeFile(rawPath,'{}');
+    await fs.writeFile(path.join(caseRoot,'case-state.json'),JSON.stringify({caseId,protocol:'native-app-server-v1',
+      status:'PASS',integrity:'PASS',pendingObservation:null,terminal:{result:'PASS',blocker:null},finalizer:{exitCode:0,rawPath}}));
+  }
+  const stateFile=path.join(dir,'state.json');state.stateSha256=hash(JSON.stringify(state));
+  await fs.writeFile(stateFile,JSON.stringify(state,null,2)+'\n');
+  const marker=path.join(f.scratch,'.campaign-active.json');await fs.writeFile(marker,JSON.stringify({pid:999999,startedAt}));
+  Object.assign(f.hooks,{isProcessAlive:()=>false,recoveryVersion:()=>({head:'recovery-fixture-head',sha256:hash('recoverer')}),
+    snapshot:async()=>run.snapshot});
+  const exported=f.hooks.exportMeasurement;f.hooks.exportMeasurement=async id=>{const report=await exported(id);
+    report.provenance.baseSha='fixture-head';report.provenance.snapshotSha256=run.snapshot.snapshotSha256;return report;};
+  return {...f,runId,id,runRoot,dir,stateFile,marker,hash};
+}
+const recover=f=>campaignRuntime.recoverCompletedCampaign({root:f.root,campaignId:f.id,hooks:f.hooks});
+
+test('audited completed recovery preserves the measured run, lost exit and original state; replay never dispatches',async t=>{
+  const f=await interruptedCompletedFixture(t),original=await fs.readFile(f.stateFile),runBytes=await fs.readFile(path.join(f.runRoot,'run.json'));
+  const before=f.calls.filter(x=>x.startsWith('run-')).length;
+  const result=await recover(f);assert.equal(result.status,'RECOVERY_STOP');assert.equal(result.completedRuns,1);
+  const state=JSON.parse(await fs.readFile(f.stateFile));
+  assert.equal(state.recovery.managerExit,null);assert.equal(state.recovery.campaignExit,null);
+  assert.equal(state.recovery.binding.origin,'reconstructed-from-exclusive-terminal-run');
+  assert.equal(state.recovery.originalStateBytes,original.toString());
+  assert.equal(state.recovery.controller.head,'recovery-fixture-head');
+  assert.equal(state.freeze.head,'fixture-head');assert.equal(state.completed[0].runId,f.runId);
+  assert.deepEqual(await fs.readFile(path.join(f.runRoot,'run.json')),runBytes);
+  assert.equal(await fs.stat(f.durable).then(()=>true,()=>false),false);
+  const checkpoint=await fs.readFile(f.stateFile);await recover(f);
+  assert.deepEqual(await fs.readFile(f.stateFile),checkpoint);
+  assert.equal(f.calls.filter(x=>x.startsWith('run-')).length,before);
+  assert.equal(f.calls.some(x=>x==='verify'||x.startsWith('resume-')),false);
+});
+
+for(const variant of ['multiple','source-drift','wrong-head','wrong-config','wrong-owner','uncertain','reserved','denied-case',
+  'finalizer-failed','pending','process-active','marker-live','divergent-export','divergent-comparison','missing-evidence']) {
+  test(`completed recovery refuses ${variant} without dispatch or changing the ACTIVE state`,async t=>{
+    const f=await interruptedCompletedFixture(t);const original=await fs.readFile(f.stateFile);
+    const change=async(file,fn)=>{const value=JSON.parse(await fs.readFile(file));fn(value);await fs.writeFile(file,JSON.stringify(value));};
+    if(variant==='multiple')await fs.mkdir(path.join(f.scratch,'run-foreign-extra'));
+    if(variant==='source-drift')f.hooks.identity=()=>({sha256:'foreign'});
+    if(variant==='wrong-head')f.hooks.gitState=()=>({head:'foreign'});
+    if(variant==='wrong-config')await change(path.join(f.root,MANIFEST),x=>{x.turnBudget.maxTurnsPerRun++;});
+    if(variant==='wrong-owner')await fs.writeFile(path.join(f.runRoot,'.sentinel-benchmark-owned'),'foreign');
+    if(['uncertain','reserved'].includes(variant))await change(path.join(f.runRoot,'.turn-ledger.json'),x=>{
+      if(variant==='uncertain')x.turns[0].state='uncertain';else x.reservations.push({});});
+    if(['denied-case','finalizer-failed','pending'].includes(variant))await change(path.join(f.runRoot,'case-b/case-state.json'),x=>{
+      if(variant==='denied-case')x.terminal={result:'BLOCKED',blocker:'DENIED'};
+      if(variant==='finalizer-failed')x.finalizer.exitCode=1;
+      if(variant==='pending')x.pendingObservation={};});
+    if(variant==='process-active')f.hooks.processes=()=>['another benchmark'];
+    if(variant==='marker-live')f.hooks.isProcessAlive=()=>true;
+    if(variant==='divergent-export')await fs.writeFile(path.join(f.dir,'run-01.json'),'{}');
+    if(variant==='divergent-comparison')await fs.writeFile(path.join(f.dir,'compare-01.json'),'{}');
+    if(variant==='missing-evidence')f.hooks.exportMeasurement=async()=>{throw Error('missing evidence');};
+    const before=f.calls.filter(x=>x.startsWith('run-')).length;
+    const expected={multiple:/ambiguous run origin/, 'source-drift':/freeze differs/,'wrong-head':/freeze differs/,
+      'wrong-config':/freeze differs/,'wrong-owner':/ownership/,uncertain:/terminal and settled/,reserved:/terminal and settled/,
+      'denied-case':/known PASS/,'finalizer-failed':/known PASS/,pending:/known PASS/,'process-active':/still alive/,
+      'marker-live':/still alive/,'divergent-export':/partial export/,'divergent-comparison':/partial export/,'missing-evidence':/missing evidence/};
+    await assert.rejects(recover(f),expected[variant]);
+    assert.deepEqual(await fs.readFile(f.stateFile),original);
+    assert.equal(f.calls.filter(x=>x.startsWith('run-')).length,before);
+    assert.equal(await fs.stat(f.durable).then(()=>true,()=>false),false);
+  });
+}
+
+test('completed recovery accepts matching partial exports and preserves costs; altered replay is refused',async t=>{
+  const f=await interruptedCompletedFixture(t);
+  const ledger=await fs.readFile(path.join(f.runRoot,'.turn-ledger.json'));
+  const report=await f.hooks.exportMeasurement(f.runId);
+  await fs.writeFile(path.join(f.dir,'run-01.json'),JSON.stringify(report,null,2)+'\n');
+  await recover(f);assert.deepEqual(await fs.readFile(path.join(f.runRoot,'.turn-ledger.json')),ledger);
+  await fs.writeFile(path.join(f.dir,'run-01.json'),'{}');
+  const state=await fs.readFile(f.stateFile);await assert.rejects(recover(f));
+  assert.deepEqual(await fs.readFile(f.stateFile),state);
+});
+
+
+test('recovered checkpoint continues only the remaining FULLs and promotes exactly N/N',async t=>{
+  const f=await interruptedCompletedFixture(t);await recover(f);
+  const report=await fs.readFile(path.join(f.dir,'run-01.json'));
+  const result=await campaign(f,{resumeId:f.id});
+  assert.equal(result.status,'CAMPAIGN_COMPLETE');assert.equal(result.completedRuns,3);
+  assert.equal(f.calls.filter(x=>x==='run-1').length,1);
+  assert.equal(f.calls.filter(x=>x.startsWith('resume-')).length,0);
+  assert.deepEqual(await fs.readFile(path.join(f.durable,'run-01.json')),report);
+  const summary=JSON.parse(await fs.readFile(path.join(f.durable,'campaign-summary.json')));
+  assert.equal(summary.controlRecovery.controller.head,'recovery-fixture-head');
+  assert.equal(summary.controlRecovery.binding.origin,'reconstructed-from-exclusive-terminal-run');
+  assert.equal(summary.controlRecovery.managerExit,null);assert.equal(summary.controlRecovery.campaignExit,null);
+  assert.equal('originalStateBytes' in summary.controlRecovery,false);assert.equal('originalMarkerBytes' in summary.controlRecovery,false);
+});
+
+for(const variant of ['seal','binding','report','controller','ledger','campaign-id','started-at'])test(`recovered checkpoint ${variant} drift blocks continuation before dispatch`,async t=>{
+  const f=await interruptedCompletedFixture(t);await recover(f);
+  const state=JSON.parse(await fs.readFile(f.stateFile));
+  if(variant==='seal')state.runIndex=3;
+  if(variant==='binding')state.recovery.binding.runId='run-foreign';
+  if(variant==='controller')f.hooks.recoveryVersion=()=>({head:'new-recoverer',sha256:f.hash('changed')});
+  if(variant==='campaign-id')state.campaignId='campaign-foreign-12345678';
+  if(variant==='started-at')state.startedAt='2000-01-01T00:00:00.000Z';
+  if(['binding','campaign-id','started-at'].includes(variant)) {const{stateSha256,...body}=state;state.stateSha256=f.hash(JSON.stringify(body));}
+  if(['seal','binding','campaign-id','started-at'].includes(variant))await fs.writeFile(f.stateFile,JSON.stringify(state));
+  if(variant==='report')await fs.writeFile(path.join(f.dir,'run-01.json'),'{}');
+  if(variant==='ledger'){const file=path.join(f.runRoot,'.turn-ledger.json'),ledger=JSON.parse(await fs.readFile(file));ledger.reservations.push({});await fs.writeFile(file,JSON.stringify(ledger));}
+  const before=f.calls.filter(x=>x.startsWith('run-')).length;
+  await assert.rejects(campaign(f,{resumeId:f.id}));
+  assert.equal(f.calls.filter(x=>x.startsWith('run-')).length,before);
+  assert.equal(await fs.stat(f.durable).then(()=>true,()=>false),false);
+});
+
+test('recovery CLI selects an explicit frozen root and cannot combine recovery with execution',()=>{
+  assert.deepEqual(parseCampaignArgs(['--recover-completed','campaign-test-12345678','--root','/tmp/measured']),
+    {mode:'recover',campaignId:'campaign-test-12345678',root:'/tmp/measured'});
+  assert.deepEqual(parseCampaignArgs(['--resume','campaign-test-12345678','--root','/tmp/measured']),
+    {mode:'campaign',resumeId:'campaign-test-12345678',root:'/tmp/measured'});
+  for(const argv of [['--recover-completed','campaign-test-12345678'],
+    ['--recover-completed','campaign-test-12345678','--root','/tmp/measured','--runs','3'],
+    ['--root','/tmp/measured'],['--recover-completed','campaign-test-12345678','--root','relative']])
+    assert.throws(()=>parseCampaignArgs(argv),/usage/);
+});
+
+
+test('separate recovery controller uses the frozen checkout readers and comparator',async t=>{
+  const f=await interruptedCompletedFixture(t),runtime=path.join(f.root,'benchmarks/sentinel-todo/runtime');
+  const report=await f.hooks.exportMeasurement(f.runId),reportFile=path.join(f.root,'measured-report.json');
+  await fs.writeFile(reportFile,JSON.stringify(report));
+  await fs.writeFile(path.join(runtime,'benchmark-measurement.mjs'),
+    `import fs from 'node:fs/promises';export async function exportMeasurement(){return JSON.parse(await fs.readFile(${JSON.stringify(reportFile)},'utf8'));}
+`+
+    `export function compareMeasurements(){return {directlyComparable:false,profileExperiment:false,mismatches:['TEST-ONLY measured comparator'],deltas:'unavailable'};}`);
+  const run=JSON.parse(await fs.readFile(path.join(f.runRoot,'run.json')));
+  await fs.writeFile(path.join(runtime,'benchmark-snapshot.mjs'),
+    `export async function currentFunctionalIdentity(){return ${JSON.stringify({sha256:IDENTITY})};}
+`+
+    `export async function assertSnapshotIntegrity(){return ${JSON.stringify(run.snapshot)};}`);
+  delete f.hooks.exportMeasurement;delete f.hooks.compare;delete f.hooks.identity;delete f.hooks.snapshot;
+  await recover(f);
+  const comparison=JSON.parse(await fs.readFile(path.join(f.dir,'compare-01.json')));
+  assert.deepEqual(comparison.mismatches,['TEST-ONLY measured comparator']);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(f.dir,'run-01.json'))),report);
+});
+
+
+test('existing run exclusion serializes concurrent recovery and never overwrites advanced state',async t=>{
+  const f=await interruptedCompletedFixture(t);
+  let release,entered;const barrier=new Promise(resolve=>{release=resolve;}),ready=new Promise(resolve=>{entered=resolve;});
+  const original=f.hooks.exportMeasurement;let paused=false;
+  f.hooks.exportMeasurement=async id=>{if(!paused){paused=true;entered();await barrier;}return original(id);};
+  const first=recover(f);await ready;
+  const bytes=await fs.readFile(f.stateFile);
+  try{await assert.rejects(recover(f),/another run or recovery/);assert.deepEqual(await fs.readFile(f.stateFile),bytes);}
+  finally{release();}
+  await first;
+  const state=JSON.parse(await fs.readFile(f.stateFile));
+  assert.equal(state.status,'RECOVERY_STOP');
+  assert.equal(await fs.stat(path.join(f.scratch,'.active-run.json')).then(()=>true,()=>false),false);
+  const checkpoint=await fs.readFile(f.stateFile);await recover(f);assert.deepEqual(await fs.readFile(f.stateFile),checkpoint);
+  await campaign(f,{resumeId:f.id});
+  const advanced=await fs.readFile(f.stateFile);await assert.rejects(recover(f));
+  assert.deepEqual(await fs.readFile(f.stateFile),advanced,'a delayed recovery cannot overwrite progressed state');
+});
+
+
+test('checkpoint durable before stale-marker cleanup is replayable without rebuilding a producer',async t=>{
+  const f=await interruptedCompletedFixture(t),marker=await fs.readFile(f.marker);
+  await recover(f);const checkpoint=await fs.readFile(f.stateFile);
+  await fs.writeFile(f.marker,marker);await recover(f);
+  assert.deepEqual(await fs.readFile(f.stateFile),checkpoint);
+  assert.equal(await fs.stat(f.marker).then(()=>true,()=>false),false);
+  assert.equal(f.calls.filter(x=>x==='run-1').length,1);
+});
+
+test('foreign recovery lock is preserved and cannot produce a checkpoint',async t=>{
+  const f=await interruptedCompletedFixture(t),original=f.hooks.exportMeasurement;
+  const active=path.join(f.scratch,'.active-run.json'),foreign=Buffer.from('{"pid":777,"kind":"foreign"}');
+  let replaced=false;f.hooks.exportMeasurement=async id=>{if(!replaced){replaced=true;await fs.writeFile(active,foreign);}return original(id);};
+  const before=await fs.readFile(f.stateFile);await assert.rejects(recover(f),/recovery lock changed/);
+  assert.deepEqual(await fs.readFile(active),foreign);assert.deepEqual(await fs.readFile(f.stateFile),before);
+});
+
+
+for(const mode of ['process','marker'])test(`live ${mode} is refused before any recovery lock is created`,async t=>{
+  const f=await interruptedCompletedFixture(t),active=path.join(f.scratch,'.active-run.json');
+  const absent=async()=>assert.equal(await fs.stat(active).then(()=>true,()=>false),false,'live owner cannot observe a transient recovery lock');
+  if(mode==='process')f.hooks.processes=async()=>{await absent();return ['live controller'];};
+  else f.hooks.isProcessAlive=async()=>{await absent();return true;};
+  const before=await fs.readFile(f.stateFile);await assert.rejects(recover(f),/still alive/);
+  await absent();assert.deepEqual(await fs.readFile(f.stateFile),before);
+});
