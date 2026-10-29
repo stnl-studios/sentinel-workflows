@@ -4,6 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readRunnerConfiguration } from './validation-runner.mjs';
+import { projectAppServerMeasurement } from './usage-accounting.mjs';
 
 export const APP_SERVER_VERSION = '0.163.0';
 // A caller's INFO/TRACE filter can emit large span payloads before any turn.
@@ -197,6 +198,7 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
   const methods = new Set(['initialize', 'skills/extraRoots/set', 'skills/list', 'thread/start',
     'thread/resume', 'turn/start', 'thread/read', 'thread/turns/list', 'thread/items/list', 'experimentalFeature/list']);
   let nextId = 1, buffer = '', closed = null;
+  let measurementObserver = null;
   const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
   function stop(error) {
     if (closed) return;
@@ -239,7 +241,14 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
         }
         // Notifications are hints, never completion evidence. Read scoped public
         // history to recover exact identities/items even after a client restart.
-        else requireThat(typeof message.method === 'string', 'invalid RPC notification');
+        else {
+          requireThat(typeof message.method === 'string', 'invalid RPC notification');
+          if (measurementObserver) {
+            const projected = projectAppServerMeasurement(message);
+            if (projected) try { measurementObserver.callback(projected); }
+            catch { measurementObserver.failed = true; } // Metrics never certify or interrupt a turn.
+          }
+        }
       } catch (error) { stop(nativeDiagnostics.has(error) ? error : fail('malformed public RPC message')); return; }
     }
     if (Buffer.byteLength(buffer) > maxLineBytes) stop(fail('RPC line limit exceeded'));
@@ -269,6 +278,12 @@ export function appServerRpc({ input, output, diagnostics = null, timeoutMs = 30
   });
   diagnostics?.on('error', () => stop(fail('App Server diagnostic channel failed')));
   return {
+    observeMeasurements(callback) {
+      requireThat(typeof callback === 'function' && measurementObserver === null, 'measurement observer already owned or invalid');
+      const observer = { callback, failed: false }; measurementObserver = observer;
+      return { get failed() { return observer.failed; },
+        close() { if (measurementObserver === observer) measurementObserver = null; } };
+    },
     request(method, params) {
       if (closed) return Promise.reject(closed);
       if (!methods.has(method)) return Promise.reject(fail('RPC method outside adapter scope'));
@@ -429,7 +444,17 @@ export async function startAppServerTurn(rpc, { bundle, cwd, skillName, prompt, 
   const response = await rpc.request('turn/start', { threadId: started.thread.id, effort,
     input: [selection.input, { type: 'text', text: prompt }], ...(outputSchema === undefined ? {} : { outputSchema }) });
   requireThat(id(response?.turn?.id), 'turn dispatch response incomplete; effect uncertain');
-  return { threadId: started.thread.id, turnId: response.turn.id, agentFeatures };
+  return { threadId: started.thread.id, turnId: response.turn.id, agentFeatures,
+    startedFreshThread: threadId === null,
+    // These are thread-start/resume acknowledgements, not per-response billing
+    // or proof that every subsequent model response used identical settings.
+    runtimeConfiguration: {
+      model: typeof started.model === 'string' && /^[A-Za-z0-9._-]{1,80}$/u.test(started.model) ? started.model : null,
+      serviceTier: started.serviceTier === null ? 'unspecified' : ['default', 'fast', 'flex', 'priority'].includes(started.serviceTier) ? started.serviceTier : null,
+      approvalPolicy: ['never','untrusted','on-request'].includes(started.approvalPolicy) ? started.approvalPolicy : null,
+      legacySandboxType: ['readOnly','workspaceWrite','dangerFullAccess','externalSandbox'].includes(started.sandbox?.type) ? started.sandbox.type : null,
+      requestedEffort: effort,
+    } };
 }
 
 async function pages(rpc, method, params, onPage = null) {
@@ -561,7 +586,8 @@ export async function observeAppServerChild(rpc, { binding, cwd, onTurns, onChil
   } catch (error) {
     const safe=nativeFailure(error);throw Object.assign(safe,{descendants:[...(safe.descendants??[]),...observedChildren]});
   }
-  return { turns: turns.map(turn => ({ id: turn.id, status: turn.status,
+  return { provenance: { forkedFromId: Object.hasOwn(thread,'forkedFromId') ? thread.forkedFromId : 'unknown' },
+    turns: turns.map(turn => ({ id: turn.id, status: turn.status,
     ...(['failed','interrupted'].includes(turn.status)?{failure:publicTurnDiagnostic(turn)}:{}) })), children };
 }
 

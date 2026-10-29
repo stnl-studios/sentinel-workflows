@@ -1022,8 +1022,9 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
       await atomicJson(evidencePath, { sequence, operation, slice, promptFile, templatePath, promptSha256: hash(prompt),
         startedAt, endedAt: new Date().toISOString(), dispatch: route,
         context: { ...policy, role, priorThreadId: prior?.threadId ?? null, threadId: turn.threadId,
-          inheritedAuthorHistory: prior !== null }, turn, normalizedUsage: null, captureProof,
-        runner: { turns: startedChildren.size, capturedReceipts: turn.captures.length },
+          inheritedAuthorHistory: prior !== null }, turn, normalizedUsage: turn.usageObservation ?? null, captureProof,
+        runner: { turns: startedChildren.size, capturedReceipts: turn.captures.length,
+          usageObservations: turn.runnerUsageObservations ?? [] },
         officialReadback: { lifecycle: readback.lifecycle, execution: readback.execution }, preparation,
         handoffRedelivery,handoffRedeliveryConsumed,
         readinessResult: readiness, closeEvidence: closeEvidence ? path.join(caseRoot, 'terminal-evidence.json') : null,
@@ -1049,7 +1050,8 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
   } finally {
     // Publish a known failure before asynchronous finalization lets a sibling advance.
     reportTerminal?.({ caseId, outcome: terminal });
-    provider?.close();
+    const measurementClosure=await provider?.close();
+    if(measurementClosure?.measurementIssue)state.measurementIssue='native measurement source or persistence incomplete';
     const rawPath = path.join(caseRoot, resume ? `raw-resume-${state.operations.length}.json` : 'raw.json');
     const args = ['finalize', '--workspace', workspace, '--case', caseId, '--spec', specPath, '--journal', journal, '--output', rawPath];
     if (await exists(path.join(caseRoot, 'terminal-evidence.json'))) args.push('--terminal-evidence', path.join(caseRoot, 'terminal-evidence.json'));

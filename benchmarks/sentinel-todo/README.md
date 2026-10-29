@@ -81,6 +81,49 @@ workflow authority.
 
 ## Functional baseline
 
+### Required measurement evidence for U3.18
+
+Functional execution, formal judgment, product oracle and measurement completeness
+are separate results. Aj's complete benchmark acceptance requires consumption;
+an ABC functional success with unavailable usage is not a qualified FULL. Keep
+historical outputs unchanged and label them as functional evidence with missing
+metrics. A diagnostic export retains the functional result and reports
+`measurement.status: incomplete` with missing dimensions. It cannot be published
+or used to certify savings. Missing values never become zero.
+
+| Evidence | Existing authoritative source / unit | Aggregation and completeness |
+| --- | --- | --- |
+| Run, case, repetition, operation and attempt | campaign state, run.json, operation evidence, ledger; IDs/counts | Required. Match the frozen run and ABC/N scope; no missing, foreign or duplicate identities. |
+| Wall time per operation/case/run | journal durationMs and startedAt/endedAt; milliseconds | Required. Preserve real boundaries. B/C overlap: summed case time is not run wall time. |
+| Failed/cancelled attempts and pauses | ledger timestamps/states, operation records, recovery provenance | Required attempts and recorded boundaries. Wall time includes waiting. An exact model/observation-wait/administrative split is unavailable when the provider or preserved records do not distinguish it; do not manufacture that split. Unknown original exits/times stay unknown. |
+| Input/cached input/output | public `thread/tokenUsage/updated`, scoped by threadId/turnId; tokens | Required for every admitted main/child turn, including failed attempts. Preserve official counter fields before normalization; establish cumulative/delta/final semantics and parent/child scope before summing. Cached input is a subset, not additional input. |
+| Total tokens | attributable input + output; tokens | Derived only from complete compatible buckets. Never add cached or reasoning tokens again. Known partial subtotals must be labelled partial. |
+| Reasoning/cache-write detail | provider's explicit counters; tokens | Retain when supplied. Never silently coerce an unsupported/missing field to zero; absence must remain explicit. |
+| Calls, turns and admissions | scoped public turn IDs and ledger states/reservations; counts | Required. A skill operation may cause several model turns. Count all children/corrections; replay is not another dispatch. Reservations are not token usage or money. |
+| Models and effort | frozen manifest, operation requests, official thread/binding metadata | Required declared profiles and available acknowledgements. Distinguish requested, acknowledged and unavailable provider-reported values; do not relabel a requested alias as an observed model version. |
+| SDK/CLI, source, seed, schema and configuration | snapshot.json, manifest, freeze and effective public settings | Required reproducibility evidence. Preserve exact observed versions, hashes, overrides and context regime. A different global config hash needs an effective-settings check, not restoration by inference. |
+| Formal result and product result | native receipts/terminal proof and independent productAcceptance | Required, separate from metrics. Formal PASS does not override an oracle failure or missing consumption. |
+| Qualification | complete ABC/N campaign plus required evidence | Required. Only complete coherent runs count; a diagnostic/focal run, incomplete metrics or a successful run from another candidate cannot fill N. |
+| Monetary estimate | dated tariff source + complete attributable usage by applicable model/tier | Optional. Label estimated; otherwise unavailable. Do not equate subscription quota/admission counts with billing or invent a price. |
+| TTFT and per-tool time series | optional provider notifications | Optional; not needed for the requested comparison. No telemetry subsystem is introduced. |
+
+The original defect discarded native notifications and returned null usage.
+The corrected path projects notifications into existing event journals and
+rebuilds deltas at export against the admitted ledger. The legacy SDK normalizer
+is not used to reinterpret App Server data. Official 0.163.0 source establishes
+the counter semantics; history Thread/Turn responses do not contain usage, so
+missing historical tokens cannot be recovered from those reads. Delivery of all
+child notifications on the real connection remains unproven. Synthetic fixtures
+prove the consumer pipeline, not that historical/live notifications were emitted
+or received. No paid proof is authorized by the offline work.
+
+Offline acceptance covers source event → binding/normalization → existing
+evidence persistence → export → comparison, with missing usage/child, duplicate
+or late events, cumulative/reset semantics, failed retry then success, replay
+and resume, incompatible cache semantics and missing cases/repetitions. A
+complete positive fixture must have the expected identities and observations;
+changing a coverage fraction alone never supplies missing evidence.
+
 The initial comparison reference is the full run
 `run-20260927034729-712b2b42` (2026-09-27 03:47–05:02 UTC), recorded under
 ignored `benchmark-temp/`. A, B, and C each passed on one frozen functional
@@ -304,6 +347,42 @@ context change: record the frozen source identity and do not infer token/cost
 savings or direct parity with historical reused-thread runs from offline tests.
 
 ### Direct comparison and campaign
+
+For the native App Server 0.163.0 path, the numeric source is the separate
+`thread/tokenUsage/updated` notification. `total` is a thread runtime counter;
+`last` can describe one response or a context estimate and is never treated as
+the turn total. Preserve projected snapshots, thread/turn identity and the
+birth/baseline proof in the existing operation journal. Deduplicate identical
+snapshots and replay; each received notification has one local observation ID
+in that same journal, so rereading a preserved record is distinct from a newly
+received lower counter. This is not a provider response ID or billing receipt.
+Missing/conflicting observation identity is incomplete. Use a coherent cumulative difference only after terminal
+notification. Count failed/interrupted attempts too. A fork, unknown baseline,
+missing child notification, reset, changed late snapshot, persistence failure or
+incomplete expected/observed matrix keeps the measurement incomplete. No new
+model turn or silent child resume is used to obtain telemetry.
+
+These are **observed runtime counters, not billed tokens**: the provider can
+restore or synthesize counters. Reject detectable incoherence; do not claim
+that this detects every synthetic value or proves an invoice. Cached input is
+inside input; reasoning output is inside output. Missing values are never zero.
+Child delivery on the real connection still requires a small runtime proof;
+offline fixtures cannot establish subscription behavior. A complete export
+requires its admitted main and child turns, including corrections, to have
+attributable counters. A known partial subtotal stays labelled partial.
+
+Native exports also retain SDK/CLI versions from the frozen snapshot and safe
+model/service-tier/approval/legacy-sandbox acknowledgements from thread start/resume,
+beside requested effort and the model/effort from each child's public binding.
+An explicit null tier is recorded as unspecified, never inferred as default;
+an absent field remains unknown. A legacy sandbox type is not an effective
+permission-profile attestation. An acknowledgement is configuration evidence, not proof
+of every underlying response's selected model or effort. Missing mandatory
+acknowledgements prevent complete measurement. The frozen configuration/source,
+seed and case hashes remain the comparison authority; no user configuration or
+credentials are copied into the report. Run wall time includes its recorded
+start/end interval, while summed case/operation durations are separate; an
+administrative recovery gap is not invented as model execution time.
 
 Compare reports directly only when the measurement schema and metric
 definitions, benchmark version, case requirements hashes, seed hash, result

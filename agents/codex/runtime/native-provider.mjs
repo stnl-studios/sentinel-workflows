@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { connectAppServer, initializeAppServer, describeAppServerBundle, assertAppServerBundle,
   startAppServerTurn, readAppServerTurn, bindAppServerChild, readAppServerChild, writeNativeToolResult,
   deniedShellTemporaryFile, persistAppServerStderrSample, observeAppServerChild,
   nativeTransportError as blocked, nativeFailure, publicTurnStatus, publicTurnDiagnostic } from './app-server-transport.mjs';
+import { appServerUsageObservations } from './usage-accounting.mjs';
 
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const wait = (ms, signal) => new Promise((resolve, reject) => {
@@ -19,6 +20,32 @@ const wait = (ms, signal) => new Promise((resolve, reject) => {
 // RPC object; importing/calling the observer with it never opens a real client.
 export async function createNativeProvider({ snapshot, workspace, evidenceRoot, rpc = null, pollMs = 100 }) {
   let bundle,connection=null;
+  let eventWrites=Promise.resolve(),measurementFile=null,measurementFailure=null,measurementUnavailableWritten=false;
+  let pendingMeasurements=0;const measurementEvents=[],scopeFingerprints=new Set();
+  const append=(file,event)=>{
+    const writing=eventWrites.then(async()=>{
+      await fs.appendFile(file,`${JSON.stringify(event)}\n`);
+      if(event.type.startsWith('native.usage.')) {
+        if(measurementEvents.length<16384)measurementEvents.push(event);
+        else measurementFailure='measurement event bound exhausted';
+      }
+    });
+    eventWrites=writing.catch(()=>{});return writing;
+  };
+  // Only this case's existing operation journals, never session directories.
+  try {
+    for(const name of (await fs.readdir(evidenceRoot)).filter(name=>/^[A-Za-z0-9][A-Za-z0-9_-]*\.events\.jsonl$/u.test(name)).sort()) {
+      const file=path.join(evidenceRoot,name),info=await fs.lstat(file);
+      if(!info.isFile()||info.isSymbolicLink()||info.size>64*1024*1024)throw new Error('invalid retained measurement file');
+      for(const line of (await fs.readFile(file,'utf8')).split('\n').filter(Boolean)) {
+        const event=JSON.parse(line);
+        if(event?.type?.startsWith('native.usage.')) {
+          if(measurementEvents.length>=16384)throw new Error('measurement event bound');
+          measurementEvents.push(event);
+        }
+      }
+    }
+  } catch {measurementFailure='retained measurement history unavailable';}
   try {
     bundle=await describeAppServerBundle({skillsRoot:path.join(snapshot,'skills/workflows'),
       runnerFile:path.join(snapshot,'agents/codex/.codex/agents/stnl_validation_runner.toml')});
@@ -36,6 +63,30 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
     try { connection?.close(); } catch(secondary) { const safe=nativeFailure(secondary,'process');primary.cleanupFailure={code:safe.code,message:safe.message}; }
     throw primary;
   }
+  const subscription=rpc.observeMeasurements?.(notification=>{
+    if(!measurementFile)return; // No admitted operation exists before the first journal.
+    if(measurementEvents.length+pendingMeasurements>=16384){measurementFailure='measurement event bound exhausted';return;}
+    if(++pendingMeasurements>1024){pendingMeasurements--;measurementFailure='measurement write bound exhausted';return;}
+    const file=measurementFile;
+    void append(file,{type:'native.usage.notification',observationId:randomUUID(),notification,observedAt:new Date().toISOString()})
+      .catch(()=>{measurementFailure='measurement persistence unavailable';}).finally(()=>pendingMeasurements--);
+  })??null;
+  if(subscription===null)measurementFailure='measurement notification source unavailable';
+  const flushMeasurements=async()=>{
+    await eventWrites;
+    if(subscription?.failed)measurementFailure='measurement observer unavailable';
+    if(measurementFailure&&measurementFile&&!measurementUnavailableWritten) {
+      measurementUnavailableWritten=true;
+      try{await append(measurementFile,{type:'native.usage.unavailable',reason:measurementFailure});}catch{/* The caller retains the issue as well. */}
+    }
+  };
+  const measured=async operationId=>{
+    await flushMeasurements();const result=appServerUsageObservations(measurementEvents);
+    if(measurementFailure)result.issues.push(measurementFailure);
+    const selected=result.observations.filter(o=>o.operationId===operationId);
+    return {usageObservation:selected.find(o=>o.source==='main')??{status:'unavailable',source:'main',delta:null,reason:'main usage scope unavailable'},
+      runnerUsageObservations:selected.filter(o=>o.source==='runner'),usageIssues:[...new Set(result.issues)]};
+  };
   return {
     bundle,
     async runTurn({ prompt, workflowSkill, model, effort, outputSchema, operationId, role,
@@ -50,6 +101,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         if(typeof operationId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(operationId))throw blocked('invalid operation evidence identity');
         eventsFile=path.join(evidenceRoot,`${operationId}.events.jsonl`);
         if(observation===null)await fs.writeFile(eventsFile,'',{flag:'wx',mode:0o600});else await fs.access(eventsFile);
+        measurementFile=eventsFile;
         previousEvents=observation===null?[]:(await fs.readFile(eventsFile,'utf8')).split('\n').filter(Boolean).map(JSON.parse);
         if(!previousEvents.every(event=>event&&typeof event==='object'&&!Array.isArray(event)))throw blocked('persisted observation event malformed');
         previousReady=previousEvents.filter(event=>event.type==='native.child.completed');
@@ -77,8 +129,24 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
       };
       const record = async event => {
         events.push(event);
-        try { await fs.appendFile(eventsFile, `${JSON.stringify(event)}\n`); }
+        try { await append(eventsFile,event); }
         catch(error) { throw nativeFailure(error,'evidence'); }
+      };
+      const scope=async value=>{
+        const fingerprint=JSON.stringify(value);
+        if(!scopeFingerprints.has(fingerprint)){await record({type:'native.usage.scope',scope:value});scopeFingerprints.add(fingerprint);}
+      };
+      const childScopes=async(binding,view)=>{
+        for(const [index,turn]of view.turns.entries()) {
+          // parentBinding proves a unique started edge in this admitted turn;
+          // the validated child metadata and explicit no-fork establish birth.
+          // rootTurnId is not an immediate-parent identity or a usage baseline.
+          const fresh=index===0&&view.provenance?.forkedFromId===null;
+          await scope({source:'runner',threadId:binding.agentThreadId,turnId:turn.id,operationId,
+            fresh,proof:fresh?'public-child-no-fork':'retained-thread',
+            model: binding.model, effort: binding.effort,
+            forkedFromId:view.provenance?.forkedFromId===null?null:'unknown'});
+        }
       };
       // Pin each public result independently. A continuation never overwrites
       // the first file, even if both the API and a mutable file later drift.
@@ -198,6 +266,8 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           ? acknowledgedAt + Math.min(30_000, timeoutMs) : null;
         await hook('onDispatched',onDispatched,dispatch);
         await record({ type: observation === null ? 'native.turn.started' : 'native.turn.observation-resumed', ...dispatch, operationId, role });
+        await scope({source:'main',threadId:dispatch.threadId,turnId:dispatch.turnId,operationId,
+          fresh:dispatch.startedFreshThread===true,proof:dispatch.startedFreshThread===true?'thread/start':'retained-thread'});
         const started = Date.now(); let observed, historyObserved = false, pendingRecorded = false;
         // ACK is not a readable history barrier. Observe this fresh dispatch
         // within one bounded window; never restart it on persisted observation.
@@ -310,6 +380,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
               } });
               assertCurrent();
               views.set(binding.agentThreadId, view);
+              await childScopes(binding,view);
               let selectedDesignation=designated?designation:formal.get(binding.agentThreadId);
               const initialTurns=continuations.has(binding.agentPath)?2:1;
               if(selectedDesignation&&!selectedDesignation.clarification&&view.turns.length>initialTurns) {
@@ -386,6 +457,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         for (const binding of children.values()) if (observeFormalBinding === null || formal.has(binding.agentThreadId)) {
           views.set(binding.agentThreadId,await observeAppServerChild(rpc,{binding,cwd:workspace,
             onTurns:turns=>hook('onChildTurns',value=>onChildTurns?.(binding,value),turns)}));
+          await childScopes(binding,views.get(binding.agentThreadId));
           await collect(binding);
         }
         if (new Set(previousReady.map(event => captureKey(event.binding,event.designation))).size !== previousReady.length
@@ -406,9 +478,10 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         assertCurrent();
         await record({ type: 'native.turn.completed', ...dispatch });
         assertCurrent();
+        const usage=await measured(operationId);
         return { ...dispatch, completed: true, turnStarted: true, response: answer.text, terminalObserved,
-          commandResults, captures: [...captures.values()], eventsPath: eventsFile, usage: null, toolCalls: null,
-          requestedModel: model, requestedEffort: effort, reportedModel: null,
+          commandResults, captures: [...captures.values()], eventsPath: eventsFile, ...usage, usage: null, toolCalls: null,
+          requestedModel: model, requestedEffort: effort, reportedModel: dispatch.runtimeConfiguration?.model ?? null,
           authorThread: role === 'author' ? { threadId: dispatch.threadId, cwd: workspace,
             bundleSha256: sha(Buffer.from(JSON.stringify(bundle))), role: 'author' } : null };
       } catch (error) {
@@ -424,14 +497,16 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           ...(secondaryFailures.length?{secondaryFailures}:{}) }); }
         catch(secondary) { const safe=nativeFailure(secondary,'evidence');evidenceStatus='unavailable';
           secondaryFailures.push({stage:'evidence',code:safe.code,message:safe.message}); }
+        const usage=await measured(operationId);
         return { ...dispatch, threadId: dispatch?.threadId ?? null, completed: false,
           turnStarted: dispatchAttempted ? null : false, response: null, usage: null, toolCalls: null,
+          ...usage,
           captures: [...captures.values()], commandResults: [], eventsPath: eventsFile, error: primary.message,
           errorCode: primary.code, requestedModel: model, requestedEffort: effort,
           observation: dispatch, stderrSample, terminalObserved,evidenceStatus,
           ...(secondaryFailures.length?{secondaryFailures}:{}) };
       } finally { clearTimeout(historyTimer); }
     },
-    close() { connection?.close(); },
+    async close() { subscription?.close();await flushMeasurements();connection?.close();return {measurementIssue:measurementFailure}; },
   };
 }

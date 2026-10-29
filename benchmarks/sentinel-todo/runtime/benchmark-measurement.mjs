@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
+import { appServerUsageObservations } from '../../../agents/codex/runtime/usage-accounting.mjs';
 import { assertSnapshotIntegrity } from './benchmark-snapshot.mjs';
 import { validateProductAcceptance, productInstrumentIdentity, productCandidateIdentity } from './product-acceptance.mjs';
 import { contextPolicy, validateTerminalEvidence, validateNativeLedger } from './native-evidence.mjs';
@@ -77,13 +79,31 @@ async function currentFinalizerRaw(dir, state, journal, id) {
 }
 
 function numeric(v) { return Number.isFinite(v) ? v : null; }
+const modelLabel = value => typeof value === 'string' && /^[A-Za-z0-9._-]{1,80}$/u.test(value) ? value : null;
+function runtimeConfiguration(value) {
+  if (!value || typeof value !== 'object') return null;
+  return { model: modelLabel(value.model),
+    serviceTier: ['unspecified','default','fast','flex','priority'].includes(value.serviceTier) ? value.serviceTier : null,
+    approvalPolicy: ['never','untrusted','on-request'].includes(value.approvalPolicy) ? value.approvalPolicy : null,
+    legacySandboxType: ['readOnly','workspaceWrite','dangerFullAccess','externalSandbox'].includes(value.legacySandboxType) ? value.legacySandboxType : null,
+    requestedEffort: ['none','minimal','low','medium','high','xhigh','max'].includes(value.requestedEffort) ? value.requestedEffort : null };
+}
 
 function observationsFrom(evidence) {
   const all = [];
   if (evidence.turn?.usageObservation) all.push(evidence.turn.usageObservation);
   if (evidence.usageObservation) all.push(evidence.usageObservation);
-  all.push(...(evidence.capacityRetry?.attempts ?? []).slice(0, -1).map(attempt => attempt.usageObservation).filter(Boolean));
-  all.push(...(evidence.runner?.usageObservations ?? []));
+  const attempts = evidence.capacityRetry?.attempts;
+  if (attempts != null) {
+    if (!Array.isArray(attempts)) all.push({ source: 'main', status: 'unavailable' });
+    else for (const attempt of attempts.slice(0, -1))
+      all.push(attempt?.usageObservation ?? { source: 'main', status: 'unavailable' });
+  }
+  const children = evidence.runner?.usageObservations;
+  if (children != null) {
+    if (Array.isArray(children)) all.push(...children);
+    else all.push({ source: 'runner', status: 'unavailable' });
+  }
   return all;
 }
 
@@ -152,8 +172,8 @@ async function measurement(runId) {
       continue;
     }
     if (!state || !journal || state.status === 'ACTIVE' || !state.endedAt) throw new Error(`case ${id} is incomplete`);
-    if (state.protocol === 'native-app-server-v1') validateNativeLedger(await json(path.join(runRoot, '.turn-ledger.json')),
-      state, runId, { settled: state.status === 'PASS' });
+    const nativeLedger=state.protocol==='native-app-server-v1'?await json(path.join(runRoot,'.turn-ledger.json')):null;
+    if (nativeLedger) validateNativeLedger(nativeLedger, state, runId, { settled: state.status === 'PASS' });
     if (state.protocol === 'native-app-server-v1' && raw?.status === 'PASS') {
       const { loadProduct } = await import(pathToFileURL(path.join(runRoot, 'snapshot/benchmarks/sentinel-todo/runtime/benchmark-manager.mjs')).href);
       const terminal = await json(path.join(dir, 'terminal-evidence.json'));
@@ -183,13 +203,69 @@ async function measurement(runId) {
       if (e.operation === 'APPLY_FINDINGS') row.applyFindings += 1;
     }
     const evidenceFiles = await Promise.all((state.operations ?? []).map((op) => optionalJson(path.join(dir, path.basename(op.evidencePath ?? '')))));
-    const observations = evidenceFiles.filter(Boolean).flatMap(observationsFrom);
-    const seen = new Set();
-    const unique = observations.filter((o) => {
-      const key = o.eventId ?? `${o.source}:${o.threadId}:${JSON.stringify(o.delta)}`;
-      if (seen.has(key)) return false;
-      seen.add(key); return o.status === 'attributable' && o.delta;
-    });
+    let observations = evidenceFiles.filter(Boolean).flatMap(observationsFrom), childRuntimeConfiguration = [];
+    if(nativeLedger) {
+      // Rebuild from persisted official snapshots after the provider is closed,
+      // including late events. Never trust a stale per-operation subtotal.
+      const retained=[],nativeIssues=[],files=new Set();
+      for(const evidence of evidenceFiles.filter(Boolean)) {
+        const file=evidence.turn?.eventsPath;
+        if(typeof file!=='string'||path.dirname(file)!==dir||!file.endsWith('.events.jsonl')) {nativeIssues.push('missing usage journal');continue;}
+        if(files.has(file))continue;files.add(file);
+        try {
+          const info=await fs.lstat(file);
+          if(!info.isFile()||info.isSymbolicLink()||info.size>64*1024*1024||await fs.realpath(file)!==file)throw new Error('invalid usage journal');
+          for(const line of (await fs.readFile(file,'utf8')).split('\n').filter(Boolean)) {
+            const event=JSON.parse(line);
+            if(event?.type?.startsWith('native.usage.'))retained.push(event);
+            if(retained.length>16384)throw new Error('usage bound');
+          }
+        } catch {nativeIssues.push('usage journal unavailable');}
+      }
+      const normalized=appServerUsageObservations(retained),expected=new Set();
+      for(const entry of nativeLedger.turns.filter(t=>t.caseId===id&&t.state!=='not_dispatched')) {
+        let turnId=entry.turnId;
+        if(entry.role==='main') {
+          const matches=evidenceFiles.filter(e=>e?.sequence===entry.sequence&&e.turn?.threadId===entry.threadId);
+          const ids=new Set(matches.map(e=>e.turn?.turnId).filter(Boolean));
+          turnId=ids.size===1?[...ids][0]:null;
+        }
+        if(!entry.threadId||!turnId){nativeIssues.push('expected turn identity unavailable');continue;}
+        const key=JSON.stringify([entry.role,entry.threadId,turnId]);
+        if(expected.has(key))nativeIssues.push('duplicate expected turn identity');expected.add(key);
+      }
+      observations=normalized.observations.filter(o=>{
+        if(expected.has(JSON.stringify([o.source,o.threadId,o.turnId])))return true;
+        nativeIssues.push('usage outside admitted turn identity');return false;
+      });
+      childRuntimeConfiguration=observations.filter(o=>o.source==='runner').map(o=>({
+        operation:nativeLedger.turns.find(entry=>entry.caseId===id&&entry.threadId===o.threadId&&entry.turnId===o.turnId)?.operation,
+        model:modelLabel(o.configuration?.model), effort:o.configuration?.effort ?? null,
+      }));
+      if(nativeIssues.length||normalized.issues.length||state.measurementIssue
+        ||evidenceFiles.some(e=>e?.turn?.usageIssues?.length))observations.push({source:'main',status:'unavailable',delta:null});
+    }
+    const seen = new Map(), conflicts = new Set(), usageIssues = new Set();
+    for (const o of observations) {
+      if (!o || typeof o !== 'object' || Array.isArray(o)) { usageIssues.add('malformed usage observation'); continue; }
+      if (!['main', 'runner'].includes(o.source)) { usageIssues.add('unknown usage source'); continue; }
+      if (o.status === 'duplicate') {
+        if (['input', 'cachedInput', 'output'].some(key => o.delta?.[key] !== 0)
+          || ['cacheWrite', 'reasoningOutput', 'total'].some(key => o.delta?.[key] !== undefined && o.delta[key] !== 0))
+          usageIssues.add('nonzero or incomplete duplicate usage');
+        continue;
+      }
+      if (o.status !== 'attributable' || !o.delta) { usageIssues.add('unattributable usage'); continue; }
+      const key = typeof o.eventId === 'string' && o.eventId.length > 0 ? o.eventId
+        : typeof o.threadId === 'string' && o.threadId && typeof o.segment === 'string' && o.segment
+          ? JSON.stringify([o.source, o.threadId, o.segment]) : null;
+      if (key === null) { usageIssues.add('unknown usage identity'); continue; }
+      const source = { source: o.source, threadId: o.threadId, segment: o.segment, delta: o.delta };
+      if (seen.has(key) && !isDeepStrictEqual(seen.get(key).source, source)) {
+        conflicts.add(key); usageIssues.add('conflicting usage identity');
+      } else if (!seen.has(key)) seen.set(key, { observation: o, source });
+    }
+    const unique = [...seen].filter(([key]) => !conflicts.has(key)).map(([, value]) => value.observation);
     const main = unique.filter((o) => o.source === 'main');
     const runner = unique.filter((o) => o.source === 'runner');
     const sum = (rows, field) => rows.length && rows.every((o) => numeric(o.delta[field]) !== null)
@@ -198,7 +274,7 @@ async function measurement(runId) {
     const tokenStats = (rows, expectedTurns) => {
       if (!rows.length) return UNAVAILABLE;
       const inputs = inputValues(rows); const input = sum(rows, 'input');
-      const output = sum(rows, 'output'); const fullCoverage = numeric(expectedTurns) !== null && rows.length === expectedTurns;
+      const output = sum(rows, 'output'); const fullCoverage = usageIssues.size === 0 && numeric(expectedTurns) !== null && rows.length === expectedTurns;
       const observedSum = (field) => rows.length && rows.every((o) => numeric(o.delta[field]) !== null) ? rows.reduce((n, o) => n + o.delta[field], 0) : UNAVAILABLE;
       return { turns: rows.length, input: fullCoverage ? input : UNAVAILABLE, output: fullCoverage ? output : UNAVAILABLE,
         cachedInput: fullCoverage ? sum(rows, 'cachedInput') : UNAVAILABLE, reasoningOutput: fullCoverage ? sum(rows, 'reasoningOutput') : UNAVAILABLE,
@@ -222,6 +298,11 @@ async function measurement(runId) {
       finalTestCommand: typeof raw?.finalTests?.command === 'string' && raw.finalTests.command.length <= 120 && /^[a-zA-Z0-9._ -]+$/u.test(raw.finalTests.command) ? raw.finalTests.command : UNAVAILABLE,
       finalTestExitCode: raw?.finalTests?.exitCode ?? UNAVAILABLE,
       profileMismatches: raw?.modelUse?.profileMismatches ?? UNAVAILABLE,
+      ...(nativeLedger ? { childRuntimeConfiguration, runtimeConfiguration: evidenceFiles.filter(Boolean).map(e => ({
+        operation: e.operation, requestedModel: modelLabel(e.turn?.requestedModel),
+        requestedEffort: runtimeConfiguration(e.turn?.runtimeConfiguration)?.requestedEffort ?? null,
+        acknowledged: runtimeConfiguration(e.turn?.runtimeConfiguration),
+      })) } : {}),
       provider: state.protocol === 'native-app-server-v1' ? 'app-server-0.163.0' : state.isolation?.provider ?? UNAVAILABLE,
       authMode: state.protocol === 'native-app-server-v1' ? 'normal-client' : state.isolation?.authMode ?? UNAVAILABLE,
       isolation: state.protocol === 'native-app-server-v1' ? 'separate-workspace; normal-client-permissions-inherited' : state.isolation?.filesystemSandbox ?? UNAVAILABLE,
@@ -238,7 +319,10 @@ async function measurement(runId) {
         durationMs: numeric(event.durationMs) ?? UNAVAILABLE })),
       repeatedAttemptsBySlice: Object.fromEntries(Object.entries(bySlice).map(([slice, v]) => [slice,
         { execute: Math.max(0, v.execute - 1), validate: Math.max(0, v.validate - 1) }])),
-      telemetry: { coverage: { main: `${main.length}/${state.mainTurns ?? UNAVAILABLE}`, runner: `${runner.length}/${state.runnerTurns ?? UNAVAILABLE}` }, main: tokenStats(main, state.mainTurns), runner: tokenStats(runner, state.runnerTurns) },
+      telemetry: { coverage: { main: `${main.length}/${state.mainTurns ?? UNAVAILABLE}`, runner: `${runner.length}/${state.runnerTurns ?? UNAVAILABLE}` },
+        main: tokenStats(main, state.mainTurns), runner: tokenStats(runner, state.runnerTurns),
+        ...(nativeLedger?{basis:'app-server-0.163.0-thread-runtime-delta',billing:false}:{}),
+        ...(usageIssues.size ? { issues: [...usageIssues] } : {}) },
     });
   }
   const caseById = Object.fromEntries((config?.cases ?? []).map((c) => [c.id, c]));
@@ -250,6 +334,7 @@ async function measurement(runId) {
     run: { id: runId, status: run.status, mode: run.mode, profile: run.profile ?? UNAVAILABLE, startedAt: run.startedAt, endedAt: run.endedAt ?? UNAVAILABLE },
     provenance: { baseSha: snapshot?.baseSha ?? UNAVAILABLE, dirty: snapshot?.dirty ?? UNAVAILABLE, functionalDiffSha256: snapshot?.functionalDiffSha256 ?? UNAVAILABLE,
       ...(snapshot?.executionMode === 'OFFLINE_TEST_ONLY' ? { executionMode: 'OFFLINE_TEST_ONLY' } : {}),
+      runtimeVersions: { sdk: snapshot?.sdkVersion ?? UNAVAILABLE, cli: snapshot?.cliVersion ?? UNAVAILABLE },
       sourceFunctionalSha256: snapshot?.sourceFunctionalSha256 ?? UNAVAILABLE, snapshotSha256: snapshot?.snapshotSha256 ?? UNAVAILABLE, snapshotCreatedAt: snapshot?.createdAt ?? UNAVAILABLE },
     comparability: { schemaVersion: 1, benchmarkVersion: config?.benchmarkVersion ?? UNAVAILABLE, profile: run.profile ?? UNAVAILABLE,
       ...(cases.some(row => row.contextPolicy) ? { contextPolicy: contextPolicy(config), transport: 'native-app-server-v1' } : {}),
@@ -258,7 +343,7 @@ async function measurement(runId) {
       seedHash: config.integrity?.seedContentHash ?? UNAVAILABLE,
       productInstrumentSha256: instrument,
       resultSchemaVersion: config?.schemaVersions.result ?? UNAVAILABLE, resultSchemaHash,
-      metricDefinitions: 'g2-operation-counts-v1;g3-attributable-usage-delta-v1',
+      metricDefinitions: `g2-operation-counts-v1;g3-attributable-usage-delta-v1${cases.some(row=>row.provider==='app-server-0.163.0')?';app-server-thread-runtime-counters-v1':''}`,
       qualification: { harnessContractVersion: config?.productionPilot?.qualification?.harnessContractVersion ?? UNAVAILABLE,
         providerVersion: config?.productionPilot?.qualification?.providerVersion ?? UNAVAILABLE,
         capabilitiesHash: config?.productionPilot?.qualification?.capabilitiesHash ?? UNAVAILABLE,
@@ -323,11 +408,23 @@ function comparable(a, b, allowProfileMismatch = false) {
   const fields = ['schemaVersion', 'benchmarkVersion', 'requirementsHashes', 'fixtureContentHashes', 'seedHash', 'productInstrumentSha256', 'resultSchemaVersion', 'resultSchemaHash', 'metricDefinitions', 'qualification', 'resultDefinition', 'contextPolicy', 'transport'];
   const mismatches = fields.filter((k) => JSON.stringify(x[k]) !== JSON.stringify(y[k]));
   if (!allowProfileMismatch && x.profile !== y.profile) mismatches.push('profile');
+  if (!isDeepStrictEqual(a.provenance?.runtimeVersions, b.provenance?.runtimeVersions)) mismatches.push('runtimeVersions');
+  const configurations = report => report.cases.map(row => ({ id: row.id,
+    childSettings: [...new Set((row.childRuntimeConfiguration ?? []).map(value => JSON.stringify({
+      operation: value?.operation, model: modelLabel(value?.model), effort: value?.effort,
+    })))].sort(),
+    // Corrections may repeat an operation with identical settings. Their counts
+    // are measured outcomes, not configuration drift; compare unique settings.
+    settings: [...new Set((row.runtimeConfiguration ?? []).map(value => JSON.stringify({
+      operation: value?.operation, requestedModel: value?.requestedModel, requestedEffort: value?.requestedEffort,
+      acknowledged: runtimeConfiguration(value?.acknowledged),
+    })))].sort() })).sort((a,b) => a.id.localeCompare(b.id));
+  if (!isDeepStrictEqual(configurations(a), configurations(b))) mismatches.push('runtimeConfiguration');
   const profileExperiment = allowProfileMismatch && x.profile !== y.profile && mismatches.length === 0;
   return { directlyComparable: mismatches.length === 0, mismatches, profileExperiment };
 }
 
-export function validateMeasurementReport(report, { qualify = false } = {}) {
+function validateFunctionalReport(report, { qualify = false } = {}) {
   const fail = (message) => { throw new Error(`invalid measurement report: ${message}`); };
   if (!report || report.schemaVersion !== 1 || report.benchmarkId !== 'sentinel-todo' || (report.benchmarkVersion !== UNAVAILABLE && !Number.isInteger(report.benchmarkVersion))) fail('identity/schema');
   if (!report.run?.id || !['PASS', 'FAIL', 'ABORTED', 'BLOCKED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP'].includes(report.run.status)
@@ -370,6 +467,84 @@ export function validateMeasurementReport(report, { qualify = false } = {}) {
   return report;
 }
 
+// Functional results remain readable even when measurement is incomplete.
+// Qualification rechecks the underlying dimensions, never a claimed status.
+export function measurementCompleteness(report) {
+  const missing = [];
+  const count = value => Number.isSafeInteger(value) && value >= 0;
+  const cases = report.cases ?? [];
+  if (report.run?.mode === 'full' && cases.map(row => row.id).sort().join() !== 'A,B,C') missing.push('full case scope');
+  for (const row of cases) {
+    if (row.provider === 'app-server-0.163.0') {
+      const operationPresent = config => config && typeof config === 'object' && !Array.isArray(config)
+        && typeof config.operation === 'string' && /^[A-Z][A-Z_]{1,40}$/u.test(config.operation)
+        && Array.isArray(row.operationDurations) && row.operationDurations.some(op => op?.operation === config.operation);
+      if (['sdk','cli'].some(key => !/^\d+\.\d+\.\d+$/u.test(report.provenance?.runtimeVersions?.[key] ?? '')))
+        missing.push('runtime versions');
+      if (!Array.isArray(row.runtimeConfiguration) || row.runtimeConfiguration.length !== row.operations
+        || row.runtimeConfiguration.some(config => !operationPresent(config) || !modelLabel(config.requestedModel)
+          || !config.acknowledged || Object.values(runtimeConfiguration(config.acknowledged) ?? {}).length !== 5
+          || Object.values(runtimeConfiguration(config.acknowledged) ?? {}).some(value => value === null)))
+        missing.push(`case ${row.id} runtime configuration acknowledgement`);
+      if (!Array.isArray(row.childRuntimeConfiguration) || row.childRuntimeConfiguration.length !== row.runnerTurns
+        || row.childRuntimeConfiguration.some(config => !operationPresent(config) || !modelLabel(config.model)
+          || !['none','minimal','low','medium','high','xhigh','max'].includes(config.effort)))
+        missing.push(`case ${row.id} child runtime configuration`);
+    }
+    if (row.telemetry?.issues?.length) missing.push(`case ${row.id} usage issues`);
+    for (const key of ['operations', 'mainTurns', 'runnerTurns', 'durationMs'])
+      if (!count(row[key])) missing.push(`case ${row.id} ${key}`);
+    if (!Array.isArray(row.operationDurations) || row.operationDurations.length !== row.operations
+      || row.operationDurations.some(op => !count(op.durationMs))) missing.push(`case ${row.id} operation time`);
+  }
+  for (const key of ['operations', 'mainTurns', 'runnerTurns']) {
+    if (!count(report.aggregate?.[key]) || cases.some(row => !count(row[key]))
+      || report.aggregate[key] !== cases.reduce((sum, row) => sum + row[key], 0)) missing.push(`aggregate ${key}`);
+  }
+  const start = Date.parse(report.run?.startedAt), end = Date.parse(report.run?.endedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start
+    || !count(report.aggregate?.wallDurationMs) || report.aggregate.wallDurationMs !== end - start)
+    missing.push('run wall time');
+  if (!count(report.aggregate?.summedCaseDurationMs) || cases.some(row => !count(row.durationMs))
+    || report.aggregate.summedCaseDurationMs !== cases.reduce((sum, row) => sum + row.durationMs, 0))
+    missing.push('summed case time');
+  for (const role of ['main', 'runner']) {
+    const field = role === 'main' ? 'mainTurns' : 'runnerTurns';
+    for (const [label, expected, telemetry] of [
+      ...cases.map(row => [`case ${row.id}`, row[field], row.telemetry]),
+      ['aggregate', report.aggregate?.[field], report.aggregate?.telemetry],
+    ]) {
+      const group = telemetry?.[role];
+      if (!count(expected) || telemetry?.coverage?.[role] !== `${expected}/${expected}`)
+        missing.push(`${label} ${role} coverage`);
+      // Zero admitted calls is known from the operation/ledger counts. It does
+      // not convert an absent observation for a dispatched call into zero.
+      if (expected === 0 && group === UNAVAILABLE) continue;
+      if (!group || group === UNAVAILABLE || group.turns !== expected
+        || ['input', 'cachedInput', 'output'].some(key => !count(group[key]))
+        || group.cachedInput > group.input) missing.push(`${label} ${role} usage`);
+    }
+    const groups = cases.filter(row => row[field] > 0).map(row => row.telemetry?.[role]);
+    if (groups.length && groups.every(group => group && group !== UNAVAILABLE)) {
+      for (const key of ['input', 'cachedInput', 'output'])
+        if (report.aggregate?.telemetry?.[role]?.[key] !== groups.reduce((sum, group) => sum + group[key], 0))
+          missing.push(`aggregate ${role} ${key} sum`);
+    }
+  }
+  return { status: missing.length ? 'incomplete' : 'complete', missing: [...new Set(missing)] };
+}
+
+export function validateMeasurementReport(report, options = {}) {
+  validateFunctionalReport(report, options);
+  const measured = measurementCompleteness(report);
+  if (report.measurement && !isDeepStrictEqual(report.measurement, measured))
+    throw Object.assign(new Error('invalid measurement report: declared measurement completeness differs'), { code: 'MEASUREMENT_INCOMPLETE' });
+  if (options.qualify && report.run.status === 'PASS' && ['full', 'case'].includes(report.run.mode)
+    && measured.status !== 'complete') throw Object.assign(new Error(`invalid measurement report: measurement incomplete (${measured.missing.join('; ')})`),
+      { code: 'MEASUREMENT_INCOMPLETE' });
+  return report;
+}
+
 function delta(after, before) {
   return Number.isFinite(after) && Number.isFinite(before) ? after - before : UNAVAILABLE;
 }
@@ -389,9 +564,12 @@ export function compareMeasurements(before, after, allowProfileMismatch = false)
   if (!compatibility.directlyComparable && !compatibility.profileExperiment) return { ...compatibility, deltas: UNAVAILABLE };
   try {
     validateMeasurementReport(before, { qualify: true }); validateMeasurementReport(after, { qualify: true });
-  } catch {
-    return { ...compatibility, directlyComparable: false, mismatches: [...compatibility.mismatches, 'unqualified product acceptance'],
-      conclusion: 'historical or insufficient product evidence; no savings conclusion', deltas: UNAVAILABLE };
+  } catch (error) {
+    const measurement = error.code === 'MEASUREMENT_INCOMPLETE';
+    return { ...compatibility, directlyComparable: false,
+      mismatches: [...compatibility.mismatches, measurement ? 'incomplete required measurement' : 'unqualified product acceptance'],
+      conclusion: measurement ? 'incomplete consumption/time evidence; no qualified savings conclusion'
+        : 'historical or insufficient product evidence; no savings conclusion', deltas: UNAVAILABLE };
   }
   const complete = (r) => r.run.mode === 'full' && r.run.status === 'PASS' && r.cases.every((c) => c.status === 'PASS' && c.finalizer === 'PASS'
     && c.finalTestsPassed === true && c.specClosed === true && (c.execution === 'COMPLETE'
@@ -417,7 +595,10 @@ export async function exportMeasurement(runId) {
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(runId)) throw new Error('invalid run id');
   const run = await json(path.join(ROOT, 'benchmark-temp', runId, 'run.json'));
   if (!['full', 'case', 'focal'].includes(run.mode)) throw new Error('measurement scope is invalid');
-  const report = validateMeasurementReport(await measurement(runId), { qualify: true });
+  // Preserve a diagnostic export even when consumption is unavailable. The
+  // campaign/publisher calls validateMeasurementReport with qualify:true.
+  const report = validateFunctionalReport(await measurement(runId), { qualify: true });
+  report.measurement = measurementCompleteness(report);
   for (const row of report.cases) for (const key of ['main', 'runner']) {
     if (row.telemetry[key] !== UNAVAILABLE) delete row.telemetry[key].inputByTurn;
   }

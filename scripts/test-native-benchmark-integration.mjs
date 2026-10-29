@@ -141,7 +141,7 @@ for (const phase of ['initialize', 'turn', 'turn-write-failure']) test(`normal e
   await assert.rejects(fs.lstat(state.specPath), { code: 'ENOENT' });
 });
 
-for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'findings-two-cycles'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','pre-verification-inspection-failure'],['fresh','test-coverage-correction'],['fresh','test-coverage-clarification'],['fresh','test-coverage-clarification-continuation'],...['plan-redelivery','plan-redelivery-twice','plan-redelivery-four','plan-redelivery-exhausted','plan-redelivery-missing-file','plan-redelivery-divergent-file','plan-redelivery-drift','plan-redelivery-foreign','plan-redelivery-no-allocation','plan-redelivery-denied','plan-redelivery-uncertain'].map(fault=>['fresh',fault]),['fresh','formal-successor'],['fresh','formal-recovered-apply-rejection'],['fresh','formal-two-corrections'],['fresh','formal-four-corrections'],['fresh','findings-format-corrections'],['fresh','formal-observe-inventory'],['fresh','formal-observe-wait-timeout'],['fresh','execute-producer-corrections'],['fresh','findings-producer-corrections'],['fresh','findings-producer-mixed'],['fresh','formal-exhausted'],['fresh','formal-incomplete'],['fresh','formal-incomplete-exhausted'],['fresh','formal-continuation-exhausted'],['fresh','formal-continuation-correction'], ['fresh','review-correction'],['fresh','review-correction-four'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
+for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', 'usage-none'], ['fresh', 'usage-missing-child'], ['fresh', null, 'null'], ['fresh', null, 'omitted'], ['author-continuity', null], ['fresh', 'interrupt-execute'], ['fresh', 'interrupt-close'], ['fresh', 'findings-cycle'], ['fresh', 'findings-two-cycles'], ['fresh', 'premature-verification'],['fresh','automatic-capture'],['fresh','pre-verification-continuation'],['fresh','pre-verification-inspection-failure'],['fresh','test-coverage-correction'],['fresh','test-coverage-clarification'],['fresh','test-coverage-clarification-continuation'],...['plan-redelivery','plan-redelivery-twice','plan-redelivery-four','plan-redelivery-exhausted','plan-redelivery-missing-file','plan-redelivery-divergent-file','plan-redelivery-drift','plan-redelivery-foreign','plan-redelivery-no-allocation','plan-redelivery-denied','plan-redelivery-uncertain'].map(fault=>['fresh',fault]),['fresh','formal-successor'],['fresh','formal-recovered-apply-rejection'],['fresh','formal-two-corrections'],['fresh','formal-four-corrections'],['fresh','findings-format-corrections'],['fresh','formal-observe-inventory'],['fresh','formal-observe-wait-timeout'],['fresh','execute-producer-corrections'],['fresh','findings-producer-corrections'],['fresh','findings-producer-mixed'],['fresh','formal-exhausted'],['fresh','formal-incomplete'],['fresh','formal-incomplete-exhausted'],['fresh','formal-continuation-exhausted'],['fresh','formal-continuation-correction'], ['fresh','review-correction'],['fresh','review-correction-four'], ['author-continuity','review-correction'], ['fresh','review-correction-aux'], ['fresh','review-correction-interrupt'], ...['review-correction-twice','review-correction-drift','review-correction-owner','review-correction-cas'].map(fault=>['fresh',fault]), ...['aux-before-reservation', 'aux-after-reservation', 'aux-after-formal', 'aux-followup', 'aux-followup-interrupt', 'aux-descendant', 'aux-run-eight'].map(fault => ['fresh', fault])]) test(`normal manager ${regime}/${fault}${role === 'default' ? '' : `/role-${role}`}: public preparation through closed/export without managed`, async t => {
   const fixture = await allocateOfflineFixture(repo);
   let backend;
   t.after(async () => { await backend?.settled(); await finishOfflineFixture(fixture); backend=null; });
@@ -567,9 +567,39 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', null
   assert.equal(report.cases[0].execution, 'SPEC_CLOSED');
   assert.deepEqual(report.comparability.contextPolicy, configuration.contextPolicy);
   assert.equal(report.provenance.executionMode, 'OFFLINE_TEST_ONLY');
+  if (fault === null || ['usage-none', 'usage-missing-child', 'findings-cycle', 'pre-verification-continuation', 'formal-two-corrections'].includes(fault)) {
+    const complete = !['usage-none', 'usage-missing-child'].includes(fault);
+    assert.equal(report.measurement.status, complete ? 'complete' : 'incomplete', JSON.stringify(report.measurement));
+    assert.equal(report.cases[0].telemetry.billing, false, 'synthetic runtime counters are never invoice cost');
+    assert.equal(report.cases[0].telemetry.coverage.main, fault === 'usage-none' ? `0/${state.mainTurns}` : `${state.mainTurns}/${state.mainTurns}`);
+    assert.equal(report.cases[0].telemetry.coverage.runner, complete ? `${state.runnerTurns}/${state.runnerTurns}` : `0/${state.runnerTurns}`);
+    if (complete) {
+      assert.equal(report.cases[0].telemetry.main.input, state.mainTurns * 10);
+      assert.equal(report.cases[0].telemetry.runner.input, state.runnerTurns * 10);
+    }
+  }
   assert.equal(measurements.compareMeasurements(report, report).directlyComparable, false,
     'mechanical provider evidence cannot be promoted to real benchmark savings');
   if (regime === 'fresh' && fault === null) {
+    const eventFile = JSON.parse(await fs.readFile(state.operations[0].evidencePath)).turn.eventsPath;
+    const original = await fs.readFile(eventFile);
+    const metricEvents = original.toString().trim().split('\n').map(JSON.parse).filter(e => e.type.startsWith('native.usage.'));
+    await fs.appendFile(eventFile, metricEvents.map(e => JSON.stringify(e)).join('\n') + '\n');
+    assert.deepEqual(await measurements.exportMeasurement(path.basename(runRoot)), report, 'replayed persisted snapshots do not charge again');
+    await fs.writeFile(eventFile, original);
+    await fs.appendFile(eventFile, JSON.stringify({ type: 'native.usage.scope', scope: { source: 'main', threadId: 'foreign', turnId: 'foreign',
+      operationId: 'foreign', fresh: true, proof: 'thread/start' } }) + '\n');
+    assert.equal((await measurements.exportMeasurement(path.basename(runRoot))).measurement.status, 'incomplete', 'foreign scope is never admitted usage');
+    await fs.writeFile(eventFile, original);
+    const foreign=structuredClone(metricEvents.find(e=>e.type==='native.usage.notification'&&e.notification.method==='thread/tokenUsage/updated'));
+    foreign.observationId='new-foreign-observation';
+    foreign.notification.threadId='foreign';foreign.notification.turnId='foreign';
+    await fs.appendFile(eventFile,JSON.stringify(foreign)+'\n');
+    const partial=await measurements.exportMeasurement(path.basename(runRoot));
+    assert.equal(partial.measurement.status,'incomplete','foreign notification cannot hide outside the expected matrix');
+    assert.equal(partial.cases[0].telemetry.main.input,'unavailable');
+    assert.equal(partial.cases[0].telemetry.main.observedInput,report.cases[0].telemetry.main.input,'known subtotal remains explicitly observed');
+    await fs.writeFile(eventFile,original);
     const ledgerFile = path.join(runRoot, '.turn-ledger.json'), ledgerBytes = await fs.readFile(ledgerFile);
     for (const invalid of [null, '{broken', JSON.stringify({ ...JSON.parse(ledgerBytes), total: 99 }),
       JSON.stringify({ ...JSON.parse(ledgerBytes), turns: JSON.parse(ledgerBytes).turns.map((turn, index) => index ? turn : { ...turn, state: 'unknown' }) })]) {

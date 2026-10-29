@@ -25,6 +25,41 @@ const identity = { parentThreadId: parent, parentTurnId: 'parent-turn', agentPat
 const refuses = (message, code='NATIVE_TRANSPORT_UNPROVEN') => error => {
   assert.equal(error.code,code); assert.equal(error.message,message); return true;
 };
+const retainedRefusal = async file => {
+  const matches = (await fs.readFile(file, 'utf8')).trim().split('\n').map(JSON.parse)
+    .filter(event => event.type === 'native.transport.blocked');
+  assert.equal(matches.length, 1, 'the original refusal remains uniquely retained beside metric events');
+  return matches[0];
+};
+
+for (const status of ['failed', 'interrupted']) test(`terminal ${status} usage survives the primary transport refusal without another model call`, async t => {
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true}),request=s.rpc.request.bind(s.rpc);
+  let emit;
+  s.rpc.observeMeasurements=callback=>{emit=callback;return{failed:false,close(){emit=null;}};};
+  s.rpc.request=async(method,params)=>{
+    const value=await request(method,params);
+    if(method==='turn/start') {
+      const total={totalTokens:12,inputTokens:10,cachedInputTokens:5,cacheWriteInputTokens:0,outputTokens:2,reasoningOutputTokens:0};
+      emit({method:'thread/tokenUsage/updated',threadId:parent,turnId:'parent-turn',tokenUsage:{total,last:total,modelContextWindow:null}});
+      emit({method:'turn/completed',threadId:parent,turnId:'parent-turn',status});
+    }
+    if(method==='thread/turns/list'&&params.threadId===parent) {
+      value.data[0].status=status;value.data[0].error={message:'private-failure',codexErrorInfo:'rateLimitExceeded'};
+    }
+    return value;
+  };
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
+  const result=await p.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',operationId:'failed-usage',role:'author'});
+  assert.equal(result.completed,false);assert.match(result.error,/failed\/interrupted/u);
+  assert.equal(result.usageObservation.status,'attributable');assert.equal(result.usageObservation.turnStatus,status);
+  assert.equal(result.usageObservation.delta.total,12);assert.equal(result.usageObservation.billing,false);
+  await p.close();
+  const events=(await fs.readFile(result.eventsPath,'utf8')).trim().split('\n').map(JSON.parse);
+  assert.ok(events.some(e=>e.type==='native.usage.notification'&&e.notification.status===status));
+  assert.equal((await retainedRefusal(result.eventsPath)).message,result.error);
+  assert.doesNotMatch(JSON.stringify(events),/private-failure/u);
+  assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
+});
 
 for (const [tool, label] of [['listAgents', 'its scoped agent inventory'], ['wait', 'a completed wait timeout without returned agent state']])
 test(`formal runner may observe ${label} without a message or turn effect`,async t=>{
@@ -176,7 +211,7 @@ test(`public child failure retains category and role (${status}, formal=${formal
     operationId:'failed-child',role:'author',observeFormalBinding:()=>formal?{agentPath:identity.agentPath}:null});
   assert.equal(result.completed,false);assert.equal(result.terminalObserved,false);assert.deepEqual(result.captures,[]);
   assert.equal(result.error,`child turn failed/interrupted; preserve its effects (formal=${formal}; status=${status}; error=present; cause=rateLimitExceeded)`);
-  assert.doesNotMatch(result.error,/private-/u);const event=JSON.parse((await fs.readFile(result.eventsPath,'utf8')).trim().split('\n').at(-1));
+  assert.doesNotMatch(result.error,/private-/u);const event=await retainedRefusal(result.eventsPath);
   assert.equal(event.message,result.error);assert.equal(event.code,result.errorCode);assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
 });
 
@@ -192,7 +227,7 @@ for(const [kind,mutate] of [
   assert.equal(result.completed,false);assert.equal(result.errorCode,'DRIVER_FAILURE');
   assert.ok(result.error.includes('stage=onDispatched'),result.error);
   assert.doesNotMatch(result.error,/private-|\/private\//u);
-  const e=JSON.parse((await fs.readFile(result.eventsPath,'utf8')).trim());
+  const e=await retainedRefusal(result.eventsPath);
   assert.equal(e.code,result.errorCode);assert.equal(e.message,result.error);
   assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
 });
@@ -205,7 +240,8 @@ test('private command evidence cannot be forged through an error property',async
       {privateCommandEvidence:{command:'TOKEN=private-secret',output:'private-output',environment:'private-env'}});}});
   assert.equal(result.completed,false);const events=await fs.readFile(result.eventsPath,'utf8');
   assert.doesNotMatch(events,/private-secret|private-output|private-env/u);
-  assert.equal(Object.hasOwn(JSON.parse(events.trim()),'privateCommandEvidence'),false);
+  assert.ok(events.trim().split('\n').map(JSON.parse).every(event=>!Object.hasOwn(event,'privateCommandEvidence')));
+  assert.equal((await retainedRefusal(result.eventsPath)).message,result.error);
   assert.equal(s.calls.filter(c=>c.method==='turn/start').length,1);
 });
 
@@ -286,7 +322,7 @@ test('failure accounting cannot replace the primary refusal',async t=>{
   assert.equal(result.errorCode,'NATIVE_TRANSPORT_UNPROVEN');assert.equal(charged,1);
   assert.equal(result.secondaryFailures[0].stage,'onUnadmittedChildren');
   assert.doesNotMatch(JSON.stringify(result.secondaryFailures),/private-/u);
-  const e=JSON.parse((await fs.readFile(result.eventsPath,'utf8')).trim().split('\n').at(-1));
+  const e=await retainedRefusal(result.eventsPath);
   assert.equal(e.message,result.error);assert.deepEqual(e.secondaryFailures,result.secondaryFailures);
 });
 
@@ -852,7 +888,7 @@ test('auxiliary observation authenticates lineage and cost without granting form
     mutate(state) { state.thread.forkedFromId = parent; state.thread.model = 'gpt-6.1-sol'; state.items = []; } });
   const binding = await bindAppServerChild(s.rpc, identity);
   assert.deepEqual(await observeAppServerChild(s.rpc, { binding, cwd: f.root }),
-    { turns: [{ id: 'child-turn', status: 'completed' }], children: [] });
+    { provenance: { forkedFromId: parent }, turns: [{ id: 'child-turn', status: 'completed' }], children: [] });
   await assert.rejects(readAppServerChild(s.rpc, { binding, bundle: f.bundle, cwd: f.root }), blocked,
     'an auxiliary, even completed with a PASS-like answer, is not a formal runner');
   assert.ok(s.calls.every(call => /^thread\//u.test(call.method)), 'observation must not admit any turn');
@@ -1331,12 +1367,24 @@ for (const kind of ['skill', 'sibling', 'runner', 'extra-file', 'symlink', 'mode
   });
 }
 
+test('runtime acknowledgement distinguishes explicit null tier from absent metadata and omits private configuration', async t => {
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root}),request=s.rpc.request.bind(s.rpc);
+  s.rpc.request=async(method,params)=>{const value=await request(method,params);return method==='thread/start'?{...value,
+    model:'gpt-6.1-sol',serviceTier:null,approvalPolicy:'on-request',sandbox:{type:'workspaceWrite',writableRoots:['/private/secret']},
+    credentials:'private-secret'}:value;};
+  const result=await startAppServerTurn(s.rpc,{bundle:f.bundle,cwd:f.root,skillName:'stnl-slice-executor',prompt:'OFFLINE',
+    model:'gpt-6.1-sol',effort:'medium',approvalPolicy:null,sandbox:null});
+  assert.deepEqual(result.runtimeConfiguration,{model:'gpt-6.1-sol',serviceTier:'unspecified',approvalPolicy:'on-request',legacySandboxType:'workspaceWrite',requestedEffort:'medium'});
+  assert.doesNotMatch(JSON.stringify(result),/secret|writableRoots|credentials/u);
+});
+
 test('S2 explicit fresh turn settings do not copy auth or disable collaboration', async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root });
   const result = await startAppServerTurn(s.rpc, { bundle: f.bundle, cwd: f.root,
     skillName: 'stnl-slice-executor', prompt: 'normal payload', model: 'gpt-6.1-sol', effort: 'high',
     approvalPolicy: 'never', sandbox: 'workspace-write' });
-  assert.deepEqual(result, { threadId: parent, turnId: 'parent-turn', agentFeatures: {multi_agent:true,multi_agent_v2:true} });
+  assert.deepEqual(result, { threadId: parent, turnId: 'parent-turn', agentFeatures: {multi_agent:true,multi_agent_v2:true},
+    startedFreshThread: true, runtimeConfiguration: {model:null,serviceTier:null,approvalPolicy:null,legacySandboxType:null,requestedEffort:'high'} });
   const start = s.calls.find(call => call.method === 'thread/start');
   assert.equal(start.params.config['features.multi_agent'], undefined);
   assert.equal(start.params.config['agents.stnl_validation_runner.config_file'], undefined);
@@ -1641,6 +1689,20 @@ function wire(t, options = {}) {
   t.after(() => { rpc.close(); input.destroy(); output.destroy(); diagnostics.destroy(); });
   return { input, output, diagnostics, rpc, sent };
 }
+
+test('measurement notifications retain only typed counters and lifecycle identity',t=>{
+  const w=wire(t),received=[],subscription=w.rpc.observeMeasurements(value=>received.push(value));
+  const total={totalTokens:12,inputTokens:10,cachedInputTokens:3,cacheWriteInputTokens:0,outputTokens:2,reasoningOutputTokens:1};
+  w.input.write(JSON.stringify({method:'thread/tokenUsage/updated',params:{threadId:parent,turnId:'turn-one',
+    tokenUsage:{total,last:total,modelContextWindow:1000},secret:'private-token-secret'}})+'\n');
+  w.input.write(JSON.stringify({method:'turn/completed',params:{threadId:parent,turn:{id:'turn-one',status:'completed',
+    items:[{text:'private-prompt-secret'}],error:{message:'private-error-secret'}}}})+'\n');
+  assert.equal(received.length,2);assert.deepEqual(received[0].tokenUsage.total,total);
+  assert.equal(received[1].status,'completed');assert.doesNotMatch(JSON.stringify(received),/private-/u);
+  assert.equal(w.sent.length,0,'measurement must not issue any RPC request');
+  subscription.close();w.input.write(JSON.stringify({method:'turn/started',params:{threadId:parent,turn:{id:'other'}}})+'\n');
+  assert.equal(received.length,2);
+});
 
 for (const [name, value, expected] of [
   ['method', { code: -32601, message: 'Method not found: private-method' }, { code: -32601, description: 'method not found' }],

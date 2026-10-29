@@ -16,6 +16,7 @@ import { publishPreparationCandidate } from '../../skills/workflows/stnl-executi
 import { inspectCurrentExecution } from '../../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import { begin, normalizeSuccessor, reserveDispatch, bindNative, verifyNative, captureNative, publish, resume } from
   '../../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import { projectAppServerMeasurement } from '../../agents/codex/runtime/usage-accounting.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const checkSource = `import test from 'node:test';import assert from 'node:assert/strict';
@@ -33,6 +34,24 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
   let interrupted = false;
   let preparation = null;
   let retainedPlanReturn = null;
+  let measurementObserver = null;
+  const measuredTurns = new Set(), usageTotals = new Map();
+  function emitMeasurement(thread, turn) {
+    if (fault === 'usage-none' || fault === 'usage-missing-child' && thread.parentThreadId) return;
+    const key = `${thread.id}:${turn.id}`;
+    if (measuredTurns.has(key)) return; measuredTurns.add(key);
+    const previous = usageTotals.get(thread.id) ?? 0, input = previous + 10;
+    usageTotals.set(thread.id, input);
+    const total = { inputTokens: input, cachedInputTokens: input / 2, cacheWriteInputTokens: 0,
+      outputTokens: input / 5, reasoningOutputTokens: 0, totalTokens: input * 6 / 5 };
+    const last = { inputTokens: 10, cachedInputTokens: 5, cacheWriteInputTokens: 0,
+      outputTokens: 2, reasoningOutputTokens: 0, totalTokens: 12 };
+    const usage = projectAppServerMeasurement({ method: 'thread/tokenUsage/updated',
+      params: { threadId: thread.id, turnId: turn.id, tokenUsage: { total, last, modelContextWindow: 200000 } } });
+    measurementObserver?.(usage); measurementObserver?.(usage); // repeated unchanged rate-limit snapshot
+    measurementObserver?.(projectAppServerMeasurement({ method: 'turn/completed',
+      params: { threadId: thread.id, turn: { id: turn.id, status: turn.status } } }));
+  }
   function command(items, result) { items.push({ id: randomUUID(), type: 'commandExecution', status: 'completed',
     exitCode: 0, aggregatedOutput: JSON.stringify(result) }); }
   async function authored(operation, prompt, thread, turn) {
@@ -50,6 +69,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       for (let i = 1; i < turns; i++) child.turns.push({ ...structuredClone(childTurn), id: randomUUID() });
       if (nested) auxiliary(child, childTurn);
       for (const [index, completed] of child.turns.entries()) {
+        emitMeasurement(child, completed);
         if (index) parentTurn.items.push({ id: randomUUID(), type: 'subAgentActivity', kind: 'interacted', agentPath, agentThreadId: id });
         parentTurn.items.push({ id: `subagent-completed-${completed.id}`, type: 'subAgentActivity', kind: 'completed', agentPath, agentThreadId: id });
       }
@@ -260,6 +280,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
             status:fault==='pre-verification-inspection-failure'?'failed':'completed',exitCode:fault==='pre-verification-inspection-failure'?1:0,
             aggregatedOutput:'Synthetic discovery only; no command executed by this fixture.',commandActions:[]}]:[]),
           {id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Arbitrary initialization; no verification yet.'}]});
+        emitMeasurement(child,child.turns.at(-1));
         turn.items.push({id:randomUUID(),type:'subAgentActivity',kind:'completed',agentPath,agentThreadId:childId});
         const eventPath=/record in (.+?); match binding\.agentPath/u.exec(prompt)?.[1];
         const deadline=Date.now()+10000;let admittedContinuation;
@@ -329,6 +350,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       if(continuing)Object.assign(child.turns.at(-1),{status:'completed',items:[{id:randomUUID(),type:'commandExecution',command:'node verificationHelper verify-native --origin-file originFile',cwd:workspace,status:'completed',exitCode:0,aggregatedOutput:JSON.stringify(measured)},{id:randomUUID(),type:'agentMessage',phase:'final_answer',text}]});
       else child.turns.push({ id: randomUUID(), status: 'completed', error: null, itemsView: 'full',
         items: [{ id: randomUUID(), type: 'commandExecution', command: `cat -- '${path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml').replaceAll("'", "'\\''")}'`, cwd: workspace, status: 'completed', exitCode: 0, aggregatedOutput: await fs.readFile(path.join(snapshot, 'agents/codex/.codex/agents/stnl_validation_runner.toml'), 'utf8') }, { id: randomUUID(), type: 'agentMessage', phase: 'final_answer', text }] });
+      emitMeasurement(child, child.turns.at(-1));
       if(fault==='formal-observe-inventory'&&operation==='EXECUTE_SLICE'||fault==='formal-observe-wait-timeout')child.turns[0].items.splice(1,0,{id:randomUUID(),type:'collabAgentToolCall',tool:fault==='formal-observe-inventory'?'listAgents':'wait',status:'completed',senderThreadId:childId,receiverThreadIds:[],prompt:null,model:null,reasoningEffort:null,agentsStates:{}});
       if (fault === 'grandchildren' && operation === 'EXECUTE_SLICE') child.turns[0].items.push(...[1, 2].map(index => ({
         id: randomUUID(), type: 'subAgentActivity', kind: 'started', agentPath: `${agentPath}/extra-${index}`, agentThreadId: randomUUID() })));
@@ -379,6 +401,8 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
     // After the manager returns, join only work already started by this fixture.
     // This neither starts turns nor settles/refunds the manager's uncertain ledger.
     async settled() { await Promise.all(startedWork); }, rpc: {
+    observeMeasurements(callback) { measurementObserver = callback;
+      return { failed: false, close() { measurementObserver = null; } }; },
     notify() {},
     async request(method, params) {
       calls.push({ method, params: structuredClone(params) });
@@ -395,9 +419,11 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       }
       if (method === 'thread/start') {
         const thread = { id: randomUUID(), cwd: workspace, cliVersion: '0.163.0', historyMode: 'paginated', parentThreadId: null, turns: [] };
-        threads.set(thread.id, thread); return { thread: structuredClone(thread) };
+        threads.set(thread.id, thread); return { thread: structuredClone(thread), model: params.model,
+          serviceTier: null, approvalPolicy: 'on-request', sandbox: { type: 'workspaceWrite' } };
       }
-      if (method === 'thread/resume' || method === 'thread/read') return { thread: structuredClone(threads.get(params.threadId)) };
+      if (method === 'thread/resume' || method === 'thread/read') return { thread: structuredClone(threads.get(params.threadId)),
+        model: params.model, serviceTier: null, approvalPolicy: 'on-request', sandbox: { type: 'workspaceWrite' } };
       if (method === 'turn/start') {
         const thread = threads.get(params.threadId), turn = { id: randomUUID(), status: 'inProgress', error: null, items: [], itemsView: 'full' };
         thread.turns.push(turn);
@@ -407,7 +433,8 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         const finish=async()=>{await authored(normalized,prompt,thread,turn);
           turn.status='completed';if(!turn.items.some(item=>item.type==='agentMessage'&&item.phase==='final_answer'))turn.items.push({id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Offline authored operation completed.'});
         };
-        const work = finish().catch(error=>{turn.status='failed';turn.error={message:error.message};});
+        const work = finish().catch(error=>{turn.status='failed';turn.error={message:error.message};})
+          .finally(() => emitMeasurement(thread, turn));
         startedWork.push(work);
         if(!automatic)await work;
         return { turn: structuredClone(turn) };

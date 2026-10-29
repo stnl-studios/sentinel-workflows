@@ -78,7 +78,7 @@ async function makeFixture() {
   await fs.writeFile(path.join(runRoot, 'case-a/raw.json'), JSON.stringify(raw));
   await fs.writeFile(path.join(runRoot, 'case-a/case-state.json'), JSON.stringify({ caseId: 'A', workspace, status: 'PASS', startedAt: now, endedAt: now,
     mainTurns: 1, runnerTurns: 0, finalizer: { exitCode: 0 }, operations: [{ evidencePath: '01-spec_init.json' }] }));
-  await fs.writeFile(path.join(runRoot, 'case-a/journal.json'), JSON.stringify({ events: [{ operation: 'SPEC_INIT', slice: null, childDispatches: [] }] }));
+  await fs.writeFile(path.join(runRoot, 'case-a/journal.json'), JSON.stringify({ events: [{ operation: 'SPEC_INIT', slice: null, childDispatches: [], durationMs: 0 }] }));
   for (const id of ['B', 'C']) {
     const dir = path.join(runRoot, `case-${id.toLowerCase()}`), selected = path.join(dir, 'workspace');
     await fs.mkdir(selected, { recursive: true });
@@ -134,6 +134,75 @@ try {
   assert.equal(await fs.readFile(first, 'utf8'), await fs.readFile(second, 'utf8'), 'report bytes must be deterministic');
   const report = JSON.parse(await fs.readFile(first, 'utf8'));
   validateMeasurementReport(report);
+  assert.equal(report.measurement.status, 'complete');
+  const nativeReport = structuredClone(report); delete nativeReport.measurement;
+  nativeReport.provenance.runtimeVersions = { sdk: '0.163.0', cli: '0.163.0' };
+  nativeReport.cases[0].provider = 'app-server-0.163.0';
+  nativeReport.cases[0].childRuntimeConfiguration = [];
+  nativeReport.cases[0].runtimeConfiguration = [{ operation: 'SPEC_INIT', requestedModel: 'gpt-6.1-sol', requestedEffort: 'medium',
+    acknowledged: { model: 'gpt-6.1-sol', serviceTier: 'unspecified', approvalPolicy: 'on-request', legacySandboxType: 'workspaceWrite', requestedEffort: 'medium' } }];
+  validateMeasurementReport(nativeReport, { qualify: true });
+  for (const key of ['model','serviceTier','approvalPolicy','legacySandboxType','requestedEffort','all']) {
+    const broken = structuredClone(nativeReport);
+    if (key === 'all') broken.cases[0].runtimeConfiguration[0].acknowledged = {};
+    else delete broken.cases[0].runtimeConfiguration[0].acknowledged[key];
+    assert.throws(() => validateMeasurementReport(broken, { qualify: true }), /measurement incomplete/u, `missing ACK ${key}`);
+  }
+  for (const field of ['model','serviceTier','approvalPolicy','legacySandboxType']) {
+    const different = structuredClone(nativeReport);
+    different.cases[0].runtimeConfiguration[0].acknowledged[field] = { model: 'gpt-6-luna', serviceTier: 'fast',
+      approvalPolicy: 'never', legacySandboxType: 'dangerFullAccess' }[field];
+    assert.equal(compareMeasurements(nativeReport, different).directlyComparable, false, `changed observed ${field} cannot silently compare`);
+  }
+  for (const value of [null, {}, { ...nativeReport.cases[0].runtimeConfiguration[0], operation: null }]) {
+    const broken=structuredClone(nativeReport);broken.cases[0].runtimeConfiguration=[value];
+    assert.throws(()=>validateMeasurementReport(broken,{qualify:true}),/measurement incomplete/u);
+    assert.equal(compareMeasurements(broken,broken).directlyComparable,false,'corrupt ACK remains a diagnostic, never a TypeError or PASS');
+  }
+  const childReport=structuredClone(nativeReport);
+  childReport.cases[0].runnerTurns=1;childReport.aggregate.runnerTurns=1;
+  childReport.cases[0].telemetry.runner=structuredClone(childReport.cases[0].telemetry.main);
+  childReport.aggregate.telemetry.runner=structuredClone(childReport.aggregate.telemetry.main);
+  childReport.cases[0].telemetry.coverage.runner='1/1';childReport.aggregate.telemetry.coverage.runner='1/1';
+  childReport.cases[0].childRuntimeConfiguration=[{operation:'SPEC_INIT',model:'gpt-6-luna',effort:'medium'}];
+  validateMeasurementReport(childReport,{qualify:true});
+  for(const value of [null,{}, {model:'gpt-6-luna',effort:'medium'}, {operation:'FOREIGN',model:'gpt-6-luna',effort:'medium'}]) {
+    const broken=structuredClone(childReport);broken.cases[0].childRuntimeConfiguration=[value];
+    assert.throws(()=>validateMeasurementReport(broken,{qualify:true}),/measurement incomplete/u);
+    assert.equal(compareMeasurements(broken,broken).directlyComparable,false);
+  }
+  const changedChild=structuredClone(childReport);changedChild.cases[0].childRuntimeConfiguration[0].model='gpt-6.1-sol';
+  assert.equal(compareMeasurements(childReport,changedChild).directlyComparable,false,'observed child model affects comparability');
+  const versionChange = structuredClone(nativeReport); versionChange.provenance.runtimeVersions.cli = '0.164.0';
+  assert.equal(compareMeasurements(nativeReport, versionChange).directlyComparable, false);
+  for (const role of ['main', 'runner']) {
+    const missing = structuredClone(report);
+    delete missing.measurement;
+    if (role === 'runner') {
+      missing.cases[0].runnerTurns = 1;
+      missing.aggregate.runnerTurns = 1;
+    }
+    missing.cases[0].telemetry[role] = UNAVAILABLE;
+    missing.cases[0].telemetry.coverage[role] = '0/1';
+    missing.aggregate.telemetry[role] = UNAVAILABLE;
+    missing.aggregate.telemetry.coverage[role] = '0/1';
+    validateMeasurementReport(missing); // Diagnostic evidence remains readable.
+    assert.throws(() => validateMeasurementReport(missing, { qualify: true }),
+      /measurement incomplete/u, `functional PASS must not qualify without ${role} consumption`);
+  }
+  for (const [name, mutate] of [
+    ['missing phase time', value => { value.cases[0].operationDurations[0].durationMs = UNAVAILABLE; }],
+    ['case time cannot replace wall time', value => { value.aggregate.wallDurationMs += 1; }],
+    ['negative usage', value => { value.cases[0].telemetry.main.input = -1; }],
+    ['cached input is a subset', value => { value.cases[0].telemetry.main.cachedInput = 101; }],
+    ['foreign aggregate', value => { value.aggregate.telemetry.main.input += 1; }],
+    ['missing case', value => { value.cases.pop(); }],
+  ]) {
+    const invalid = structuredClone(report); delete invalid.measurement; mutate(invalid);
+    assert.throws(() => validateMeasurementReport(invalid, { qualify: true }), /measurement incomplete|complete passing case scope/u, name);
+  }
+  const reordered = structuredClone(report); reordered.measurement = { missing: [], status: 'complete' };
+  validateMeasurementReport(reordered, { qualify: true });
   const official=path.join(root,'benchmarks/sentinel-todo/measurements');
   await fs.mkdir(official,{recursive:true});
   const historyBefore=await fs.readdir(official);
@@ -216,18 +285,81 @@ try {
   const unknownCapacity = await exportMeasurement(runId);
   assert.equal(unknownCapacity.cases[0].telemetry.coverage.main, '1/2');
   assert.equal(unknownCapacity.cases[0].telemetry.main.input, UNAVAILABLE);
+  assert.equal(unknownCapacity.measurement.status, 'incomplete');
+  assert.ok(unknownCapacity.measurement.missing.includes('case A main coverage'));
+  await assert.rejects(publishMeasurement(unknownCapacity, { root: path.join(temp, 'unknown-capacity') }), /measurement incomplete/u);
+  await Promise.all(retryFiles.map((file, index) => fs.writeFile(path.join(runRoot, file), retryOriginals[index])));
+  const childEvidence = JSON.parse(retryOriginals[0]);
+  const childState = { ...JSON.parse(retryOriginals[1]), runnerTurns: 1 };
+  const childSummary = JSON.parse(retryOriginals[2]); childSummary.cases.A.runnerTurns = 1;
+  await fs.writeFile(path.join(runRoot, retryFiles[1]), JSON.stringify(childState));
+  await fs.writeFile(path.join(runRoot, retryFiles[2]), JSON.stringify(childSummary));
+  const missingChild = await exportMeasurement(runId);
+  assert.equal(missingChild.cases[0].telemetry.coverage.runner, '0/1');
+  assert.equal(missingChild.measurement.status, 'incomplete');
+  const childUsage = { status: 'attributable', source: 'runner', eventId: 'synthetic-child-turn',
+    threadId: 'synthetic-child', segment: 'first-turn',
+    delta: { input: 25, cachedInput: 5, output: 4, reasoningOutput: 1 } };
+  childEvidence.runner = { usageObservations: [childUsage, structuredClone(childUsage)] };
+  await fs.writeFile(path.join(runRoot, retryFiles[0]), JSON.stringify(childEvidence));
+  const duplicateChild = await exportMeasurement(runId);
+  assert.equal(duplicateChild.measurement.status, 'complete');
+  assert.equal(duplicateChild.cases[0].telemetry.runner.input, 25, 'replay must not double count a child');
+  childEvidence.runner.usageObservations.push({ ...structuredClone(childUsage), status: 'duplicate',
+    delta: { input: 0, cachedInput: 0, output: 0, reasoningOutput: 0, cacheWrite: 0, total: 0 } });
+  await fs.writeFile(path.join(runRoot, retryFiles[0]), JSON.stringify(childEvidence));
+  const zeroDuplicate = await exportMeasurement(runId);
+  assert.equal(zeroDuplicate.measurement.status, 'complete');
+  assert.equal(zeroDuplicate.cases[0].telemetry.runner.input, 25);
+  childEvidence.runner.usageObservations[1].delta.input = 26;
+  await fs.writeFile(path.join(runRoot, retryFiles[0]), JSON.stringify(childEvidence));
+  const conflictingChild = await exportMeasurement(runId);
+  assert.equal(conflictingChild.measurement.status, 'incomplete', 'same observation identity cannot carry conflicting usage');
+  await assert.rejects(publishMeasurement(conflictingChild, { root: path.join(temp, 'conflicting-child') }), /measurement incomplete/u);
+  for (const [label, values] of [
+    ['late conflict', [...childEvidence.runner.usageObservations].reverse()],
+    ['cache conflict', [childUsage, { ...structuredClone(childUsage), delta: { ...childUsage.delta, cachedInput: 6 } }]],
+    ['nonzero duplicate label', [childUsage, { ...structuredClone(childUsage), status: 'duplicate' }]],
+    ['unknown source', [{ ...childUsage, source: 'unknown' }]],
+    ['unknown identity', [{ ...childUsage, eventId: null, threadId: null, segment: null }]],
+    ['cache absent', [{ ...childUsage, delta: { input: 25, output: 4 } }]],
+    ['malformed observation list', { privateTextMustNotBeExported: 'untrusted-usage-secret' }],
+  ]) {
+    childEvidence.runner.usageObservations = values;
+    await fs.writeFile(path.join(runRoot, retryFiles[0]), JSON.stringify(childEvidence));
+    const incomplete = await exportMeasurement(runId);
+    assert.equal(incomplete.measurement.status, 'incomplete', label);
+    assert.throws(() => validateMeasurementReport(incomplete, { qualify: true }), /measurement incomplete/u, label);
+    assert.equal(JSON.stringify(incomplete).includes('untrusted-usage-secret'), false, 'malformed usage payload is not exported');
+  }
+  childEvidence.runner.usageObservations = [childUsage,
+    { ...structuredClone(childUsage), eventId: 'another-child-turn', threadId: 'another-child' }];
+  await fs.writeFile(path.join(runRoot, retryFiles[0]), JSON.stringify(childEvidence));
+  await fs.writeFile(path.join(runRoot, retryFiles[1]), JSON.stringify({ ...childState, runnerTurns: 2 }));
+  childSummary.cases.A.runnerTurns = 2;
+  await fs.writeFile(path.join(runRoot, retryFiles[2]), JSON.stringify(childSummary));
+  const independentChildren = await exportMeasurement(runId);
+  assert.equal(independentChildren.measurement.status, 'complete');
+  assert.equal(independentChildren.cases[0].telemetry.runner.input, 50, 'equal counters on distinct calls are not a replay');
+  childEvidence.capacityRetry = { attempts: { privateTextMustNotBeExported: 'untrusted-usage-secret' } };
+  await fs.writeFile(path.join(runRoot, retryFiles[0]), JSON.stringify(childEvidence));
+  const malformedRetry = await exportMeasurement(runId);
+  assert.equal(malformedRetry.measurement.status, 'incomplete');
+  assert.equal(JSON.stringify(malformedRetry).includes('untrusted-usage-secret'), false);
   await Promise.all(retryFiles.map((file, index) => fs.writeFile(path.join(runRoot, file), retryOriginals[index])));
   assert.equal(report.provenance.baseSha, 'fixture-base');
   assert.equal(report.cases[0].provider, UNAVAILABLE);
-  assert.equal(report.cases[0].operationDurations[0].durationMs, UNAVAILABLE);
+  assert.equal(report.cases[0].operationDurations[0].durationMs, 0);
   assert.equal(compareMeasurements(report, report).deltas.g3.mainInputTokens, 0);
   const unavailable = structuredClone(report); unavailable.aggregate.telemetry.runner = UNAVAILABLE;
   validateMeasurementReport(unavailable);
   assert.equal(compareMeasurements(unavailable, unavailable).deltas.g3.runnerInputTokens, UNAVAILABLE);
   const partial = structuredClone(report); partial.aggregate.telemetry.main.input = UNAVAILABLE;
-  assert.equal(compareMeasurements(partial, partial).deltas.g3.mainInputTokens, UNAVAILABLE);
+  delete partial.measurement;
+  assert.equal(compareMeasurements(partial, partial).deltas, UNAVAILABLE);
   const partialCoverage = structuredClone(report); partialCoverage.aggregate.telemetry.coverage.main = '0/1';
-  assert.equal(compareMeasurements(report, partialCoverage).deltas.g3.mainInputTokens, UNAVAILABLE);
+  delete partialCoverage.measurement;
+  assert.equal(compareMeasurements(report, partialCoverage).deltas, UNAVAILABLE);
   const profileOnly = structuredClone(report); profileOnly.comparability.profile = 'other-profile'; profileOnly.run.profile = 'other-profile';
   assert.equal(compareMeasurements(report, profileOnly, true).profileExperiment, true);
   const incompatible = structuredClone(profileOnly); incompatible.comparability.metricDefinitions = 'changed';
@@ -368,7 +500,26 @@ try {
   assert.equal(resumed.cases[0].operations, 10);
   assert.equal(resumed.cases[0].execution, 'COMPLETE'); assert.equal(resumed.cases[0].specClosed, true);
   assert.equal(resumed.cases[0].finalizer, 'PASS');
-  const resumedSaved = await publishMeasurement(resumed, { root: path.join(temp, 'resumed'), updateLatest: false });
+  assert.equal(resumed.measurement.status, 'incomplete', 'replaying one proof does not measure ten calls');
+  await assert.rejects(publishMeasurement(resumed, { root: path.join(temp, 'resumed-incomplete'), updateLatest: false }),
+    /measurement incomplete/u);
+  // Keep the positive pointer/publication check, with ten explicitly distinct
+  // synthetic observations rather than multiplying a replayed event.
+  const completeState = structuredClone(resumedState);
+  for (let index = 0; index < 10; index++) {
+    const evidencePath = `synthetic-resume-${index}.json`;
+    completeState.operations[index].evidencePath = evidencePath;
+    await fs.writeFile(path.join(runRoot, 'case-a', evidencePath), JSON.stringify({
+      turn: { usageObservation: { status: 'attributable', source: 'main', eventId: `resume-main-${index}`,
+        delta: { input: 100, output: 20, cachedInput: 10, reasoningOutput: 5 } } },
+    }));
+  }
+  await fs.writeFile(stateFile, JSON.stringify(completeState));
+  await fs.writeFile(journalFile, JSON.stringify({ ...resumedJournal,
+    events: resumedJournal.events.map(event => ({ ...event, durationMs: 0 })) }));
+  const resumedComplete = await exportMeasurement(runId);
+  assert.equal(resumedComplete.measurement.status, 'complete');
+  const resumedSaved = await publishMeasurement(resumedComplete, { root: path.join(temp, 'resumed'), updateLatest: false });
   assert.equal(JSON.parse(await fs.readFile(resumedSaved.historyPath, 'utf8')).cases[0].operations, 10);
   assert.deepEqual(await fs.readFile(rawPath), focalRawBytes, 'first focal raw remains historical evidence');
   assert.deepEqual(await fs.readFile(resumedRawPath), resumedRawBytes, 'current raw remains immutable');
