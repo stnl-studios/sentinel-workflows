@@ -5,7 +5,7 @@
   "supportedRunModes": ["focal", "case", "full"],
   "campaign": { "fullRuns": 3 },
   "turnBudget": {
-    "maxTurnsPerRun": 100
+    "maxTurnsPerRun": null
   },
   "schemaVersions": {
     "journal": 2,

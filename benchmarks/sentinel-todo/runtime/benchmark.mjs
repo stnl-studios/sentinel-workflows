@@ -140,6 +140,10 @@ function assertManifest(configuration) {
   if (!Number.isSafeInteger(configuration.campaign?.fullRuns) || configuration.campaign.fullRuns < 1) {
     throw new CliError('campaign.fullRuns must be a positive integer');
   }
+  const turnLimit = configuration.turnBudget?.maxTurnsPerRun;
+  if (turnLimit !== null && (!Number.isSafeInteger(turnLimit) || turnLimit < 1)) {
+    throw new CliError('turnBudget.maxTurnsPerRun must be null or a positive integer');
+  }
   if (configuration.benchmarkId !== 'sentinel-todo' || configuration.benchmarkVersion !== 1) {
     throw new CliError('manifest benchmark identity is invalid');
   }

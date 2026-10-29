@@ -84,7 +84,7 @@ async function atomicJson(file, value) {
 async function readJson(file) { return JSON.parse(await fs.readFile(file, 'utf8')); }
 function ledgerPath(runRoot) { return path.join(runRoot, '.turn-ledger.json'); }
 export async function initializeTurnBudget(runRoot, limit) {
-  if (!Number.isSafeInteger(limit) || limit < 1) fail('turn budget limit must be a positive integer');
+  if (limit !== null && (!Number.isSafeInteger(limit) || limit < 1)) fail('turn budget limit must be null or a positive integer');
   await atomicJson(ledgerPath(runRoot), { version: 1, limit, total: 0,
     nextNumber: 0, reservations: [], turns: [] });
 }
@@ -93,7 +93,7 @@ export async function budgetSnapshot(runRoot) {
   if (!ledger) return { turnBudget: { limit: null, consumed: null, remaining: null, mainTurns: null, runnerTurns: null } };
   const dispatched = ledger.turns.filter((turn) => turn.state !== 'not_dispatched');
   return { turnBudget: { limit: ledger.limit, consumed: ledger.total,
-    remaining: ledger.limit - ledger.total - (ledger.reservations?.length ?? 0),
+    remaining: ledger.limit === null ? null : ledger.limit - ledger.total - (ledger.reservations?.length ?? 0),
     mainTurns: dispatched.filter((turn) => turn.role === 'main').length,
     runnerTurns: dispatched.filter((turn) => turn.role === 'runner').length } };
 }
@@ -152,7 +152,10 @@ async function updateLedger(runRoot, mutator, limit) {
   ledgerWrite = job.catch(() => {});
   return job;
 }
-function availableTurns(ledger) { return ledger.limit - ledger.total - ledger.reservations.length; }
+function availableTurns(ledger) {
+  return ledger.limit === null ? Number.POSITIVE_INFINITY
+    : ledger.limit - ledger.total - ledger.reservations.length;
+}
 export { operationalCorrectionUsage } from './native-evidence.mjs';
 const MAX_OPERATIONAL_CORRECTIONS = 4;
 function assertOperationalCorrections(turns,scope) {
@@ -650,7 +653,7 @@ export function settledNativeCase(state, ledger) {
 export async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal,
   resume = false, beforeOperation = null, reportTerminal = null }) {
   const policy = contextPolicy(configuration), turnLimit = configuration.turnBudget?.maxTurnsPerRun;
-  if (!Number.isSafeInteger(turnLimit) || turnLimit < 1) fail('invalid per-run turn budget');
+  if (turnLimit !== null && (!Number.isSafeInteger(turnLimit) || turnLimit < 1)) fail('invalid per-run turn budget');
   const caseRoot = path.join(runRoot, caseName(caseId)), workspace = path.join(caseRoot, 'workspace');
   const candidates = path.join(caseRoot, 'candidates'), prompts = path.join(caseRoot, 'prompts');
   const caseConfiguration = configuration.cases.find(item => item.id === caseId);
@@ -1100,7 +1103,7 @@ async function run(options) {
     }
     const configuration = await readJson(MANIFEST);
     const turnLimit = configuration.turnBudget?.maxTurnsPerRun;
-    if (!Number.isSafeInteger(turnLimit) || turnLimit < 1) fail('benchmark turnBudget.maxTurnsPerRun must be a positive integer');
+    if (turnLimit !== null && (!Number.isSafeInteger(turnLimit) || turnLimit < 1)) fail('benchmark turnBudget.maxTurnsPerRun must be null or a positive integer');
     if (options.resumeId) {
       if (!await exists(ledgerPath(runRoot))) fail('run turn budget ledger is missing; this focal run cannot be resumed safely');
     } else {

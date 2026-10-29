@@ -536,6 +536,24 @@ test('fresh per-run budget starts at zero and safely admits concurrent B/C turns
   await assert.rejects(fs.lstat(path.join(root, '.turn-ledger.json')), { code: 'ENOENT' });
 });
 
+test('explicit null turn budget stays unlimited while the ledger counts every dispatched turn', async (t) => {
+  const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-unlimited-budget-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await initializeTurnBudget(root, null);
+  for (let index = 0; index < 101; index += 1) {
+    const admission = await admitOperation({ runRoot: root, runId: 'run-unlimited', caseId: 'A',
+      operation: 'PLAN', runnerRequired: false, runnerSlots: 0, auxiliaryLimit: 0, limit: null });
+    const number = await startReservedTurn(root, admission.main, null);
+    await settleTurn(root, number, { completed: true, turnStarted: true, threadId: `thread-${number}` }, null);
+  }
+  assert.deepEqual((await budgetSnapshot(root)).turnBudget,
+    { limit: null, consumed: 101, remaining: null, mainTurns: 101, runnerTurns: 0 });
+  const ledger = JSON.parse(await fs.readFile(path.join(root, '.turn-ledger.json'), 'utf8'));
+  assert.equal(ledger.total, 101);
+  assert.equal(ledger.turns.length, 101);
+  assert.equal(ledger.reservations.length, 0);
+});
+
 test('terminal barrier is rechecked inside serialized admission before creating reservations', async t => {
   const root = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'sentinel-admission-race-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

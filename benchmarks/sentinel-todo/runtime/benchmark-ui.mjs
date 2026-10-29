@@ -47,7 +47,8 @@ function counts(event) {
   const values = [];
   if (Number.isFinite(main) || Number.isFinite(runner)) values.push(`main ${Number.isFinite(main) ? main : '?'} / runner ${Number.isFinite(runner) ? runner : '?'}`);
   if (Number.isFinite(budget?.consumed) || Number.isFinite(budget?.limit)) {
-    values.push(`budget ${Number.isFinite(budget.consumed) ? budget.consumed : '?'} / ${Number.isFinite(budget.limit) ? budget.limit : '?'}${Number.isFinite(budget.remaining) ? ` (${budget.remaining} left)` : ''}`);
+    const limit = budget.limit === null ? 'unlimited' : Number.isFinite(budget.limit) ? budget.limit : '?';
+    values.push(`budget ${Number.isFinite(budget.consumed) ? budget.consumed : '?'} / ${limit}${Number.isFinite(budget.remaining) ? ` (${budget.remaining} left)` : ''}`);
   }
   return values.join(' · ');
 }
