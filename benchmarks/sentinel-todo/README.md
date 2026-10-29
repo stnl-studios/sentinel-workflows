@@ -25,7 +25,8 @@ npm run benchmark:campaign
 Both entrypoints use `campaign.fullRuns` (default **3**) and accept an explicit
 positive integer override, for example `npm run benchmark -- --runs 1` or
 `npm run benchmark:campaign -- --runs 2`. Invalid, duplicated and unknown
-arguments are rejected before preparation or dispatch. Each FULL retains the
+arguments are rejected before preparation or dispatch. The functional entrypoint
+is additionally capped at three FULLs by the approved campaign budget. Each FULL retains the
 manager's A-first, then B/C policy. A terminal B/C failure blocks admission of
 later sibling operations. An already admitted operation settles under its original
 deadline; this cooperative stop does not cancel its observation or invent a result.
@@ -46,11 +47,24 @@ Both entrypoints retain per-run reports and campaign state in ignored
 `benchmark-temp/campaign-<id>/` (functional campaigns use `campaign-functional-<id>`).
 Failed, interrupted or incomplete campaigns preserve their raw diagnostics and
 cost ledgers there; they do not publish individual reports into official history.
-Only after **N/N** coherent qualifying PASS FULLs does the existing atomic
-promotion create `measurements/<campaign-id>/` with all compact reports and its
-campaign summary. Existing history, including legacy `latest.json`/`latest.md`,
-is preserved; the returned measurement path identifies the new campaign.
-A failure before a run exists does not invent a measurement.
+The `--functional` entrypoint can accept coherent PASS A/B/C FULLs while
+reporting measurement completeness separately, but functional campaign
+acceptance still requires at least the configured **3/3** passing FULLs on one
+candidate. An explicit `--runs 1` is only one completed round; it returns
+`FUNCTIONAL_ROUND_PASS`, remains pending and is not promoted. When expected usage or other
+measurement dimensions are missing, it returns `FUNCTIONAL_PASS`, keeps reports
+and explicit missing dimensions under `benchmark-temp`, and does not promote
+them into official measurements. G3 campaign distributions are `unavailable`;
+per-run reports retain only observed values. This does not qualify a complete
+benchmark or imply savings.
+
+The formal entrypoint and fully measured functional campaigns still require
+complete measurements. Only after at least three coherent passing FULLs and
+complete measurement evidence does atomic promotion create
+`measurements/<campaign-id>/`. Existing history, including legacy
+`latest.json`/`latest.md`, is preserved; the returned measurement path
+identifies the new campaign. A failure before a run exists does not invent a
+measurement.
 
 The formal entrypoint additionally requires a clean local Git candidate.
 HEAD need not already be pushed; a cached
@@ -81,13 +95,14 @@ workflow authority.
 
 ## Functional baseline
 
-### Required measurement evidence for U3.18
+### Measurement evidence for a complete benchmark
 
 Functional execution, formal judgment, product oracle and measurement completeness
-are separate results. Aj's complete benchmark acceptance requires consumption;
-an ABC functional success with unavailable usage is not a qualified FULL. Keep
-historical outputs unchanged and label them as functional evidence with missing
-metrics. A diagnostic export retains the functional result and reports
+are separate results. Complete benchmark qualification still requires
+consumption. The approved P1-B functional acceptance gate requires A/B/C
+product/oracle results but permits a separately labeled incomplete measurement.
+Keep historical outputs unchanged and label incomplete results as functional
+evidence with missing metrics. A diagnostic export retains the functional result and reports
 `measurement.status: incomplete` with missing dimensions. It cannot be published
 or used to certify savings. Missing values never become zero.
 
@@ -261,9 +276,9 @@ of the provider's reported model.
 | Phase | A | B | C |
 | --- | --- | --- | --- |
 | SPEC | GPT-6.1-Sol / medium | GPT-6.1-Sol / high | GPT-6-Astra / high |
-| PLAN | GPT-6-Luna / high | GPT-6.1-Sol / medium | GPT-6.1-Sol / high |
+| PLAN | GPT-6.1-Sol / medium | GPT-6.1-Sol / medium | GPT-6.1-Sol / high |
 | TASKS | GPT-6-Luna / high | GPT-6.1-Sol / medium | GPT-6.1-Sol / high |
-| EXECUTE / APPLY_FINDINGS | GPT-6-Luna / high | GPT-6-Luna / high | GPT-6.1-Sol / high |
+| EXECUTE / APPLY_FINDINGS | GPT-6.1-Sol / medium | GPT-6-Luna / high | GPT-6.1-Sol / high |
 | REVIEW / VALIDATE | GPT-6-Luna / high | GPT-6.1-Sol / medium | GPT-6-Astra / high |
 
 `SPEC_INIT` and `SPEC_CLOSE` use SPEC. `SPEC_READINESS` uses REVIEW / VALIDATE.

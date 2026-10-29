@@ -23,9 +23,9 @@
     "cases": {
       "A": {
         "SPEC": { "model": "GPT-6.1-Sol", "effort": "medium" },
-        "PLAN": { "model": "GPT-6-Luna", "effort": "high" },
+        "PLAN": { "model": "GPT-6.1-Sol", "effort": "medium" },
         "TASKS": { "model": "GPT-6-Luna", "effort": "high" },
-        "EXECUTE": { "model": "GPT-6-Luna", "effort": "high" },
+        "EXECUTE": { "model": "GPT-6.1-Sol", "effort": "medium" },
         "REVIEW_VALIDATE": { "model": "GPT-6-Luna", "effort": "high" }
       },
       "B": {

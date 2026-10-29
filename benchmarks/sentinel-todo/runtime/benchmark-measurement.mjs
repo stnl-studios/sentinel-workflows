@@ -547,7 +547,8 @@ export function validateMeasurementReport(report, options = {}) {
   const measured = measurementCompleteness(report);
   if (report.measurement && !isDeepStrictEqual(report.measurement, measured))
     throw Object.assign(new Error('invalid measurement report: declared measurement completeness differs'), { code: 'MEASUREMENT_INCOMPLETE' });
-  if (options.qualify && report.run.status === 'PASS' && ['full', 'case'].includes(report.run.mode)
+  if (options.qualify && options.requireCompleteMeasurement !== false
+    && report.run.status === 'PASS' && ['full', 'case'].includes(report.run.mode)
     && measured.status !== 'complete') throw Object.assign(new Error(`invalid measurement report: measurement incomplete (${measured.missing.join('; ')})`),
       { code: 'MEASUREMENT_INCOMPLETE' });
   return report;

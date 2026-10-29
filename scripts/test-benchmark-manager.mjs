@@ -304,6 +304,10 @@ async function isolatedManagerFixture(t) {
     'benchmark.mjs', 'benchmark-environment.mjs', 'product-acceptance.mjs', 'native-evidence.mjs', 'benchmark-measurement.mjs']) {
     await fs.copyFile(path.join(ROOT, 'benchmarks/sentinel-todo/runtime', name), path.join(runtime, name));
   }
+  const usageRuntime = path.join(root, 'agents/codex/runtime');
+  await fs.mkdir(usageRuntime, { recursive: true });
+  await fs.copyFile(path.join(ROOT, 'agents/codex/runtime/usage-accounting.mjs'),
+    path.join(usageRuntime, 'usage-accounting.mjs'));
   for (const name of ['seed', 'schemas', 'cases']) await fs.cp(path.join(ROOT, 'benchmarks/sentinel-todo', name),
     path.join(root, 'benchmarks/sentinel-todo', name), { recursive: true });
   await fs.copyFile(path.join(ROOT, 'benchmarks/sentinel-todo/benchmark.json'), path.join(root, 'benchmarks/sentinel-todo/benchmark.json'));

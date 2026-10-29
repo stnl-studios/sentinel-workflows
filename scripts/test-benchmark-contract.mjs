@@ -167,9 +167,9 @@ test('B09 — production profile v3 is current and dispatch enforcement is deter
     ['GPT-5.6-Sol', 'GPT-5.6-Terra', 'GPT-5.6-Luna', 'GPT-6-Luna', 'GPT-6.1-Sol', 'GPT-6-Astra']);
   assert.deepEqual(configuration.productionProfile.cases.A, {
     SPEC: { model: 'GPT-6.1-Sol', effort: 'medium' },
-    PLAN: { model: 'GPT-6-Luna', effort: 'high' },
+    PLAN: { model: 'GPT-6.1-Sol', effort: 'medium' },
     TASKS: { model: 'GPT-6-Luna', effort: 'high' },
-    EXECUTE: { model: 'GPT-6-Luna', effort: 'high' },
+    EXECUTE: { model: 'GPT-6.1-Sol', effort: 'medium' },
     REVIEW_VALIDATE: { model: 'GPT-6-Luna', effort: 'high' },
   });
   assert.deepEqual(configuration.productionProfile.cases.B, {

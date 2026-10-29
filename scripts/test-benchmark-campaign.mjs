@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { campaignSummary, runCampaign, runFunctionalBenchmark, parseCampaignArgs } from '../benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs';
 import { currentFunctionalIdentity } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 import { PRODUCT_CONTRACT, PRODUCT_CHECK_IDS, productInstrumentIdentity } from '../benchmarks/sentinel-todo/runtime/product-acceptance.mjs';
+import { measurementCompleteness } from '../benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE = 'benchmarks/sentinel-todo/baselines/baseline-v1.json';
@@ -363,6 +364,11 @@ async function functionalFixture(t, options = {}) {
     exportMeasurement: async (id) => {
       calls.push(`export-${id}`);
       const report = currentFixtureReport(baseline, manifest, id);
+      if (options.incompleteMeasurement) {
+        report.cases[0].telemetry.runner = 'unavailable';
+        report.aggregate.telemetry.runner = 'unavailable';
+        report.measurement = measurementCompleteness(report);
+      }
       report.run.status = options.blockRun === runs ? 'BLOCKED' : options.status ?? 'PASS';
       if (report.run.status !== 'PASS') {
         report.cases[0].status = report.run.status;
@@ -409,6 +415,32 @@ test('functional PASS without required qualification proof never reaches history
  await assert.rejects(runFunctionalBenchmark({root:f.root,hooks:f.hooks}),/productAcceptance/u);
  assert.equal(f.runs,1);await assert.rejects(fs.lstat(f.measurements),{code:'ENOENT'});
  assert.ok((await fs.stat(path.join(f.scratch,'run-functional-1'))).isDirectory());
+});
+
+test('functional 3/3 acceptance retains partial usage without qualifying or publishing a measurement', async t => {
+  const f = await functionalFixture(t, { plannedRuns: 3, incompleteMeasurement: true });
+  const result = await runFunctionalBenchmark({ root: f.root, hooks: f.hooks });
+  assert.equal(result.status, 'FUNCTIONAL_PASS');
+  assert.equal(result.completedRuns, 3);
+  assert.equal(result.requiredFunctionalRuns, 3);
+  assert.equal(result.measurements, null);
+  assert.equal(result.measurement.status, 'incomplete');
+  assert.ok(result.measurement.missing.some(item => item.includes('runner usage')));
+  const report = JSON.parse(await fs.readFile(path.join(result.evidence, 'run-01.json'), 'utf8'));
+  assert.equal(report.run.status, 'PASS');
+  assert.deepEqual(report.cases.map(row => [row.id, row.status]), [['A', 'PASS'], ['B', 'PASS'], ['C', 'PASS']]);
+  assert.equal(report.measurement.status, 'incomplete');
+  const summary = JSON.parse(await fs.readFile(path.join(result.evidence, 'campaign-summary.json'), 'utf8'));
+  assert.equal(summary.status, 'FUNCTIONAL_ACCEPTED');
+  assert.equal(summary.acceptance.functional, 'PASS');
+  assert.deepEqual(summary.acceptance.functionalRuns, { required: 3, completed: 3 });
+  assert.equal(summary.acceptance.measurement.status, 'incomplete');
+  assert.equal(summary.runs[0].measurementStatus, 'incomplete');
+  assert.ok(Object.values(summary.distribution.g3).every(value => value === 'unavailable'));
+  assert.equal(await fs.stat(f.measurements).then(() => true, () => false), false, 'partial metrics must not enter official measurements');
+  const next = await runFunctionalBenchmark({ root: f.root, hooks: f.hooks });
+  assert.equal(next.status, 'FUNCTIONAL_PASS', 'a retained functional acceptance is a settled scratch state');
+  assert.equal(f.runs, 6);
 });
 
 test('functional mode handles absent scratch and retains terminal history across invocations', async (t) => {
@@ -571,7 +603,7 @@ test('failure before run creation preserves qualified history without inventing 
 for (const mode of ['formal', 'functional']) {
   test(`${mode} N=3 and override N=2 sequence exactly N qualifying FULLs`, async t => {
     const create = mode === 'formal' ? fixture : functionalFixture;
-    for (const override of [undefined, 2]) {
+    for (const override of [undefined, 1, 2]) {
       const f = await create(t, { plannedRuns: 3 });
       const runFull = f.hooks.runFull;
       f.hooks.runFull = async (...args) => {
@@ -584,12 +616,24 @@ for (const mode of ['formal', 'functional']) {
       assert.equal(result.plannedRuns, override ?? 3);
       assert.equal(result.completedRuns, override ?? 3);
       if (mode === 'functional') {
-        assert.equal((await fs.readdir(f.measurements)).length,1);
-        assert.ok(result.measurements.startsWith(f.measurements+path.sep));
         const dirs = (await fs.readdir(f.scratch)).filter(name => name.startsWith('campaign-'));
         const summary = JSON.parse(await fs.readFile(path.join(f.scratch, dirs[0], 'campaign-summary.json')));
         assert.equal(summary.completedRuns, override ?? 3);
         assert.equal(summary.comparability, 'unavailable');
+        if ((override ?? 3) < 3) {
+          assert.equal(result.status, 'FUNCTIONAL_ROUND_PASS');
+          assert.equal(result.functionalAcceptance, 'PENDING');
+          assert.deepEqual(summary.acceptance.functionalRuns, { required: 3, completed: override });
+          assert.equal(summary.acceptance.functional, 'PENDING');
+          assert.ok(Object.values(summary.distribution.g2).every(value => value === 'unavailable'));
+          assert.ok(Object.values(summary.distribution.g3).every(value => value === 'unavailable'));
+          assert.equal(await fs.stat(f.measurements).then(() => true, () => false), false);
+        } else {
+          assert.equal(result.status, 'PASS');
+          assert.equal(summary.acceptance.functional, 'PASS');
+          assert.equal((await fs.readdir(f.measurements)).length,1);
+          assert.ok(result.measurements.startsWith(f.measurements+path.sep));
+        }
       }
     }
   });
@@ -600,11 +644,12 @@ test('repository default is N=3 and CLI override is parsed before dispatch', () 
   assert.deepEqual(parseCampaignArgs(['--functional']), { mode: 'functional' });
   assert.deepEqual(parseCampaignArgs(['--runs', '2']), { mode: 'campaign', runs: 2 });
   assert.deepEqual(parseCampaignArgs(['--functional', '--runs', '1']), { mode: 'functional', runs: 1 });
+  assert.throws(() => parseCampaignArgs(['--functional', '--runs', '4']), /usage:/u);
 });
 
 for (const argv of [['--runs'], ['--runs', '0'], ['--runs', '-1'], ['--runs', '1.5'], ['--runs', 'Infinity'],
   ['--runs', '9007199254740992'], ['--runs', '2', '--runs', '3'], ['--unknown'],
-  ['--functional', '--functional'], ['--functional', '--runs', '2', '--runs', '1']]) {
+  ['--functional', '--functional'], ['--functional', '--runs', '2', '--runs', '1'], ['--functional', '--runs', '4']]) {
   test(`invalid CLI ${argv.join(' ')} has no files or dispatch effects`, async t => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sentinel-campaign-cli-'));
     t.after(() => process.env.STNL_OFFLINE_KEEP_FIXTURES==='1'?undefined:fs.rm(root, { recursive: true, force: true }));

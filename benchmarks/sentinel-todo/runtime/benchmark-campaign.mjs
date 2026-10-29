@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
-import { validateMeasurementReport } from './benchmark-measurement.mjs';
+import { measurementCompleteness, validateMeasurementReport } from './benchmark-measurement.mjs';
 import { privateHomeNeverCreated, settledNativeCase } from './benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -15,7 +15,8 @@ const BASELINE = path.join('benchmarks', 'sentinel-todo', 'baselines', 'baseline
 const MEASUREMENTS = path.join('benchmarks', 'sentinel-todo', 'measurements');
 const RUN_MARKER = 'sentinel-todo-run-v2\n';
 const CAMPAIGN_MARKER = 'sentinel-todo-campaign-v1\n';
-const TERMINAL = new Set(['PASS', 'BLOCKED', 'FAIL', 'ABORTED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'RECOVERY_STOP', 'NOT_RUN', 'CAMPAIGN_COMPLETE']);
+const MAX_FUNCTIONAL_RUNS = 3;
+const TERMINAL = new Set(['PASS', 'BLOCKED', 'FAIL', 'ABORTED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'RECOVERY_STOP', 'NOT_RUN', 'CAMPAIGN_COMPLETE', 'FUNCTIONAL_ACCEPTED', 'FUNCTIONAL_ROUNDS_PARTIAL']);
 const readJson = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
 const exists = async (file) => fs.lstat(file).then(() => true, (error) => { if (error.code === 'ENOENT') return false; throw error; });
 
@@ -632,8 +633,12 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = u
   if (runs !== undefined && (!Number.isSafeInteger(runs) || runs < 1)) throw blocked('BLOCKED_CONFIG', 'runs must be a positive integer');
   if (process.env.STNL_OFFLINE_PROVIDER_CONTEXT !== undefined) throw blocked('BLOCKED_BASE', 'TEST-ONLY provider cannot enter a functional campaign');
   const manifest = await readJson(path.join(root, 'benchmarks/sentinel-todo/benchmark.json'));
-  const plannedRuns = runs ?? manifest.campaign?.fullRuns;
+  const requiredFunctionalRuns = manifest.campaign?.fullRuns;
+  if (!Number.isSafeInteger(requiredFunctionalRuns) || requiredFunctionalRuns < 1) throw blocked('BLOCKED_CONFIG', 'campaign.fullRuns must be a positive integer');
+  const plannedRuns = runs ?? requiredFunctionalRuns;
   if (!Number.isSafeInteger(plannedRuns) || plannedRuns < 1) throw blocked('BLOCKED_CONFIG', 'campaign.fullRuns must be a positive integer');
+  if (plannedRuns > MAX_FUNCTIONAL_RUNS || requiredFunctionalRuns > MAX_FUNCTIONAL_RUNS)
+    throw blocked('BLOCKED_CONFIG', `functional campaign is limited to ${MAX_FUNCTIONAL_RUNS} FULLs`);
   const api = { ...adapters(root), ...hooks };
   const scratch = path.join(root, 'benchmark-temp');
   const signal = new AbortController();
@@ -758,7 +763,10 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = u
         if (run?.runId !== runId || run.mode !== 'full' || summary?.runId !== runId || summary.mode !== 'full'
           || run.status !== summary.status || run.status !== report.run.status)
           throw blocked('BLOCKED_REPORT', 'functional run/summary/report identity or outcome differs');
-        validateMeasurementReport(report, { qualify: true });
+        // This entrypoint records functional acceptance independently from
+        // measurement completeness. Product/oracle and ABC qualification stay
+        // mandatory; incomplete metrics are retained as diagnostic evidence.
+        validateMeasurementReport(report, { qualify: true, requireCompleteMeasurement: false });
         if (report.benchmarkId !== manifest.benchmarkId || report.benchmarkVersion !== manifest.benchmarkVersion
           || report.run.profile !== manifest.productionProfile.id
           || (reports.length && report.provenance.sourceFunctionalSha256 !== reports[0].provenance.sourceFunctionalSha256))
@@ -786,8 +794,49 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = u
     const last = reports.at(-1);
     const summary = campaignSummary({ campaignId, head: 'unavailable', startedAt, endedAt: new Date().toISOString(),
       baselineRef: { status: 'unavailable', reason: 'functional campaign has no comparison baseline' }, reports, comparisons, plannedRuns });
+    const measurementStates = reports.map(report => measurementCompleteness(report));
+    const measurementComplete = measurementStates.every(state => state.status === 'complete');
+    const functionalRepetitionComplete = plannedRuns >= requiredFunctionalRuns;
+    summary.status = functionalRepetitionComplete ? 'FUNCTIONAL_ACCEPTED' : 'FUNCTIONAL_ROUNDS_PARTIAL';
+    summary.acceptance = { functional: functionalRepetitionComplete ? 'PASS' : 'PENDING', functionalRuns: {
+      required: requiredFunctionalRuns, completed: completed,
+    }, measurement: {
+      status: measurementComplete ? 'complete' : 'incomplete',
+      missing: [...new Set(measurementStates.flatMap(state => state.missing))],
+    } };
+    summary.runs.forEach((row, index) => { row.measurementStatus = measurementStates[index].status; });
+    if (!functionalRepetitionComplete) {
+      // A single passing FULL is only a completed round. Keep per-run evidence,
+      // but do not present run subsets as qualified campaign distributions.
+      summary.distribution.g2 = Object.fromEntries(Object.keys(summary.distribution.g2).map(key => [key, 'unavailable']));
+      summary.distribution.g3 = Object.fromEntries(Object.keys(summary.distribution.g3).map(key => [key, 'unavailable']));
+    } else if (!measurementComplete) {
+      // Per-run reports retain observed partial values. Do not summarize them
+      // as G3 campaign distributions when expected observations are absent.
+      summary.distribution.g3 = Object.fromEntries(Object.keys(summary.distribution.g3).map(key => [key, 'unavailable']));
+    }
     files['campaign-summary.json'] = path.join(campaignRoot, 'campaign-summary.json');
     await writeJson(files['campaign-summary.json'], summary);
+    if (!functionalRepetitionComplete) {
+      checkCancel();
+      await fs.writeFile(path.join(campaignRoot, 'state.json'), `${JSON.stringify({ campaignId,
+        status: 'FUNCTIONAL_ROUNDS_PARTIAL', plannedRuns, completedRuns: completed, requiredFunctionalRuns,
+        endedAt: summary.endedAt, measurementStatus: measurementComplete ? 'complete' : 'incomplete' })}\n`).catch(error=>console.error(`functional round evidence retained; scratch state update failed: ${error.message}`));
+      say(`FUNCTIONAL_ROUND_PASS ${campaignId}: ${completed}/${requiredFunctionalRuns} rounds; acceptance pending; evidence retained in ${campaignRoot}`);
+      return { runId: last.run.id, status: 'FUNCTIONAL_ROUND_PASS', plannedRuns, completedRuns: completed,
+        requiredFunctionalRuns, functionalAcceptance: 'PENDING', runs: reports.map(row => row.run.id),
+        measurements: null, evidence: campaignRoot, measurement: summary.acceptance.measurement };
+    }
+    if (!measurementComplete) {
+      checkCancel();
+      await fs.writeFile(path.join(campaignRoot, 'state.json'), `${JSON.stringify({ campaignId,
+        status: 'FUNCTIONAL_ACCEPTED', plannedRuns, completedRuns: completed, requiredFunctionalRuns, endedAt: summary.endedAt,
+        measurementStatus: 'incomplete' })}\n`).catch(error=>console.error(`functional evidence retained; scratch state update failed: ${error.message}`));
+      say(`FUNCTIONAL_PASS ${campaignId}: ${completed}/${plannedRuns}; measurement incomplete; evidence retained in ${campaignRoot}`);
+      return { runId: last.run.id, status: 'FUNCTIONAL_PASS', plannedRuns, completedRuns: completed,
+        requiredFunctionalRuns, functionalAcceptance: 'PASS', runs: reports.map(row => row.run.id), measurements: null, evidence: campaignRoot,
+        measurement: summary.acceptance.measurement };
+    }
     // Reuse the formal entrypoint's atomic promotion only after the same N/N
     // summary qualification. Partial reports remain in ignored campaign scratch.
     checkCancel();
@@ -795,7 +844,8 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = u
     await fs.writeFile(path.join(campaignRoot, 'state.json'), `${JSON.stringify({ campaignId,
       status: 'CAMPAIGN_COMPLETE', plannedRuns, completedRuns: completed, endedAt: summary.endedAt })}\n`).catch(error=>console.error(`qualified campaign promoted; scratch state update failed: ${error.message}`));
     say(`PASS ${campaignId}: ${completed}/${plannedRuns}; reports published`);
-    return { runId: last.run.id, status: 'PASS', plannedRuns, completedRuns: completed, runs: reports.map(row => row.run.id), measurements: promoted };
+    return { runId: last.run.id, status: 'PASS', plannedRuns, completedRuns: completed, requiredFunctionalRuns,
+      functionalAcceptance: 'PASS', runs: reports.map(row => row.run.id), measurements: promoted };
   } catch (error) {
     if (campaignRoot) await fs.writeFile(path.join(campaignRoot, 'state.json'), `${JSON.stringify({
       status: signal.signal.aborted ? 'CANCELLED' : 'BLOCKED', plannedRuns, completedRuns: completed,
@@ -820,6 +870,7 @@ export function parseCampaignArgs(argv) {
     if(flag==='--runs'||flag==='--max-operations'&&!functional) {
       const n=Number(value);
       if(!/^[0-9]+$/u.test(value)||!Number.isSafeInteger(n)||n<1)throw blocked('BLOCKED_CONFIG',usage);
+      if(functional&&flag==='--runs'&&n>MAX_FUNCTIONAL_RUNS)throw blocked('BLOCKED_CONFIG',usage);
       options[flag==='--runs'?'runs':'maxOperations']=n;
     } else if(flag==='--recover-completed'&&!functional&&/^campaign-[a-z0-9-]{8,}$/u.test(value)) {options.mode='recover';options.campaignId=value;}
     else if(flag==='--root'&&!functional&&path.isAbsolute(value))options.root=value;
