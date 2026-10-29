@@ -3515,7 +3515,8 @@ export function inspectCurrentEvidence({context,authority,bundleBytes,counters:d
       cycle:null,formalStatus:null,validation:validated.outcome==='rejected'?'revalidation-required':'unvalidated',counters:declaredCounters,consumedInvocations:validated.consumedInvocations};
   } else result=inspect(original,context,authority,declaredCounters,observedWork,true,currentAuthoritySha256);
   const priorImplementationRefusal=bundle.support.find(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE');
-  const firstInitial=priorImplementationRefusal&&bundle.implementation[0]?.origin.operationAttemptId!==priorImplementationRefusal.origin.operationAttemptId
+  const firstInitial=priorImplementationRefusal&&(priorImplementationRefusal.diagnostic==='EVIDENCE_STALE'
+    ||bundle.implementation[0]?.origin.operationAttemptId!==priorImplementationRefusal.origin.operationAttemptId)
     ?priorImplementationRefusal:bundle.implementation[0]??priorImplementationRefusal;
   const firstApply=bundle.findingsChecks[0]??bundle.support.findLast(item=>item.kind==='rejection' && item.origin.operation==='APPLY_FINDINGS');
   const first=firstApply??firstInitial;

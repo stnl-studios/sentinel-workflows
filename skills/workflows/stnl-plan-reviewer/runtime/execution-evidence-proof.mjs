@@ -317,7 +317,8 @@ const commandFor = check => [check.executable, ...check.args].map(quote).join(' 
 function observation(value, owner, round, recipeInfo, baseline, context, label) {
   if (value === null) incomplete(`${label}: observation required`);
   if (value.format === 'stnl-runner-verification-v1') fail('UNSUPPORTED_FORMAT', `${label}: observation v1 lacks WorkManifest preimage`);
-  if (!['stnl-runner-verification-v2','stnl-runner-verification-v3'].includes(value.format))
+  const divergence=value.format==='stnl-runner-verification-divergence-v1';
+  if (!['stnl-runner-verification-v2','stnl-runner-verification-v3','stnl-runner-verification-divergence-v1'].includes(value.format))
     fail('UNSUPPORTED_FORMAT', `${label}: observation format`);
   closed(value, ['format', 'status', 'owner', 'round', 'recipe', 'resolved', 'before', 'after', 'checks',
     ...(value.format==='stnl-runner-verification-v3'?['binding']:[])], label);
@@ -330,12 +331,12 @@ function observation(value, owner, round, recipeInfo, baseline, context, label) 
     str(value.binding.dispatchId,`${label}.binding.dispatchId`);
     str(value.binding.agentId,`${label}.binding.agentId`);
   }
-  if (value.status !== 'completed') uncertain(`${label}: verification not completed`);
+  if (value.status !== (divergence?'stale':'completed')) uncertain(`${label}: verification not completed`);
   ownerMatches(value.owner, owner, `${label}.owner`);
   if (value.round !== round) mismatch(`${label}: round differs`);
   expectEqual(value.recipe, recipeInfo.recipe, 'EVIDENCE_STALE', `${label}.recipe`);
   expectEqual(value.resolved, recipeInfo.resolved, 'EVIDENCE_STALE', `${label}.resolved`);
-  expectEqual(value.before, value.after, 'EVIDENCE_STALE', `${label}: product changed during checks`);
+  if(!divergence)expectEqual(value.before, value.after, 'EVIDENCE_STALE', `${label}: product changed during checks`);
   const claims = [...recipeInfo.areas, ...recipeInfo.inputs, ...recipeInfo.refs];
   coverage(value.before, claims, `${label}.before`);
   coverage(value.after, claims, `${label}.after`);

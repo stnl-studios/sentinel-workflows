@@ -26,7 +26,7 @@ const run=promisify(execFile);
 const repo=path.resolve('.');
 const operationCli=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
 const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-async function fixture({otherInput=false,kind='standalone',entry='file',sharedAncestor=false,missingAncestor=false,single=false,independentAreas=false,productRefs=false,futureLeaf=false,closeReady=false,inputTest=false,coverageOmission=false}={}) {
+async function fixture({otherInput=false,kind='standalone',entry='file',sharedAncestor=false,missingAncestor=false,single=false,independentAreas=false,productRefs=false,futureLeaf=false,closeReady=false,inputTest=false,coverageOmission=false,staleMode='none'}={}) {
   const root=await fs.mkdtemp(path.join(repo,'tmp/stnl Initial test '));
   await run('git',['-C',root,'init','-q']);
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
@@ -40,8 +40,9 @@ async function fixture({otherInput=false,kind='standalone',entry='file',sharedAn
   if(!closeReady)await fs.writeFile(authorityPath,kind==='lifecycle'?lifecycleHeader+lifecycleBody:'# Initial delivery\n\nAC-001: export pay.\n');
   if(coverageOmission)await fs.writeFile(authorityPath,'# Initial delivery\n\nAC-001: pay returns paid for a positive amount and declined for zero.\n');
   if(closeReady)await copyTree(READY_FIXTURE,path.dirname(authorityPath));
-  await fs.writeFile(path.join(root,'src/pay.test.mjs'),
-    'import test from "node:test";import assert from "node:assert/strict";import {pay} from "./pay.mjs";test("AC-001",()=>assert.equal(pay(),"paid"));\n');
+  await fs.writeFile(path.join(root,'src/pay.test.mjs'),staleMode==='none'
+    ?'import test from "node:test";import assert from "node:assert/strict";import {pay} from "./pay.mjs";test("AC-001",()=>assert.equal(pay(),"paid"));\n'
+    :`import test from "node:test";import fs from "node:fs";test("AC-001",()=>{const file=new URL("./pay.mjs",import.meta.url);${staleMode==='once'?'if(!fs.existsSync(file))':''}fs.appendFileSync(file,"// verifier mutation\\n");});\n`);
   if(independentAreas){await fs.mkdir(path.join(root,'other'));await fs.copyFile(path.join(root,'src/pay.test.mjs'),path.join(root,'other/pay.test.mjs'));}
   if(otherInput) await fs.writeFile(path.join(root,'src/other.txt'),'independent input\n');
   const before=await inspectCurrentExecution(specPath);
@@ -104,6 +105,86 @@ async function reserved(f,responseVariant) {
   const dispatch=await reserveDispatch(started.handle,responseVariant?{responseVariant}:undefined);
   return {started,dispatch};
 }
+
+test('EC-1 EXECUTE preserves stale evidence, then retries the same owner without treating stale as a verdict',async t=>{
+  const f=await fixture({single:true,staleMode:'once'});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');
+  const owner=JSON.parse(await fs.readFile(first.originFile,'utf8')).owner;
+  await bindNative(started.handle,'stale-execute-first-agent');
+  await assert.rejects(()=>verifyNative(first.originFile),error=>error.code==='EVIDENCE_STALE');
+  const operationRoot=path.dirname(first.originFile);
+  const divergence=JSON.parse(await fs.readFile(path.join(operationRoot,'round-1.divergence.json'),'utf8'));
+  assert.equal(divergence.diagnostic,'EVIDENCE_STALE');
+  assert.equal(divergence.owner.operationAttemptId,owner.operationAttemptId);
+  assert.ok(divergence.diff.some(item=>item.path==='src/pay.mjs'));
+  assert.equal((await resume(started.handle)).nextAction,'await-same-agent');
+  await assert.rejects(begin({specPath:f.specPath,slice:owner.slice,operation:'EXECUTE_SLICE',
+    expectedActivationId:owner.originActivationId}),error=>['OWNER_ACTIVE','OWNER_UNCERTAIN'].includes(error.code));
+  const foreign=path.join(f.root,'foreign-tool.json');
+  await fs.writeFile(foreign,JSON.stringify({agentId:'foreign-agent',status:'completed',finalResponse:'untrusted'})+'\n');
+  await assert.rejects(()=>captureNative(started.handle,foreign),error=>error.code==='OWNER_MISMATCH');
+  const concluded=path.join(f.root,'stale-tool.json');
+  await fs.writeFile(concluded,JSON.stringify({agentId:'stale-execute-first-agent',status:'completed',finalResponse:'untrusted'})+'\n');
+  const staleCapture=await captureNative(started.handle,concluded);
+  assert.equal(staleCapture.captureClass,'verification-divergence');
+  assert.equal(staleCapture.status,null);
+  assert.equal((await resume(started.handle)).nextAction,'reserve-dispatch');
+  const receipt=JSON.parse(await fs.readFile(path.join(operationRoot,'round-1.receipt.json'),'utf8'));
+  assert.equal(receipt.status,'RUNNER_RESULT_BLOCKED');
+  assert.equal(receipt.semanticResponseStatus,null);
+  assert.equal(receipt.verification.status,'stale');
+
+  const second=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const secondOrigin=JSON.parse(await fs.readFile(second.originFile,'utf8'));
+  assert.equal(second.round,2);
+  assert.equal(secondOrigin.owner.operationAttemptId,owner.operationAttemptId);
+  assert.equal(secondOrigin.admission.reservedActivation.activeAttempt.operationAttemptId,owner.operationAttemptId);
+  await bindNative(started.handle,'stale-execute-second-agent');
+  const measured=await verifyNative(second.originFile);
+  const {head,...result}=initialPayload(2,'TESTS_PASS');
+  result.commands=measured.commands;result.automaticCheckRound='2/5';
+  const response=path.join(f.root,'second-tool.json');
+  await fs.writeFile(response,JSON.stringify({agentId:'stale-execute-second-agent',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
+  assert.equal((await captureNative(started.handle,response)).status,'TESTS_PASS');
+  assert.equal((await resume(started.handle)).nextAction,'publish');
+  const published=await publish(started.handle);
+  assert.equal(published.publication,'confirmed');
+  const image=await captureCurrentExecution(f.specPath);
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const current=continuity.deliveries.find(item=>item.deliveryId===owner.deliveryId);
+  const bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path)));
+  assert.equal(bundle.implementation.length,1,'stale invocation must not become an implementation check');
+  assert.equal(bundle.support.length,1);
+  assert.equal(bundle.support[0].diagnostic,'EVIDENCE_STALE');
+  assert.equal(bundle.support[0].consumedInvocations,1);
+  assert.equal(current.counters.implementationChecks,1,'only the completed verification consumes a check record');
+});
+
+test('EC-1 EXECUTE stale recovery blocks at the existing five-invocation limit',async t=>{
+  const f=await fixture({single:true,staleMode:'always'});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');
+  const owner=JSON.parse(await fs.readFile(first.originFile,'utf8')).owner;
+  let dispatch=first;
+  for(let round=1;round<=5;round++) {
+    const agentId=`stale-limit-${round}`;await bindNative(started.handle,agentId);
+    await assert.rejects(()=>verifyNative(dispatch.originFile),error=>error.code==='EVIDENCE_STALE');
+    const staleFile=path.join(f.root,`stale-limit-tool-${round}.json`);
+    await fs.writeFile(staleFile,JSON.stringify({agentId,status:'completed',finalResponse:'untrusted'})+'\n');
+    assert.equal((await captureNative(started.handle,staleFile)).status,null);
+    assert.equal((await resume(started.handle)).nextAction,round<5?'reserve-dispatch':'stop-and-diagnose');
+    if(round<5) {
+      const next=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+      assert.equal(next.round,round+1);
+      const nextOrigin=JSON.parse(await fs.readFile(next.originFile,'utf8'));
+      assert.equal(nextOrigin.owner.operationAttemptId,owner.operationAttemptId);
+      dispatch=next;
+    } else await assert.rejects(()=>reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'}),
+      error=>error.code==='OWNER_UNCERTAIN');
+  }
+});
 
 for(const skill of ['stnl-slice-executor','stnl-slice-quality-manager'])test(`B-T15 ${skill} CLI refuses ambiguous arguments before any effect`,async t=>{
   const f=await fixture({single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));await installCurrentInitial(f);

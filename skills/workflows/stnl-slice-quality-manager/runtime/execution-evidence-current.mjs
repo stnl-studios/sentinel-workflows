@@ -400,7 +400,7 @@ export function assertTestCoverageCorrectionWork(correction, before, after) {
       return old?.kind !== 'file' || current?.kind !== 'file' || old.mode !== current.mode;
     })) stale('test coverage correction must change only its existing approved test files');
 }
-function recordGrammarRejection(payload, entries, round) {
+function recordGrammarRejection(payload, entries, round, {priorStale=false}={}) {
   const values = new Map(executionFields('EXECUTE_SLICE').map(([key, label]) => [label, payload[key]]));
   const rendered = label => {
     const value = values.get(label);
@@ -419,7 +419,7 @@ function recordGrammarRejection(payload, entries, round) {
     const value = label === 'Tested scope' ? scope : rendered(label);
     if (!nonPlaceholder(value)) return semanticError(`${label} must be objective non-placeholder content`);
   }
-  if (round > 1) {
+  if (round > 1 && !priorStale) {
     for (const label of ['Prior-round failure','Correction applied','In-slice rationale']) {
       if (!nonPlaceholder(rendered(label))) return semanticError(`${label} must be objective non-placeholder content`);
     }
@@ -519,7 +519,7 @@ function compose(input, info) {
         mismatch(`round ${round}: implementation drift witness differs`);
       productDrift=witness;
     }else if(productDrift)mismatch('implementation drift witness disappeared');
-    if (round > 1 && previousStatus !== 'TESTS_FAIL' && !(previousStatus === 'BLOCKED' && (previousCoverageCorrection||previousClarification))
+    if (round > 1 && previousStatus !== 'stale' && previousStatus !== 'TESTS_FAIL' && !(previousStatus === 'BLOCKED' && (previousCoverageCorrection||previousClarification))
       && !(previousStatus==='TESTS_PASS'&&witness?.sourceRound===round-1))invalid(`round ${round}: previous round did not fail`);
     const rawText = textBytes(cap.rawResponse, `round ${round} rawResponse`).text;
     const receipt = jsonBytes(cap.receipt, `round ${round} receipt`).value;
@@ -544,6 +544,46 @@ function compose(input, info) {
     runners.add(transportInfo.runnerId);
     receipts.push(receipt);
     const origin = originRecord(input.owner, transport, transportInfo);
+    if(receipt.status==='RUNNER_RESULT_BLOCKED'&&receipt.captureFailure==='EVIDENCE_STALE') {
+      if(receipt.semanticResponseStatus!==null||receipt.testedState!==null||receipt.error!==null
+        ||receipt.reviewTriage!==undefined||cap.removalProofs.length
+        ||!same(receipt.verification,jsonBytes(cap.verificationObservation,`round ${round} stale divergence`).value))
+        uncertain(`round ${round}: stale verification receipt is not an unaccepted result`);
+      const divergence=jsonBytes(cap.verificationObservation,`round ${round} stale divergence`).value;
+      const required=['format','status','owner','round','dispatchId','originSha256','verificationSha256',
+        'diagnostic','before','after','observation','diff','checks'];
+      if(!divergence||Object.keys(divergence).sort(ordinal).join('\0')!==required.sort(ordinal).join('\0')
+        ||divergence.format!=='stnl-native-verification-divergence-v1'||divergence.status!=='stale'
+        ||divergence.diagnostic!=='EVIDENCE_STALE'||!same(divergence.owner,input.owner)
+        ||divergence.round!==round||divergence.dispatchId!==transportInfo.dispatchId
+        ||divergence.originSha256!==raw(cap.origin)
+        ||divergence.verificationSha256!==info.resolved.recipeSha256
+        ||!same(divergence.before.manifest,before)
+        ||!same(divergence.observation.before,divergence.before.manifest)
+        ||!same(divergence.observation.after,divergence.after.manifest)
+        ||!same(divergence.observation.checks,divergence.checks))stale(`round ${round}: stale divergence binding differs`);
+      const {format,status,owner,round:observedRound,recipe,resolved,before:observedBefore,after:observedAfter,checks}=divergence.observation;
+      const staleObservation={format,status,owner,round:observedRound,recipe,resolved,
+        before:observedBefore,after:observedAfter,checks};
+      verifyWorkObservation('initial-implementation',staleObservation,input.owner,round,info,before,input.context,
+        `round ${round} stale observation`);
+      const computedDiff=[];
+      const beforeMap=new Map(divergence.before.manifest.entries.map(item=>[item.path,item]));
+      const afterMap=new Map(divergence.after.manifest.entries.map(item=>[item.path,item]));
+      for(const name of [...new Set([...beforeMap.keys(),...afterMap.keys()])].sort(ordinal))
+        if(!same(beforeMap.get(name)??null,afterMap.get(name)??null))
+          computedDiff.push({path:name,before:beforeMap.get(name)??{kind:'absent'},after:afterMap.get(name)??{kind:'absent'}});
+      if(!same(divergence.diff,computedDiff))stale(`round ${round}: stale divergence diff differs`);
+      domainChanges(before,divergence.after.manifest,info,round);
+      verifyRemoval(cap.removalProofs,input.owner,round,before,divergence.after.manifest);
+      if(index===input.rounds.length-1)incomplete(`round ${round}: stale verification has no later admitted result`);
+      support.push({kind:'rejection',operationAttemptId:input.owner.operationAttemptId,origin,
+        diagnostic:'EVIDENCE_STALE',consumedInvocations:round,round,
+        sources:packCaptureSources('initial-implementation',cap,store)});
+      previousAfter=divergence.after.manifest;
+      previousStatus='stale';
+      continue;
+    }
     let semanticText=rawText,projectionError=null;
     if(transport==='native') {
       const nativeOrigin=jsonBytes(cap.origin,`round ${round} origin`).value;
@@ -628,7 +668,7 @@ function compose(input, info) {
     previousAfter = observed.after;
     let rejection = null;
     if (transport === 'native' && (!nativeCheckRoundMatches(payload.automaticCheckRound,globalRound) || !same(payload.commands, commands))) rejection = semanticError('native response round/commands contradict observed execution');
-    if (!rejection) rejection = recordGrammarRejection(payload, entries, globalRound);
+    if (!rejection) rejection = recordGrammarRejection(payload, entries, globalRound,{priorStale:previousStatus==='stale'});
     if (!rejection && payload.status === 'TESTS_FAIL' && !commands.some(command => command.exit !== 0)) rejection = semanticError('TESTS_FAIL requires an observed nonzero exit');
     if (!rejection && payload.status === 'TESTS_NOT_APPLICABLE') rejection = semanticError('TESTS_NOT_APPLICABLE contradicts the reviewed nonempty recipe');
     if (!rejection) {
@@ -680,6 +720,7 @@ function compose(input, info) {
     previousStatus = payload.status;
     previousCoverageCorrection = coverageCorrection;
   }
+  if(previousStatus==='stale')incomplete('terminal implementation result cannot be only a stale verification');
   const bundle = {
     format:'stnl-current-evidence-v1', deliveryId:input.owner.deliveryId, slice:input.owner.slice,
     logicalTaskPath:`tasks/${input.owner.slice}.md`, currentAuthoritySha256:projected('delivery', input.authority.delivery),

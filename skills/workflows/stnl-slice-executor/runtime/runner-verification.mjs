@@ -25,7 +25,7 @@ export function assertRunnerVerification(observation, verification) {
 
 // A pending/uncertain saved observation is never rerun. Completed observations
 // are reusable only for the exact recipe, inside the same runner-origin directory.
-export async function executeRunnerVerification({ verification, outputFile, observeState = null, startGuard = action => action() }) {
+export async function executeRunnerVerification({ verification, outputFile, observeState = null, startGuard = action => action(), captureChangedState = null }) {
   const existing = await fs.lstat(outputFile).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
   if (existing) {
     const observation = parseStrictJson((await readOwnedFile(outputFile)).bytes.toString('utf8'));
@@ -34,8 +34,10 @@ export async function executeRunnerVerification({ verification, outputFile, obse
     return observation;
   }
   const observation=await startGuard(async()=>{
+    const workStateBefore=captureChangedState?await captureChangedState():null;
     const workStateSha256 = observeState ? hash(JSON.stringify(await observeState())) : null;
-    const started = { format:'stnl-runner-verification-v1', status:'started', verification, workStateSha256, checks:[] };
+    const started = { format:'stnl-runner-verification-v1', status:'started', verification, workStateSha256, checks:[],
+      ...(captureChangedState?{workStateBefore}:{}) };
     const handle = await fs.open(outputFile, 'wx', 0o600);
     try { await handle.writeFile(JSON.stringify(started)+'\n'); await handle.sync(); } finally { await handle.close(); }
     await syncLockParent(path.dirname(outputFile));
@@ -52,12 +54,15 @@ export async function executeRunnerVerification({ verification, outputFile, obse
     observation.checks.push({request,command:verificationCommand(request),...result,
       stdoutSha256:hash(result.stdout),stderrSha256:hash(result.stderr)});
   }
-  if (observeState && workStateSha256 !== hash(JSON.stringify(await observeState()))) {
+  const workStateAfter=observeState?await observeState():null;
+  if (observeState && workStateSha256 !== hash(JSON.stringify(workStateAfter))) {
     observation.status = 'inputs-changed';
+    if(captureChangedState)observation.workStateAfter=await captureChangedState();
     await persistAllocation(outputFile, observation);
     fail('product/verification inputs changed while the recipe ran; preserve pending observation');
   }
   observation.status = 'completed';
+  if(captureChangedState)delete observation.workStateBefore;
   await persistAllocation(outputFile, observation);
   assertRunnerVerification(observation, verification); return observation;
 }

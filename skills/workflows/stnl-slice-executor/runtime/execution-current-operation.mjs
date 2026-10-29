@@ -380,7 +380,9 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null,te
     if(operation.owner.operation==='EXECUTE_SLICE') {
       const request={format:'stnl-current-initial-dispatch-v1',owner:operation.owner,authority,
         round:round+(operation.binding.normalization?.consumedInvocations??0),checkId:`implementation-check-${String(round+(operation.binding.normalization?.consumedInvocations??0)).padStart(2,'0')}`,
-        scopePaths,previousCheck:null};
+        scopePaths,previousCheck:null,...(previous?.stale?{priorVerificationDivergence:{round:previous.stale.round,
+          diagnostic:previous.stale.diagnostic,diff:previous.stale.diff,
+          sha256:sha(json(previous.stale))}}:{})};
       return {request,info,observed,dispatchId,current};
     }
     const bundleBytes=Buffer.from(image.files.get(current.evidence.path));
@@ -508,6 +510,40 @@ async function verifiedPreviousChecks(op,image,count) {
     lastWork:initial?parseCurrentJson(Buffer.from(rounds.at(-1).verificationObservation).toString('utf8')).after:result.lastWork};
 }
 
+async function checkedStaleDivergence(operation,image,round) {
+  const runner=operation.record.runner;
+  if(runner?.captureClass!=='verification-divergence'||runner.status!=='captured')return null;
+  if(operation.owner.operation!=='EXECUTE_SLICE'
+    ||runner.round!==round||runner.consumedInvocations!==round||round<1
+    ||runner.divergenceFile!==path.join(operation.root,`round-${round}.divergence.json`)
+    ||runner.divergenceResultFile!==path.join(operation.root,`round-${round}.tool-result.json`))
+    fail('OWNER_UNCERTAIN','stale verification recovery binding differs');
+  const [divergence,resultBytes,origin,producer,baseline,receipt,observation,responseBytes]=await Promise.all([
+    readJson(runner.divergenceFile),readOwnedFile(runner.divergenceResultFile).then(value=>value.bytes),
+    readJson(path.join(operation.root,`round-${round}.origin.json`)),
+    readJson(path.join(operation.root,`round-${round}.verification.json`)),
+    readJson(path.join(operation.root,`round-${round}.baseline.json`)),
+    readJson(path.join(operation.root,`round-${round}.receipt.json`)),
+    readJson(path.join(operation.root,`round-${round}.observation.json`)),
+    readOwnedFile(path.join(operation.root,`round-${round}.response.json`)).then(value=>value.bytes)]);
+  const tool=parseCurrentJson(resultBytes.toString('utf8'));
+  const observed=image.observedByDelivery.get(operation.owner.deliveryId);
+  if(sha(resultBytes)!==runner.divergenceResultSha256||tool.status!=='completed'
+    ||tool.agentId!==runner.agentId||!same(divergence.owner,operation.owner)
+    ||divergence.round!==round||divergence.dispatchId!==runner.dispatchId
+    ||divergence.originSha256!==sha(json(origin))||divergence.status!=='stale'
+    ||divergence.diagnostic!=='EVIDENCE_STALE'||!same(divergence.observation,observation)
+    ||!same(divergence.before,evidenceWorkState(producer.workStateBefore))||!same(divergence.before.manifest,baseline.manifest)
+    ||!same(divergence.checks,producer.checks)||!same(divergence.diff,workStateDiff(divergence.before,divergence.after))
+    ||receipt.status!=='RUNNER_RESULT_BLOCKED'||receipt.captureFailure!=='EVIDENCE_STALE'
+    ||receipt.semanticResponseStatus!==null||receipt.testedState!==null||!same(receipt.verification,divergence)
+    ||!responseBytes.equals(Buffer.from(tool.finalResponse,'utf8'))
+    ||!['completed','inputs-changed'].includes(producer.status)||!observed
+    ||!same(observed.manifest,divergence.after.manifest)||!same(evidenceWorkState(observed).identities,divergence.after.identities))
+    fail('OWNER_UNCERTAIN','stale verification recovery evidence is incomplete or changed');
+  return {divergence,origin,producer,baseline,observed};
+}
+
 export async function reserveDispatch(handle,{responseVariant=null,terminal=false}={}) {
   if(typeof terminal!=='boolean') fail('INVALID_CURRENT_IMAGE','terminal selection must be boolean');
   if(responseVariant!==null && responseVariant!==NATIVE_JUDGMENT_VARIANT)
@@ -525,12 +561,17 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
     const previousRound=now.record.runner?.round??0;
     if(previousRound && (now.record.responseVariant??null)!==responseVariant)
       fail('OWNER_MISMATCH','native response variant changed within the operation');
+    const staleRetry=now.record.runner?.captureClass==='verification-divergence';
+    if(staleRetry&&(now.owner.operation!=='EXECUTE_SLICE'||!auxiliary))
+      fail('OWNER_UNCERTAIN','stale verification retry is supported only for the same EXECUTE_SLICE owner');
+    if(staleRetry&&previousRound+(now.binding.normalization?.consumedInvocations??0)>=MAX_NATIVE_PRODUCER_TURNS)
+      fail('OWNER_UNCERTAIN','stale verification exhausted the admitted invocation limit');
     const productDrift=now.record.runner?.productDrift??null;
     const coveragePrefix=now.owner.operation==='EXECUTE_SLICE' && previousRound
       && now.record.runner.status==='captured' && now.record.runner.resultStatus==='BLOCKED'
       ?await capturedImplementationPrefix(now):null;
     if(now.record.phase!=='working' || (!auxiliary && now.record.runner!==null)
-      || auxiliary && previousRound && (now.record.runner.status!=='captured'
+      || auxiliary && previousRound && !staleRetry && (now.record.runner.status!=='captured'
         || !['TESTS_FAIL',...(productDrift?['TESTS_PASS']:[]),...(coveragePrefix?.testCoverageCorrection||coveragePrefix?.testCoverageClarification?['BLOCKED']:[])].includes(now.record.runner.resultStatus)
         || now.record.runner.resultStatus==='TESTS_PASS'
           && productDrift.sourceRound!==previousRound
@@ -548,8 +589,9 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
     if(image.activation.activationId!==now.record.binding.baseActivationId &&
       image.activation.previousActivationId!==now.record.binding.baseActivationId)
       fail('STALE_BASE','A1 no longer descends from admitted A0');
+    const stalePrefix=staleRetry?await checkedStaleDivergence(now,image,previousRound):null;
     let previous=null;
-    if(auxiliary && previousRound) {
+    if(auxiliary && previousRound && !staleRetry) {
       previous=await verifiedPreviousChecks(now,image,previousRound);
       const result=previous.result;
       if(previous.initial) {
@@ -570,7 +612,11 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
       }
     }
     const dispatchId=previousRound?now.record.runner.dispatchId:randomUUID();
-    const {request,info,observed}=await requestInputs(image,now,dispatchId,round,previous,terminal);
+    const inputPrevious=stalePrefix?{scopePaths:[],stale:stalePrefix.divergence}:previous;
+    const {request,info,observed}=await requestInputs(image,now,dispatchId,round,inputPrevious,terminal);
+    if(staleRetry) {
+      preflightCorrection(stalePrefix.baseline.manifest,observed.manifest,info);
+    }
     if(auxiliary && previousRound+(now.binding.normalization?.consumedInvocations??0)>MIN_CORRECTIONS_BEFORE_RECURRENCE
       && previousRound>=2 && now.record.runner.resultStatus==='TESTS_FAIL') {
       const last=await capturedSources(now,previousRound),prior=await capturedSources(now,previousRound-1);
@@ -618,7 +664,7 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
           slice:allDeliveries.find(item=>item.deliveryId===deliveryId).slice,manifest:value.manifest})),
       ...(productDrift?{productDrift}:{})};
     const baseline={format:'stnl-current-baseline-v1',owner:now.owner,round,
-      context:now.context,manifest:auxiliary
+      context:now.context,manifest:staleRetry?observed.manifest:auxiliary
         ?previous?.lastWork??await readJson(path.join(now.root,'base.work.json')):observed.manifest};
     const originFile=path.join(now.root,`round-${round}.origin.json`);
     await put(path.join(now.root,`round-${round}.request.json`),request);
@@ -642,6 +688,42 @@ function boundNativeWorkSha256(work) {
   if(!work)fail('EVIDENCE_INCOMPLETE','native bound work is absent');
   return sha(json({manifest:work.manifest,identities:[...work.identities]}));
 }
+function workState(work) {
+  if(!work)fail('EVIDENCE_INCOMPLETE','native work state is absent');
+  return {manifest:work.manifest,identities:[...work.identities]};
+}
+function evidenceWorkState(work) {
+  if(!work)fail('EVIDENCE_INCOMPLETE','native work state is absent');
+  return {manifest:work.manifest,identities:[...work.identities].map(([name,value])=>[name,
+    Object.fromEntries(Object.entries(value).map(([key,item])=>[key,
+      key==='mtimeMs'||key==='ctimeMs'?String(item):item]))])};
+}
+function workStateDiff(before,after) {
+  const prior=new Map(before.manifest.entries.map(entry=>[entry.path,entry]));
+  const next=new Map(after.manifest.entries.map(entry=>[entry.path,entry]));
+  const paths=new Set([...prior.keys(),...next.keys()]);
+  return [...paths].sort(order).filter(name=>!same(prior.get(name)??null,next.get(name)??null))
+    .map(name=>({path:name,before:prior.get(name)??{kind:'absent'},after:next.get(name)??{kind:'absent'}}));
+}
+async function preserveNativeDivergence(op,origin,round,recipe,before,after,checks,verificationSha256) {
+  before=evidenceWorkState(before);after=evidenceWorkState(after);
+  const observation={format:'stnl-runner-verification-divergence-v1',status:'stale',owner:op.owner,round,
+    recipe,resolved:origin.verification,before:before.manifest,after:after.manifest,checks};
+  const divergence={format:'stnl-native-verification-divergence-v1',status:'stale',owner:op.owner,round,
+    dispatchId:origin.dispatchId,originSha256:sha(json(origin)),verificationSha256,
+    diagnostic:'EVIDENCE_STALE',before,after,observation,
+    diff:workStateDiff(before,after),checks};
+  if(!divergence.diff.length)fail('OWNER_UNCERTAIN','stale verification has no reproducible product diff');
+  const file=path.join(op.root,`round-${round}.divergence.json`);
+  if(await maybe(file)) {
+    if(!same(await readJson(file),divergence))fail('OWNER_UNCERTAIN','native verification divergence differs on replay');
+  } else await put(file,divergence);
+  const observationFile=path.join(op.root,`round-${round}.observation.json`);
+  if(await maybe(observationFile)) {
+    if(!same(await readJson(observationFile),observation))fail('OWNER_UNCERTAIN','stale verification observation differs on replay');
+  } else await put(observationFile,observation);
+  return file;
+}
 
 export async function bindNative(handle,agentId) {
   if(typeof agentId!=='string' || !agentId.trim()) fail('OWNER_MISMATCH','official agent identity required');
@@ -652,7 +734,9 @@ export async function bindNative(handle,agentId) {
     if(now.record.phase!=='working' || now.record.runner?.status!=='reserved'
       || now.record.runner.agentId!==null || await maybe(path.join(now.root,`round-${round}.agent.json`)))
       fail('OWNER_UNCERTAIN','native binding already exists or is uncertain');
-    const previousPrefix=now.owner.operation==='EXECUTE_SLICE'&&round>1
+    const priorWasStale=round>1
+      &&(await readJson(path.join(now.root,`round-${round-1}.receipt.json`))).captureFailure==='EVIDENCE_STALE';
+    const previousPrefix=now.owner.operation==='EXECUTE_SLICE'&&round>1&&!priorWasStale
       ?await capturedImplementationPrefix({...now,record:{...now.record,runner:{...now.record.runner,round:round-1}}}):null;
     const clarification=previousPrefix?.testCoverageClarification;
     if(clarification && agentId!==clarification.agentId)
@@ -885,6 +969,8 @@ async function checkedProductDrift(op,image,observation) {
 async function nativeCorrectionFeedback(op,image,round) {
   let capture,diagnostic;
   if(round>1) {
+    if((await readJson(path.join(op.root,`round-${round-1}.receipt.json`))).captureFailure==='EVIDENCE_STALE')
+      return null;
     const previous=await verifiedPreviousChecks(op,image,round-1);
     capture=previous.cap;
     const receipt=parseCurrentJson(Buffer.from(capture.receipt).toString('utf8'));
@@ -961,8 +1047,10 @@ export async function verifyNative(originFile) {
   };
   const headBefore=origin.responseVariant===NATIVE_JUDGMENT_VARIANT?await measuredHead():null;
   const correctionFeedback=await nativeCorrectionFeedback(op,image,round);
-  const result=await executeRunnerVerification({verification:origin.verification,
+  let result;
+  try { result=await executeRunnerVerification({verification:origin.verification,
     outputFile:path.join(op.root,`round-${round}.verification.json`),observeState,
+    captureChangedState:async()=>workState((await requireA1(op)).observedByDelivery.get(op.owner.deliveryId)),
     startGuard:action=>withExecutionPublicationLock(op.workspace,async()=>{
       const current=await load(op.handle);
       if(current.record.phase!=='working'||current.record.terminalTransition?.outcome==='aborted')
@@ -973,13 +1061,29 @@ export async function verifyNative(originFile) {
       if(continuation&&boundNativeWorkSha256(currentImage.observedByDelivery.get(op.owner.deliveryId))!==continuation.workStateSha256)
         fail('EVIDENCE_STALE','native continuation bound work changed before start');
       return action();
-    })});
+    })}); }
+  catch(error) {
+    const verificationFile=path.join(op.root,`round-${round}.verification.json`);
+    const saved=await maybe(verificationFile)?await readJson(verificationFile):null;
+    if(saved?.status!=='inputs-changed'||!same(saved.verification,origin.verification)
+      ||!saved.workStateBefore||!saved.workStateAfter||!Array.isArray(saved.checks))throw error;
+    const savedBefore=saved.workStateBefore,savedAfter=saved.workStateAfter;
+    if(!same(savedBefore,workState(before)))fail('EVIDENCE_STALE','verification divergence baseline differs');
+    const current=await requireA1(op),currentWork=workState(current.observedByDelivery.get(op.owner.deliveryId));
+    if(!same(current.activation,origin.admission.reservedActivation))fail('STALE_BASE','native owner changed after stale recipe');
+    const divergenceFile=await preserveNativeDivergence(op,origin,round,recipe.recipe,savedBefore,
+      same(savedAfter,currentWork)?savedAfter:currentWork,saved.checks,origin.verification.recipeSha256);
+    fail('EVIDENCE_STALE',`product changed during native recipe; divergence preserved at ${divergenceFile}`);
+  }
   const after=await requireA1(op);
   assertOtherInitialWork(after,origin);
   const final=after.observedByDelivery.get(op.owner.deliveryId);
-  if(!final || !same(before.manifest,final.manifest)
-    || !same([...before.identities],[...final.identities]))
-    fail('EVIDENCE_STALE','product changed during native recipe');
+  if(!final)fail('EVIDENCE_INCOMPLETE','product observation is absent after native recipe');
+  if(!same(before.manifest,final.manifest)||!same([...before.identities],[...final.identities])) {
+    const divergenceFile=await preserveNativeDivergence(op,origin,round,recipe.recipe,workState(before),workState(final),
+      result.checks,origin.verification.recipeSha256);
+    fail('EVIDENCE_STALE',`product changed during native recipe; divergence preserved at ${divergenceFile}`);
+  }
   const requestBytes=(await readOwnedFile(path.join(op.root,`round-${round}.request.json`))).bytes;
   if(!requestBytes.equals(requestBefore)) fail('EVIDENCE_STALE','native request changed during recipe');
   if(origin.responseVariant===NATIVE_JUDGMENT_VARIANT && origin.requestSha256!==sha(requestBytes))
@@ -1008,7 +1112,10 @@ async function capturedSources(op,round=1) {
   const agent=await get('agent');
   const tool=await get('tool-result');
   const before=parseCurrentJson((await get('baseline')).toString('utf8')).manifest;
-  const after=parseCurrentJson((await get('observation')).toString('utf8')).after;
+  const receipt=parseCurrentJson((await get('receipt')).toString('utf8'));
+  const observedName=receipt.captureFailure==='EVIDENCE_STALE'?'divergence':'observation';
+  const observed=parseCurrentJson((await get(observedName)).toString('utf8'));
+  const after=receipt.captureFailure==='EVIDENCE_STALE'?observed.after.manifest:observed.after;
   const removalProofs=[];
   for(const entry of before.entries.filter(item=>item.kind==='file'
     && after.entries.some(value=>value.path===item.path&&value.kind==='absent')))
@@ -1018,7 +1125,7 @@ async function capturedSources(op,round=1) {
       :{[op.owner.operation==='APPLY_FINDINGS'?'applyRequest':'validationRequest']:await get('request')}),
     rawResponse:await get('response'),receipt:await get('receipt'),
     baselineCapture:await get('baseline'),
-    verificationObservation:await get('observation'),removalProofs,
+    verificationObservation:await get(observedName),removalProofs,
     origin:await get('origin'),dispatch:await get('origin'),
     agentBinding:agent,agentClaim:await get('claim'),concludedToolResult:tool};
 }
@@ -1046,8 +1153,16 @@ export async function captureNative(handle,toolResultFile,{reviewTriageFile=null
     if(now.record.terminalTransition?.outcome==='aborted')fail('OWNER_UNCERTAIN','native invocation is aborting');
     const auxiliary=now.owner.operation!=='VALIDATE_SLICE';
     const agent=await readJson(path.join(now.root,`round-${round}.agent.json`));
-    if(!['running','captured'].includes(now.record.runner?.status) || now.record.runner.agentId!==tool.agentId
+    if(!['running','captured','stale'].includes(now.record.runner?.status) || now.record.runner.agentId!==tool.agentId
       || agent.agentId!==tool.agentId) fail('OWNER_MISMATCH','concluded agent differs from bound dispatch');
+    const divergenceFile=path.join(now.root,`round-${round}.divergence.json`);
+    if(now.record.runner.status==='stale') {
+      const resultFile=path.join(now.root,`round-${round}.divergence-result.json`);
+      const prior=await readOwnedFile(resultFile);
+      if(!prior.bytes.equals(json(tool)))fail('OWNER_MISMATCH','same stale dispatch supplied different concluded bytes');
+      return {phase:'stale',captureClass:'verification-divergence',replayed:true,
+        divergenceSha256:sha((await readOwnedFile(divergenceFile)).bytes)};
+    }
     const responseFile=now.record.runner.responseFile;
     const raw=Buffer.from(tool.finalResponse,'utf8');
     if(await maybe(responseFile)) {
@@ -1067,6 +1182,49 @@ export async function captureNative(handle,toolResultFile,{reviewTriageFile=null
     if(!same(image.activation,origin.admission.reservedActivation))
       fail('STALE_BASE','A1 changed before native conclusion');
     assertOtherInitialWork(image,origin);
+    if(await maybe(divergenceFile)) {
+      if(reviewTriage!==null||tool.preVerificationContinuation!=null)
+        fail('OWNER_MISMATCH','stale verification cannot carry review triage or continuation');
+      const divergence=await readJson(divergenceFile);
+      const verificationFile=path.join(now.root,`round-${round}.verification.json`);
+      const producer=await readJson(verificationFile);
+      const baseline=await readJson(path.join(now.root,`round-${round}.baseline.json`));
+      const observation=await readJson(path.join(now.root,`round-${round}.observation.json`));
+      const observed=image.observedByDelivery.get(now.owner.deliveryId);
+      if(divergence.status!=='stale'||divergence.format!=='stnl-native-verification-divergence-v1'
+        ||divergence.diagnostic!=='EVIDENCE_STALE'
+        ||!same(divergence.owner,now.owner)||divergence.round!==round||divergence.dispatchId!==origin.dispatchId
+        ||divergence.originSha256!==sha(json(origin))||!same(divergence.observation,observation)
+        ||observation.format!=='stnl-runner-verification-divergence-v1'||observation.status!=='stale'
+        ||!same(observation.owner,now.owner)||observation.round!==round
+        ||!same(divergence.before,evidenceWorkState(producer.workStateBefore))
+        ||!same(divergence.before.manifest,baseline.manifest)||!same(divergence.diff,workStateDiff(divergence.before,divergence.after))
+        ||!same(divergence.checks,producer.checks)||!same(producer.verification,origin.verification)
+        ||!['completed','inputs-changed'].includes(producer.status)||!Array.isArray(producer.checks)
+        ||!observed||!same(observed.manifest,divergence.after.manifest)
+        ||!same(evidenceWorkState(observed).identities,divergence.after.identities))
+        fail('OWNER_UNCERTAIN','stale verification divergence is incomplete or no longer current');
+      await writeNew(responseFile,raw);
+      const toolResultFile=path.join(now.root,`round-${round}.tool-result.json`);
+      await put(toolResultFile,tool);
+      const receipt={transport:'native',originFile:path.join(now.root,`round-${round}.origin.json`),owner:now.owner,
+        operation:now.owner.operation,slice:now.owner.slice,workspace:now.context.productRoot,attempt:round,
+        threadId:tool.agentId,receiptFile:path.join(now.root,`round-${round}.receipt.json`),
+        semanticResponseFile:responseFile,semanticResponseSha256:hex(raw),semanticResponseStatus:null,
+        status:'RUNNER_RESULT_BLOCKED',captureFailure:'EVIDENCE_STALE',error:null,testedState:null,verification:divergence};
+      await put(receipt.receiptFile,receipt);
+      now.record.runner.status='captured';
+      now.record.runner.captureClass='verification-divergence';
+      now.record.runner.resultStatus=null;
+      now.record.runner.divergenceFile=divergenceFile;
+      now.record.runner.divergenceResultFile=toolResultFile;
+      now.record.runner.divergenceResultSha256=sha(json(tool));
+      await persistAllocation(now.marker,now.record);
+      return {phase:'captured',status:null,captureClass:'verification-divergence',
+        rawResponseSha256:sha(raw),divergenceSha256:sha((await readOwnedFile(divergenceFile)).bytes),
+        nextAction:round+(now.binding.normalization?.consumedInvocations??0)<MAX_NATIVE_PRODUCER_TURNS
+          ?'reserve-dispatch':'stop-and-diagnose',replayed:false};
+    }
     const observation=await readJson(path.join(now.root,`round-${round}.observation.json`));
     if(observation.status!=='completed') fail('OWNER_UNCERTAIN','native recipe did not complete');
     const continuation=now.record.preVerificationContinuation?.round===round?now.record.preVerificationContinuation:null;
@@ -1148,7 +1306,9 @@ export async function captureNative(handle,toolResultFile,{reviewTriageFile=null
       captureFailure:parseFailure,error:null,testedState,verification:observation,
       ...(reviewTriage===null?{}:{reviewTriage})};
     await put(path.join(now.root,`round-${round}.receipt.json`),receipt);
-    const previousClarification=initialExecute&&round>1
+    const priorWasStale=round>1
+      &&(await readJson(path.join(now.root,`round-${round-1}.receipt.json`))).captureFailure==='EVIDENCE_STALE';
+    const previousClarification=initialExecute&&round>1&&!priorWasStale
       ?(await capturedImplementationPrefix({...now,record:{...now.record,runner:{...now.record.runner,round:round-1}}},image)).testCoverageClarification:null;
     const refuseClarification=async diagnostic=>{
       now.record.runner.status='captured';now.record.runner.captureClass='coverage-clarification-rejected';
@@ -1691,7 +1851,9 @@ export async function resume(handle) {
   if(runner?.status==='captured'&&runner.captureClass==='coverage-clarification-rejected')
     return {phase:'captured',nextAction:'blocked',captureClass:runner.captureClass,
       responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes)};
-  const previousClarification=op.owner.operation==='EXECUTE_SLICE'&&runner?.round>1
+  const priorWasStale=runner?.round>1
+    &&(await readJson(path.join(op.root,`round-${runner.round-1}.receipt.json`))).captureFailure==='EVIDENCE_STALE';
+  const previousClarification=op.owner.operation==='EXECUTE_SLICE'&&runner?.round>1&&!priorWasStale
     &&['running','captured'].includes(runner.status)
     ?(await capturedImplementationPrefix({...op,record:{...op.record,runner:{...runner,round:runner.round-1}}})).testCoverageClarification:null;
   const clarificationSource=previousClarification?{priorTestCoverageClarification:previousClarification}:{};
@@ -1701,6 +1863,14 @@ export async function resume(handle) {
     return {phase:'captured',status:'BLOCKED',nextAction:correction||clarification?'reserve-dispatch':op.owner.preparationRevision===1?'blocked':'publish',
       owner:op.owner,...clarificationSource,...(correction?{testCoverageCorrection:correction}:{}),...(clarification?{testCoverageClarification:clarification}:{}),
       responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes)};
+  }
+  if(runner?.status==='captured'&&runner.captureClass==='verification-divergence') {
+    const image=await requireA1(op);
+    await checkedStaleDivergence(op,image,runner.round);
+    return {phase:'captured',outcome:'verification-stale',nextAction:
+      runner.round+(op.binding.normalization?.consumedInvocations??0)<MAX_NATIVE_PRODUCER_TURNS
+        ?'reserve-dispatch':'stop-and-diagnose',owner:op.owner,round:runner.round,
+      divergenceSha256:sha((await readOwnedFile(runner.divergenceFile)).bytes)};
   }
   if(runner?.status==='captured') return {phase:'captured',nextAction:op.owner.preparationRevision===1
       && (op.owner.operation==='VALIDATE_SLICE' && runner.captureClass==='initial-rejection'
