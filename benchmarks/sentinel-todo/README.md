@@ -91,6 +91,15 @@ metrics. A diagnostic export retains the functional result and reports
 `measurement.status: incomplete` with missing dimensions. It cannot be published
 or used to certify savings. Missing values never become zero.
 
+A focal finalizer can return PASS for its selected prefix without reaching
+CLOSE. Export its diagnostic state without inventing terminal evidence; accepted
+case/FULL results still require the complete closure proof. A newer reader may
+use `export --root <canonical measured checkout> --run <id> --output <temporary path>`
+only for read-only focal diagnostics. It rechecks owner/snapshot/identity and
+records exporter/normalizer hashes separately from the measured source. Such an
+external diagnostic export is always incomplete and cannot qualify, publish or
+produce savings claims. The measured checkout, journals and ledger are unchanged.
+
 | Evidence | Existing authoritative source / unit | Aggregation and completeness |
 | --- | --- | --- |
 | Run, case, repetition, operation and attempt | campaign state, run.json, operation evidence, ledger; IDs/counts | Required. Match the frozen run and ABC/N scope; no missing, foreign or duplicate identities. |
@@ -366,10 +375,14 @@ These are **observed runtime counters, not billed tokens**: the provider can
 restore or synthesize counters. Reject detectable incoherence; do not claim
 that this detects every synthetic value or proves an invoice. Cached input is
 inside input; reasoning output is inside output. Missing values are never zero.
-Child delivery on the real connection still requires a small runtime proof;
-offline fixtures cannot establish subscription behavior. A complete export
+Delivery and attribution for every admitted child require runtime evidence;
+one observed child does not certify universal subscription behavior. A complete export
 requires its admitted main and child turns, including corrections, to have
-attributable counters. A known partial subtotal stays labelled partial.
+attributable counters. Preserve fork-origin presence/type and its relation to the
+observed parent as non-sensitive metadata. Neither a missing origin nor equal
+first `total`/`last` proves a zero baseline: a fork may replay inherited counters.
+Unavailable historical provenance stays unrecorded; a known partial subtotal
+stays labelled partial. This does not restrict legitimate auxiliary strategies.
 
 Native exports also retain SDK/CLI versions from the frozen snapshot and safe
 model/service-tier/approval/legacy-sandbox acknowledgements from thread start/resume,

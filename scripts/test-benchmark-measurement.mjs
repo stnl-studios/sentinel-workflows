@@ -315,6 +315,10 @@ try {
   await fs.writeFile(path.join(runRoot, retryFiles[0]), JSON.stringify(childEvidence));
   const conflictingChild = await exportMeasurement(runId);
   assert.equal(conflictingChild.measurement.status, 'incomplete', 'same observation identity cannot carry conflicting usage');
+  assert.equal(conflictingChild.aggregate.telemetry.main.meanInputPerTurn, UNAVAILABLE,
+    'unknown complete input cannot be divided into a NaN mean');
+  assert.deepEqual(JSON.parse(JSON.stringify(conflictingChild)), conflictingChild,
+    'partial diagnostic metrics must survive JSON persistence without NaN/null substitution');
   await assert.rejects(publishMeasurement(conflictingChild, { root: path.join(temp, 'conflicting-child') }), /measurement incomplete/u);
   for (const [label, values] of [
     ['late conflict', [...childEvidence.runner.usageObservations].reverse()],

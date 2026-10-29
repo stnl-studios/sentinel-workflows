@@ -11,6 +11,8 @@ import { allocateOfflineFixture, finishOfflineFixture } from './fixtures/offline
 import { describeOfflineSdk } from '../agents/codex/runtime/offline-provider-context.mjs';
 import { offlineNativeWorkflow } from './fixtures/native-workflow-provider.mjs';
 import { invocationContext, decideOutcome } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
+import { exportMeasurement as exportReadOnlyFocal, validateMeasurementReport as validateRecoveredReport,
+  compareMeasurements as compareRecoveredReports } from '../benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs';
 
 const repo = path.resolve(import.meta.dirname, '..');
 
@@ -564,9 +566,15 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', 'usa
   }
   const measurements = await import(url('benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs'));
   const report = await measurements.exportMeasurement(path.basename(runRoot));
+  assert.deepEqual(JSON.parse(JSON.stringify(report)),report,'native diagnostic export is lossless JSON, including partial telemetry');
   assert.equal(report.cases[0].execution, 'SPEC_CLOSED');
   assert.deepEqual(report.comparability.contextPolicy, configuration.contextPolicy);
   assert.equal(report.provenance.executionMode, 'OFFLINE_TEST_ONLY');
+  if(fault==='aux-before-reservation') {
+    assert.equal(report.measurement.status,'incomplete','a legitimate forked auxiliary is preserved without inventing its baseline');
+    assert.equal(report.cases[0].telemetry.coverage.runner,'2/3');
+    assert.equal(report.cases[0].telemetry.runner.input,'unavailable');
+  }
   if (fault === null || ['usage-none', 'usage-missing-child', 'findings-cycle', 'pre-verification-continuation', 'formal-two-corrections'].includes(fault)) {
     const complete = !['usage-none', 'usage-missing-child'].includes(fault);
     assert.equal(report.measurement.status, complete ? 'complete' : 'incomplete', JSON.stringify(report.measurement));
@@ -581,6 +589,20 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', 'usa
   assert.equal(measurements.compareMeasurements(report, report).directlyComparable, false,
     'mechanical provider evidence cannot be promoted to real benchmark savings');
   if (regime === 'fresh' && fault === null) {
+    const terminalFile=path.join(runRoot,'case-a/terminal-evidence.json'),terminalBytes=await fs.readFile(terminalFile);
+    const runFile=path.join(runRoot,'run.json'),summaryFile=path.join(runRoot,'summary.json');
+    const originalModes=await Promise.all([runFile,summaryFile].map(file=>fs.readFile(file)));
+    try {
+      await fs.unlink(terminalFile);
+      for(const mode of ['case','full']) {
+        for(const [index,file]of [runFile,summaryFile].entries()) {const value=JSON.parse(originalModes[index]);value.mode=mode;await fs.writeFile(file,JSON.stringify(value));}
+        await assert.rejects(measurements.exportMeasurement(path.basename(runRoot)),error=>error.code==='ENOENT'&&error.path===terminalFile,
+          `${mode} PASS cannot bypass CLOSE evidence`);
+      }
+    } finally {
+      await fs.writeFile(terminalFile,terminalBytes);
+      for(const [index,file]of [runFile,summaryFile].entries())await fs.writeFile(file,originalModes[index]);
+    }
     const eventFile = JSON.parse(await fs.readFile(state.operations[0].evidencePath)).turn.eventsPath;
     const original = await fs.readFile(eventFile);
     const metricEvents = original.toString().trim().split('\n').map(JSON.parse).filter(e => e.type.startsWith('native.usage.'));
@@ -644,6 +666,37 @@ test('literal manager entry parses ordinary run --case A and retains its normal 
     runId = (await fs.readdir(path.join(fixture.root,'benchmark-temp'))).find(name => name.startsWith('run-'));
     const stopped = JSON.parse(await fs.readFile(path.join(fixture.root,'benchmark-temp',runId,'run.json')));
     assert.equal(stopped.status,'FOCAL_STOP');
+    const focalReader=await import(url('benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs'));
+    const focal=await focalReader.exportMeasurement(runId);
+    assert.equal(focal.run.status,'FOCAL_STOP');assert.equal(focal.run.mode,'focal');
+    assert.equal(focal.cases[0].execution,'MATERIALIZED_PRISTINE');assert.equal(focal.cases[0].specClosed,false);
+    assert.equal(focal.cases[0].telemetry.coverage.main,'3/3');
+    const recovered=await exportReadOnlyFocal(runId,{sourceRoot:fixture.root});
+    assert.equal(recovered.run.id,runId);assert.equal(recovered.run.status,'FOCAL_STOP');
+    assert.equal(recovered.provenance.sourceFunctionalSha256,focal.provenance.sourceFunctionalSha256);
+    assert.equal(recovered.provenance.diagnosticExporter.readOnly,true);
+    assert.match(recovered.provenance.diagnosticExporter.sha256,/^sha256:[a-f0-9]{64}$/u);
+    assert.equal(recovered.measurement.status,'incomplete');
+    assert.deepEqual(await exportReadOnlyFocal(runId,{sourceRoot:fixture.root}),recovered,'diagnostic recovery is idempotent');
+    assert.throws(()=>validateRecoveredReport(recovered,{qualify:true}),/diagnostic-only/u);
+    assert.equal(compareRecoveredReports(recovered,recovered).directlyComparable,false);
+    const recoveredFile=path.join(fixture.root,'tmp/recovered-focal.json');
+    const exported=spawnSync(process.execPath,[path.join(repo,'benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs'),
+      'export','--run',runId,'--root',fixture.root,'--output',recoveredFile],{cwd:repo,encoding:'utf8',timeout:30000});
+    assert.equal(exported.status,0,exported.stderr);
+    assert.deepEqual(JSON.parse(await fs.readFile(recoveredFile)),recovered);
+    const marker=path.join(fixture.root,'benchmark-temp',runId,'.sentinel-benchmark-owned'),markerBytes=await fs.readFile(marker);
+    try{await fs.writeFile(marker,'foreign owner');await assert.rejects(exportReadOnlyFocal(runId,{sourceRoot:fixture.root}),/ownership marker/u);}
+    finally{await fs.writeFile(marker,markerBytes);}
+    const alias=path.join(fixture.root,'tmp-root-alias');await fs.symlink(fixture.root,alias,'dir');
+    try{await assert.rejects(exportReadOnlyFocal(runId,{sourceRoot:alias}),/canonical/u);}finally{await fs.unlink(alias);}
+    await assert.rejects(focalReader.publishMeasurement(focal,{root:path.join(fixture.root,'tmp/focal-promotion')}),/full|PASS|qualified/u);
+    const focalRaw=path.join(fixture.root,'benchmark-temp',runId,'case-a/raw.json'),focalBytes=await fs.readFile(focalRaw);
+    try {
+      const changed=JSON.parse(focalBytes);changed.contextPolicy={regime:'author-continuity',authorContinuityOperations:['PLAN']};
+      await fs.writeFile(focalRaw,JSON.stringify(changed));
+      await assert.rejects(focalReader.exportMeasurement(runId),/context binding differs/u,'focal must still prove context');
+    } finally {await fs.writeFile(focalRaw,focalBytes);}
     const managerFile = path.join(fixture.root, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs');
     const controller = await fs.readFile(managerFile), root = path.join(fixture.root, 'benchmark-temp', runId);
     const frozenLedger = await fs.readFile(path.join(root, '.turn-ledger.json'));
@@ -664,6 +717,7 @@ test('literal manager entry parses ordinary run --case A and retains its normal 
   const report = await measurement.exportMeasurement(runId);
   assert.equal(report.run.status,'PASS'); assert.equal(report.cases[0].execution,'SPEC_CLOSED');
   assert.equal(report.provenance.executionMode,'OFFLINE_TEST_ONLY');
+  await assert.rejects(exportReadOnlyFocal(runId,{sourceRoot:fixture.root}),/external diagnostic export supports focal scope only/u);
   assert.equal(backends.length,2);
   assert.equal(backends.flatMap(backend => backend.calls).filter(call => call.method === 'turn/start').length,6);
   await assert.rejects(fs.lstat(path.join(fixture.root,'benchmark-temp/.active-run.json')),{code:'ENOENT'});

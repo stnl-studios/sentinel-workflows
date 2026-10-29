@@ -32,6 +32,26 @@ const retainedRefusal = async file => {
   return matches[0];
 };
 
+for(const [label,mutate,expected,matches]of [
+  ['explicit none',thread=>{thread.forkedFromId=null;},'none',null],
+  ['inherited parent',thread=>{thread.forkedFromId=parent;},'present',true],
+  ['other source',thread=>{thread.forkedFromId='other-thread';},'present',false],
+  ['absent',thread=>{delete thread.forkedFromId;},'absent',null],
+  ['invalid',thread=>{thread.forkedFromId={private:'secret'};},'invalid',null],
+])test(`child measurement preserves fork provenance without inventing a zero baseline (${label})`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true,mutate:state=>mutate(state.thread)});
+  const binding=await bindAppServerChild(s.rpc,identity),view=await observeAppServerChild(s.rpc,{binding,cwd:f.root});
+  assert.equal(view.provenance.forkState,expected);assert.equal(view.provenance.forkSourceMatchesParent,matches);
+  const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
+  const result=await p.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    operationId:'fork-provenance',role:'author',observeFormalBinding:async()=>null});
+  await p.close();assert.equal(result.completed,true,'measurement provenance never bans a legitimate auxiliary strategy');
+  const scopes=(await fs.readFile(result.eventsPath,'utf8')).trim().split('\n').map(JSON.parse)
+    .filter(e=>e.type==='native.usage.scope'&&e.scope.source==='runner');
+  assert.ok(scopes.length);for(const {scope}of scopes){assert.equal(scope.forkState,expected);assert.equal(scope.forkSourceMatchesParent,matches);assert.equal(scope.fresh,expected==='none');}
+  assert.doesNotMatch(JSON.stringify(scopes),/other-thread|private|secret/u,'only non-sensitive relations are persisted');
+});
+
 for (const status of ['failed', 'interrupted']) test(`terminal ${status} usage survives the primary transport refusal without another model call`, async t => {
   const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true}),request=s.rpc.request.bind(s.rpc);
   let emit;
@@ -888,7 +908,7 @@ test('auxiliary observation authenticates lineage and cost without granting form
     mutate(state) { state.thread.forkedFromId = parent; state.thread.model = 'gpt-6.1-sol'; state.items = []; } });
   const binding = await bindAppServerChild(s.rpc, identity);
   assert.deepEqual(await observeAppServerChild(s.rpc, { binding, cwd: f.root }),
-    { provenance: { forkedFromId: parent }, turns: [{ id: 'child-turn', status: 'completed' }], children: [] });
+    { provenance: { forkedFromId: parent, forkState:'present',forkSourceMatchesParent:true }, turns: [{ id: 'child-turn', status: 'completed' }], children: [] });
   await assert.rejects(readAppServerChild(s.rpc, { binding, bundle: f.bundle, cwd: f.root }), blocked,
     'an auxiliary, even completed with a PASS-like answer, is not a formal runner');
   assert.ok(s.calls.every(call => /^thread\//u.test(call.method)), 'observation must not admit any turn');

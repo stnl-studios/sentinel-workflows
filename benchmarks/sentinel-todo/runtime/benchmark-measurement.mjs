@@ -107,9 +107,9 @@ function observationsFrom(evidence) {
   return all;
 }
 
-async function measurement(runId) {
+async function measurement(runId, sourceRoot = ROOT) {
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(runId)) throw new Error('invalid run id');
-  const runRoot = path.join(ROOT, 'benchmark-temp', runId);
+  const runRoot = path.join(sourceRoot, 'benchmark-temp', runId);
   const run = await json(path.join(runRoot, 'run.json'));
   if (run.runId !== runId || !['full', 'case', 'focal'].includes(run.mode)
     || !['PASS', 'FAIL', 'ABORTED', 'BLOCKED', 'CANCELLED', 'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP'].includes(run.status)
@@ -120,7 +120,7 @@ async function measurement(runId) {
   const snapshotExists = await fs.stat(path.join(runRoot, 'snapshot.json')).then(() => true, () => false);
   let snapshot = null; let config = null;
   if (snapshotExists) {
-    snapshot = await assertSnapshotIntegrity(runRoot, { checkSource: false });
+    snapshot = await assertSnapshotIntegrity(runRoot, { checkSource: false, runsRoot: path.join(sourceRoot, 'benchmark-temp') });
     if (run.snapshot?.snapshotSha256 !== snapshot.snapshotSha256 || run.snapshot?.sourceFunctionalSha256 !== snapshot.sourceFunctionalSha256) throw new Error('run and frozen snapshot identities differ');
     const frozenIdentity = await frozenSourceIdentity(path.join(runRoot, 'snapshot'));
     if (frozenIdentity.sha256 !== snapshot.sourceFunctionalSha256 || frozenIdentity.fileCount !== snapshot.sourceFileCount) throw new Error('frozen source content does not match its recorded functional identity');
@@ -174,13 +174,18 @@ async function measurement(runId) {
     if (!state || !journal || state.status === 'ACTIVE' || !state.endedAt) throw new Error(`case ${id} is incomplete`);
     const nativeLedger=state.protocol==='native-app-server-v1'?await json(path.join(runRoot,'.turn-ledger.json')):null;
     if (nativeLedger) validateNativeLedger(nativeLedger, state, runId, { settled: state.status === 'PASS' });
-    if (state.protocol === 'native-app-server-v1' && raw?.status === 'PASS') {
+    if (state.protocol === 'native-app-server-v1' && raw && (needsAcceptance || Object.hasOwn(raw, 'contextPolicy'))
+      && JSON.stringify(raw.contextPolicy) !== JSON.stringify(contextPolicy(state)))
+      throw new Error(`case ${id} raw context binding differs`);
+    // A successful focal finalizer attests only its selected prefix. CLOSE
+    // evidence is mandatory for accepted case/FULL results, not invented for a
+    // diagnostic FOCAL_STOP before implementation/validation/closure.
+    if (state.protocol === 'native-app-server-v1' && needsAcceptance) {
       const { loadProduct } = await import(pathToFileURL(path.join(runRoot, 'snapshot/benchmarks/sentinel-todo/runtime/benchmark-manager.mjs')).href);
       const terminal = await json(path.join(dir, 'terminal-evidence.json'));
       await validateTerminalEvidence({ product: await loadProduct(path.join(runRoot, 'snapshot')),
         evidence: terminal, specPath: state.specPath, workspace: state.workspace });
-      if (JSON.stringify(raw.contextPolicy) !== JSON.stringify(contextPolicy(state))
-        || raw.nativeTerminal?.sourceSha256 !== terminal.sourceSha256
+      if (raw.nativeTerminal?.sourceSha256 !== terminal.sourceSha256
         || raw.nativeTerminal?.closedSnapshotSha256 !== terminal.closedSnapshotSha256
         || raw.nativeTerminal?.sourceActivationId !== terminal.disposition.activationId
         || raw.nativeTerminal?.transactionId !== terminal.receipt.transactionId) throw new Error(`case ${id} raw terminal/context binding differs`);
@@ -382,7 +387,7 @@ function aggregateTelemetry(cases) {
       observedOutput: groups.every((x) => Number.isFinite(x.observedOutput)) ? groups.reduce((n, x) => n + x.observedOutput, 0) : UNAVAILABLE,
       peakInputPerTurn: inputValues ? Math.max(...inputValues) : UNAVAILABLE,
       medianInputPerTurn: inputValues ? median(inputValues) : UNAVAILABLE,
-      meanInputPerTurn: inputValues ? input / turns : UNAVAILABLE };
+      meanInputPerTurn: inputValues && numeric(input) !== null && turns > 0 ? input / turns : UNAVAILABLE };
   };
   const turns = [...main, ...runner];
   const coverage = (groups, field) => {
@@ -471,6 +476,7 @@ function validateFunctionalReport(report, { qualify = false } = {}) {
 // Qualification rechecks the underlying dimensions, never a claimed status.
 export function measurementCompleteness(report) {
   const missing = [];
+  if (report.provenance?.diagnosticExporter) missing.push('read-only diagnostic export; not a qualified measurement');
   const count = value => Number.isSafeInteger(value) && value >= 0;
   const cases = report.cases ?? [];
   if (report.run?.mode === 'full' && cases.map(row => row.id).sort().join() !== 'A,B,C') missing.push('full case scope');
@@ -535,6 +541,8 @@ export function measurementCompleteness(report) {
 }
 
 export function validateMeasurementReport(report, options = {}) {
+  if (options.qualify && report.provenance?.diagnosticExporter)
+    throw Object.assign(new Error('diagnostic-only export cannot qualify or publish'), { code: 'MEASUREMENT_INCOMPLETE' });
   validateFunctionalReport(report, options);
   const measured = measurementCompleteness(report);
   if (report.measurement && !isDeepStrictEqual(report.measurement, measured))
@@ -557,6 +565,9 @@ function fullCoverage(value) {
 
 export function compareMeasurements(before, after, allowProfileMismatch = false) {
   validateMeasurementReport(before); validateMeasurementReport(after);
+  if ([before,after].some(report=>report.provenance?.diagnosticExporter)) return {
+    directlyComparable:false,profileExperiment:false,mismatches:['diagnostic-only exporter'],
+    conclusion:'read-only recovery export; no qualified savings conclusion',deltas:UNAVAILABLE };
   if ([before, after].some((report) => report.provenance?.executionMode === 'OFFLINE_TEST_ONLY')) return {
     directlyComparable: false, profileExperiment: false, mismatches: ['OFFLINE_TEST_ONLY provider evidence'],
     conclusion: 'TEST-ONLY; ineligible for real proof or baseline', deltas: UNAVAILABLE };
@@ -591,13 +602,22 @@ export function compareMeasurements(before, after, allowProfileMismatch = false)
   } };
 }
 
-export async function exportMeasurement(runId) {
+export async function exportMeasurement(runId, { sourceRoot = ROOT } = {}) {
   if (!/^[a-z0-9][a-z0-9-]{7,}$/u.test(runId)) throw new Error('invalid run id');
-  const run = await json(path.join(ROOT, 'benchmark-temp', runId, 'run.json'));
+  if (!path.isAbsolute(sourceRoot) || sourceRoot !== await fs.realpath(sourceRoot)
+    || (await fs.lstat(sourceRoot)).isSymbolicLink()) throw new Error('source root must be canonical');
+  const external = sourceRoot !== ROOT;
+  const run = await json(path.join(sourceRoot, 'benchmark-temp', runId, 'run.json'));
   if (!['full', 'case', 'focal'].includes(run.mode)) throw new Error('measurement scope is invalid');
+  if (external && run.mode !== 'focal') throw new Error('external diagnostic export supports focal scope only');
   // Preserve a diagnostic export even when consumption is unavailable. The
   // campaign/publisher calls validateMeasurementReport with qualify:true.
-  const report = validateFunctionalReport(await measurement(runId), { qualify: true });
+  const report = validateFunctionalReport(await measurement(runId, sourceRoot), { qualify: true });
+  if (external) report.provenance.diagnosticExporter = {
+    sha256:`sha256:${createHash('sha256').update(await fs.readFile(fileURLToPath(import.meta.url))).digest('hex')}`,
+    usageNormalizerSha256:`sha256:${createHash('sha256').update(await fs.readFile(path.join(ROOT,'agents/codex/runtime/usage-accounting.mjs'))).digest('hex')}`,
+    readOnly:true,sourceMeasured:report.provenance.sourceFunctionalSha256,
+  };
   report.measurement = measurementCompleteness(report);
   for (const row of report.cases) for (const key of ['main', 'runner']) {
     if (row.telemetry[key] !== UNAVAILABLE) delete row.telemetry[key].inputByTurn;
@@ -715,7 +735,7 @@ async function main() {
   if (command === 'export') {
     const output = path.resolve(ROOT, required(args, 'output'));
     await assertDiagnosticDestination(output);
-    const report = await exportMeasurement(required(args, 'run'));
+    const report = await exportMeasurement(required(args, 'run'), { sourceRoot: args.root ? path.resolve(ROOT,args.root) : ROOT });
     await fs.mkdir(path.dirname(output), { recursive: true });
     await fs.writeFile(output, `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
     console.log(`measurement exported: ${path.relative(ROOT, output)}`);
@@ -724,7 +744,7 @@ async function main() {
     const result = compareMeasurements(before, after, args['profile-experiment'] === 'true');
     console.log(JSON.stringify(result, null, 2));
     if (!result.directlyComparable && !result.profileExperiment) process.exitCode = 2;
-  } else throw new Error('usage: benchmark-measurement.mjs export --run <id> --output <path> | compare --before <path> --after <path> [--profile-experiment true]');
+  } else throw new Error('usage: benchmark-measurement.mjs export --run <id> --output <path> [--root <read-only focal root>] | compare --before <path> --after <path> [--profile-experiment true]');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

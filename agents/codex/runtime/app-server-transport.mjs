@@ -586,7 +586,10 @@ export async function observeAppServerChild(rpc, { binding, cwd, onTurns, onChil
   } catch (error) {
     const safe=nativeFailure(error);throw Object.assign(safe,{descendants:[...(safe.descendants??[]),...observedChildren]});
   }
-  return { provenance: { forkedFromId: Object.hasOwn(thread,'forkedFromId') ? thread.forkedFromId : 'unknown' },
+  const forkState = !Object.hasOwn(thread,'forkedFromId') ? 'absent' : thread.forkedFromId === null ? 'none'
+    : id(thread.forkedFromId) ? 'present' : 'invalid';
+  return { provenance: { forkedFromId: ['none','present'].includes(forkState) ? thread.forkedFromId : 'unknown',
+    forkState, forkSourceMatchesParent: forkState === 'present' ? thread.forkedFromId === binding.parentThreadId : null },
     turns: turns.map(turn => ({ id: turn.id, status: turn.status,
     ...(['failed','interrupted'].includes(turn.status)?{failure:publicTurnDiagnostic(turn)}:{}) })), children };
 }

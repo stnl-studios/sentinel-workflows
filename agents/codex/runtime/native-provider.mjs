@@ -145,6 +145,8 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
           await scope({source:'runner',threadId:binding.agentThreadId,turnId:turn.id,operationId,
             fresh,proof:fresh?'public-child-no-fork':'retained-thread',
             model: binding.model, effort: binding.effort,
+            forkState: view.provenance?.forkState ?? 'absent',
+            forkSourceMatchesParent: typeof view.provenance?.forkSourceMatchesParent === 'boolean' ? view.provenance.forkSourceMatchesParent : null,
             forkedFromId:view.provenance?.forkedFromId===null?null:'unknown'});
         }
       };

@@ -67,6 +67,28 @@ test('App Server inherited or missing child usage stays partial and cannot count
   assert.equal(missing.observations[0].delta, null);
 });
 
+test('App Server equal total/last cannot distinguish a fresh response from replayed fork prefix', () => {
+  // Official 0.163.0 seeds fork counters from history, and rate-limit updates
+  // may emit the unchanged total/last. These same bytes are not birth proof.
+  const samples=[notification('child','one',tokens(100)),notification('child','one',tokens(120,4)),terminal('child','one')];
+  for(const [forkState,reason]of [['present','fork source present'],['absent','field absent'],['invalid','field invalid'],[undefined,'not retained']]) {
+    const events=[scope('child','one',{source:'runner',proof:'retained-thread',fresh:false,forkedFromId:'unknown',forkState,
+      forkSourceMatchesParent:forkState==='present'?true:forkState===undefined?undefined:null}),...samples];
+    const result=appServerUsageObservations(events),observation=result.observations[0];
+    assert.equal(observation.status,'partial');assert.equal(observation.baseline,null);assert.equal(observation.delta,null);
+    assert.match(observation.reason,new RegExp(reason));
+    assert.deepEqual(appServerUsageObservations([...events,...events]),result);
+  }
+  const fresh=appServerUsageObservations([scope('child','one',{source:'runner',proof:'public-child-no-fork',forkedFromId:null,forkState:'none',forkSourceMatchesParent:null}),...samples]);
+  assert.equal(fresh.observations[0].delta.total,124,'zero comes only from independent birth proof, never numeric equality');
+  for(const meta of [{forkedFromId:null,forkState:'present',forkSourceMatchesParent:true},
+    {forkedFromId:null,forkState:'none',forkSourceMatchesParent:true},
+    {forkedFromId:'unknown',forkState:'present',forkSourceMatchesParent:null}]) {
+    const contradictory=appServerUsageObservations([scope('child','one',{source:'runner',proof:'public-child-no-fork',...meta}),...samples]);
+    assert.equal(contradictory.observations[0].delta,null);assert.ok(contradictory.issues.includes('conflicting fork provenance'));
+  }
+});
+
 test('App Server context estimates in last do not alter total; synthetic totals, reset and impossible cache are refused', () => {
   const estimate = { ...tokens(0, 0), totalTokens: 5000 };
   const ok = appServerUsageObservations([scope('main', 'one'), notification('main', 'one', tokens(10), estimate), terminal('main', 'one')]);

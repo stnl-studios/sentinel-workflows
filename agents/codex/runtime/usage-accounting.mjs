@@ -184,12 +184,16 @@ export function appServerUsageObservations(events) {
   const scopes = new Map(), threads = new Map(), records = new Map(), notifications = new Map(), issues = new Set();
   const key = (threadId, turnId) => JSON.stringify([threadId, turnId]);
   const validEvent = event => event && typeof event === 'object' && !Array.isArray(event);
+  const forkConflict = scope => scope.forkState !== undefined && (!['none','present','absent','invalid'].includes(scope.forkState)
+    || (scope.forkState === 'none') !== (scope.forkedFromId === null)
+    || (scope.forkState === 'present' ? typeof scope.forkSourceMatchesParent !== 'boolean' : scope.forkSourceMatchesParent !== null));
   for (const event of events) if (!validEvent(event)) issues.add('invalid measurement event');
   else if (event.type === 'native.usage.scope') {
     const s = event.scope;
     if (!s || !measurementId(s.threadId) || !measurementId(s.turnId) || !['main', 'runner'].includes(s.source)
       || typeof s.fresh !== 'boolean') { issues.add('invalid usage scope'); continue; }
     const id = key(s.threadId, s.turnId), previous = scopes.get(id);
+    if (forkConflict(s)) issues.add('conflicting fork provenance');
     if (previous && !isDeepStrictEqual(previous, s)) issues.add('conflicting usage scope');
     else scopes.set(id, s);
   }
@@ -201,11 +205,13 @@ export function appServerUsageObservations(events) {
     }
     if (records.has(id)) return records.get(id);
     const prior = threads.get(threadId);
-    const fresh = scope.fresh && (scope.source === 'main' && scope.proof === 'thread/start'
-      || scope.source === 'runner' && scope.proof === 'public-child-no-fork' && scope.forkedFromId === null);
+    const fresh = scope.fresh && !forkConflict(scope) && (scope.source === 'main' && scope.proof === 'thread/start'
+      || scope.source === 'runner' && scope.proof === 'public-child-no-fork' && scope.forkedFromId === null
+        && (scope.forkState === undefined || scope.forkState === 'none'));
     let baseline = prior?.usable ? prior.final : fresh && !prior
       ? Object.fromEntries(APP_FIELDS.map(field => [field, 0])) : null;
     const problems = new Set();
+    if (forkConflict(scope)) problems.add('conflicting fork provenance');
     if (prior && !prior.terminal) { prior.problems.add('overlapping turn boundary'); problems.add('overlapping turn boundary'); baseline = null; }
     if (fresh && prior) { problems.add('unexpected baseline reset'); baseline = null; }
     const record = { scope, baseline, final: null, terminal: false, status: null, usable: false, problems, ordinal: records.size };
@@ -251,7 +257,12 @@ export function appServerUsageObservations(events) {
   const observations = [];
   for (const [id, scope] of scopes) {
     const r = records.get(id), reasons = new Set(r?.problems ?? []);
-    if (!r?.baseline) reasons.add('unknown inherited baseline');
+    if (!r?.baseline) {
+      reasons.add('unknown inherited baseline');
+      if (scope.source === 'runner') reasons.add({present:'fork source present; initial counters unproven',
+        absent:'fork provenance field absent',invalid:'fork provenance field invalid',none:'prior turn baseline missing'}[scope.forkState]
+        ?? 'fork provenance not retained');
+    }
     if (!r?.final) reasons.add('usage snapshot missing');
     if (!r?.terminal) reasons.add('terminal notification missing');
     const difference = r?.baseline && r.final ? Object.fromEntries(APP_FIELDS.map(field => [field, r.final[field] - r.baseline[field]])) : null;
@@ -264,7 +275,8 @@ export function appServerUsageObservations(events) {
       ...(scope.source === 'runner' ? { configuration: {
         model: typeof scope.model === 'string' && /^[A-Za-z0-9._-]{1,80}$/u.test(scope.model) ? scope.model : null,
         effort: ['none','minimal','low','medium','high','xhigh','max'].includes(scope.effort) ? scope.effort : null,
-      } } : {}),
+      }, provenance: { forkState: ['none','present','absent','invalid'].includes(scope.forkState) ? scope.forkState : 'unrecorded',
+        forkSourceMatchesParent: typeof scope.forkSourceMatchesParent === 'boolean' ? scope.forkSourceMatchesParent : null } } : {}),
       baseline: r?.baseline ?? null, final: r?.final ?? null,
       delta: reasons.size ? null : { input: difference.inputTokens, cachedInput: difference.cachedInputTokens,
         cacheWrite: difference.cacheWriteInputTokens, output: difference.outputTokens,

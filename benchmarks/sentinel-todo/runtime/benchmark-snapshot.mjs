@@ -24,8 +24,9 @@ function git(args) {
   return result.stdout;
 }
 
-async function assertOwnedRun(runRoot) {
-  const runs = await fs.realpath(RUNS_ROOT);
+async function assertOwnedRun(runRoot, runsRoot = RUNS_ROOT) {
+  const runs = await fs.realpath(runsRoot);
+  if (runs !== path.resolve(runsRoot)) throw new Error('run storage root must be canonical');
   const run = await fs.realpath(runRoot);
   if (path.dirname(run) !== runs || !/^[a-z0-9][a-z0-9-]{7,}$/u.test(path.basename(run))) {
     throw new Error('run must be a direct child of benchmark-temp');
@@ -165,8 +166,9 @@ export async function createSnapshot(runRoot, { executionMode, dependencySource,
   return metadata;
 }
 
-export async function assertSnapshotIntegrity(runRoot, { checkSource = true } = {}) {
-  const run = await assertOwnedRun(runRoot);
+export async function assertSnapshotIntegrity(runRoot, { checkSource = true, runsRoot = RUNS_ROOT } = {}) {
+  if (runsRoot !== RUNS_ROOT && checkSource) throw new Error('external run storage is read-only diagnostic');
+  const run = await assertOwnedRun(runRoot, runsRoot);
   const snapshot = path.join(run, 'snapshot');
   const metadata = JSON.parse(await fs.readFile(path.join(run, 'snapshot.json'), 'utf8'));
   if (metadata.executionMode === 'OFFLINE_TEST_ONLY') {
