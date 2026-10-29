@@ -44,7 +44,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
       onChildTurns, onFormalObserved, onAuxiliaryCompleted, validateRetainedCaptures, onPrepareContinuation = null }) {
       const events=[],children=new Map(),captures=new Map();
       let eventsFile,previousEvents,previousReady;
-      const continuations=new Map(),firstResponses=new Map(),continuationChecked=new Set();
+      const continuations=new Map(),firstResponses=new Map(),continuationChecked=new Set(),initializationObservations=new Map();
       try {
         await assertAppServerBundle(bundle);
         if(typeof operationId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9_-]*$/u.test(operationId))throw blocked('invalid operation evidence identity');
@@ -56,6 +56,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         for(const event of previousEvents.filter(event=>event.type==='native.child.continuation.admitted')) {
           if(continuations.has(event.binding.agentPath))throw blocked('duplicate continuation admission');
           continuations.set(event.binding.agentPath,event.grant);
+          initializationObservations.set(event.binding.agentPath,event.initializationCommandFailures??[]);
         }
       } catch(error) { throw nativeFailure(error,'prepare'); }
       const notified = new Set();
@@ -121,7 +122,12 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             throw blocked('coverage clarification differs from the authenticated first capture');
           priorCaptures.push(prior);
         }
-        const observeInitialization=()=>readAppServerChild(rpc,{binding,bundle,cwd:workspace,initialization:true});
+        const onInitializationObserved=failures=>{
+          if(grant&&JSON.stringify(initializationObservations.get(binding.agentPath)??[])!==JSON.stringify(failures))
+            throw blocked('initialization command observation differs from its admitted source');
+          initializationObservations.set(binding.agentPath,structuredClone(failures));
+        };
+        const observeInitialization=()=>readAppServerChild(rpc,{binding,bundle,cwd:workspace,initialization:true,onInitializationObserved});
         if(grant) {
           const original=JSON.parse(grant.firstToolResultUtf8);
           const sourcePin=[{binding,toolResultFile:stem+'.json',finalResponseSha256:sha(original.finalResponse)}];
@@ -139,7 +145,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
             return;
           }
         }
-        const observed=await readAppServerChild(rpc,{binding,bundle,cwd:workspace,continuation:grant,priorCaptures});
+        const observed=await readAppServerChild(rpc,{binding,bundle,cwd:workspace,continuation:grant,priorCaptures,onInitializationObserved});
         assertCurrent();
         if(!grant&&!clarification) {
           const original=await pin(binding,observed,stem+'.json',firstResponses,
@@ -158,6 +164,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
                 throw blocked('continuation principal ended before permission publication');
               continuations.set(binding.agentPath,grant);continuationChecked.add(binding.agentPath);
               await record({type:'native.child.continuation.admitted',binding,grant,
+                initializationCommandFailures:initializationObservations.get(binding.agentPath)??[],
                 firstToolResultFile:original.file,firstTurnId,finalResponseSha256:original.finalResponseSha256});
               await hook('onChildCompleted',onChildCompleted,{binding,initialization:true,toolResult:observed,capture:original});
               return;

@@ -664,6 +664,7 @@ function assertRunnerActivities(items,binding) {
   }
 }
 function assertConcludedInitialization(items,cwd,binding) {
+  const commandFailures=[];
   if(items.some(deniedShellTemporaryFile))throw fail('SANDBOX_COMMAND_DENIED: runner implicit temporary file denial');
   for(const [itemIndex,item] of items.entries()) {
     if(['userMessage','agentMessage','reasoning'].includes(item.type)||isBoundRunnerMetadata(item,binding))continue;
@@ -677,14 +678,19 @@ function assertConcludedInitialization(items,cwd,binding) {
       const exitCode = Number.isSafeInteger(item.exitCode) ? item.exitCode : item.exitCode == null ? 'absent' : 'other';
       return `itemIndex=${itemIndex}; failed=${failed}; itemType=${itemType}; cwd=${item.cwd===cwd?'matches':'differs'}; status=${status}; exitCode=${exitCode}`;
     };
+    const concluded=['completed','failed'].includes(item.status);
+    const knownExit=concluded&&Number.isSafeInteger(item.exitCode)&&item.exitCode>=0
+      &&(item.status!=='failed'||item.exitCode>0);
     const failed = [['ITEM_TYPE',item.type==='commandExecution'],['CWD',item.cwd===cwd],
-      ['STATUS',item.status==='completed'],['EXIT_CODE',item.exitCode===0]].filter(([,valid])=>!valid).map(([label])=>label);
+      ['STATUS',concluded],['EXIT_CODE',knownExit]].filter(([,valid])=>!valid).map(([label])=>label);
     requireThat(failed.length===0,
       `continuation initialization has denied, uncertain or unexpected effects (${diagnostic(failed.join(','))})`);
-    // Observation certifies completion and provenance, not a command's strategy
-    // or absence of arbitrary effects. The flow controller owns eligibility,
-    // bound work, verification-start exclusion and the continuation grant.
+    if(item.exitCode!==0)commandFailures.push({itemIndex,status:item.status,exitCode:item.exitCode});
+    // This is a known command result, not permission to retry. The controller
+    // still proves bound work/controls and no started recipe before its grant;
+    // those proofs do not certify arbitrary effects outside the bound scope.
   }
+  return commandFailures;
 }
 async function assertGenericContractLoad(items, bundle, cwd, binding) {
   const firstAction = items.find(item => !['userMessage', 'agentMessage', 'reasoning'].includes(item.type)
@@ -715,7 +721,7 @@ function concludedChildMessage(turn,items) {
   }
   return final;
 }
-export async function readAppServerChild(rpc, { binding, bundle, cwd, continuation = null, initialization = false, priorCaptures = [] }) {
+export async function readAppServerChild(rpc, { binding, bundle, cwd, continuation = null, initialization = false, priorCaptures = [], onInitializationObserved = null }) {
   await assertAppServerBundle(bundle); await physical(cwd, true);
   const { binding: current, items: parentItems } = await parentBinding(rpc, binding);
   requireThat(Object.keys(current).every(key => current[key] === binding[key]), 'child binding changed');
@@ -736,7 +742,7 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd, continuati
   requireThat(invalidTurn===-1,`fresh child has no admitted completed successful turn sequence (failed=TURN; ${publicTurnDiagnostic(turns[invalidTurn])})`);
   requireThat(turns.every(turn=>turn.itemsView===undefined||['full','summary','notLoaded'].includes(turn.itemsView)),
     'child turn items view unproven');
-  let original = null;
+  let original = null,initializationCommandFailures=null;
   if (continuation !== null) {
     requireThat(continuation.format === 'stnl-native-pre-verification-continuation-v1'
       && Object.keys(binding).every(key => continuation.binding?.[key] === binding[key])
@@ -755,7 +761,7 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd, continuati
       && turns[0].items?.filter(item => item.type === 'agentMessage').at(-1)?.text === firstFinal.text,
     'continuation first public response changed');
     assertRunnerActivities(firstItems,binding);
-    assertConcludedInitialization(firstItems,cwd,binding);
+    initializationCommandFailures=assertConcludedInitialization(firstItems,cwd,binding);
     await assertGenericContractLoad(firstItems, bundle, cwd, binding);
   }
   for(const [index,prior] of priorCaptures.entries()) {
@@ -775,7 +781,7 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd, continuati
   const turn = turns.at(-1);
   const items = await pages(rpc, 'thread/items/list', { threadId: binding.agentThreadId, turnId: turn.id });
   assertRunnerActivities(items,binding);
-  if(initialization)assertConcludedInitialization(items,cwd,binding);
+  if(initialization)initializationCommandFailures=assertConcludedInitialization(items,cwd,binding);
   if (items.some(deniedShellTemporaryFile)) throw fail('SANDBOX_COMMAND_DENIED: runner implicit temporary file denial');
   if (continuation === null) await assertGenericContractLoad(items, bundle, cwd, binding);
   const final=concludedChildMessage(turn,items);
@@ -789,6 +795,9 @@ export async function readAppServerChild(rpc, { binding, bundle, cwd, continuati
   }
   requireThat(Buffer.from(final.text, 'utf8').toString('utf8') === final.text, 'invalid UTF-8 response');
   await assertAppServerBundle(bundle);
+  // A separate observation callback never changes the canonical tool envelope.
+  // In the caller it runs only after the product's eligibility probe.
+  if(initializationCommandFailures!==null)await onInitializationObserved?.(initializationCommandFailures);
   return { agentId: binding.agentPath, status: 'completed', finalResponse: final.text,
     ...(continuation === null || priorCaptures.length ? {} : { preVerificationContinuation: continuation }) };
 }

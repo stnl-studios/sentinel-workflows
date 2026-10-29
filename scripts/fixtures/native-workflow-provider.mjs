@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 // OFFLINE_TEST_ONLY. Scripted authors/judges through the real public producers;
 // these outcomes do not attest semantic model quality or native transport.
 import fs from 'node:fs/promises';
@@ -245,7 +246,7 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
       await bindNative(admitted.handle, agentPath);
       if (operation === 'EXECUTE_SLICE' && fault === 'aux-after-formal') auxiliary();
       if (operation === 'EXECUTE_SLICE' && fault === 'aux-followup-twelve') auxiliary(thread, turn, { turns: 12 });
-      const continuing=(fault==='pre-verification-continuation'||clarificationRounds&&fault==='test-coverage-clarification-continuation'&&formalRound===0)&&operation==='EXECUTE_SLICE'
+      const continuing=(['pre-verification-continuation','pre-verification-inspection-failure'].includes(fault)||clarificationRounds&&fault==='test-coverage-clarification-continuation'&&formalRound===0)&&operation==='EXECUTE_SLICE'
         ||['formal-continuation-exhausted','formal-continuation-correction'].includes(fault)&&operation==='VALIDATE_SLICE'&&formalRound===0;
       const contractCommand=/^cat -- .+$/mu.exec(prompt)?.[0];
       if(!contractCommand)throw Error('canonical full-contract read command absent from public context');
@@ -254,8 +255,9 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         const read=contractRead();read.aggregatedOutput=await fs.readFile(path.join(snapshot,'agents/codex/.codex/agents/stnl_validation_runner.toml'),'utf8');
         child.turns.push({id:randomUUID(),status:'completed',error:null,itemsView:'full',items:[
           {id:randomUUID(),type:'reasoning',summary:[],content:[]},
-          read,...(fault==='pre-verification-continuation'?[{id:'initialization-discovery',type:'commandExecution',
-            command:'/bin/zsh -lc "sed -n \'1,5p\' package.json"',cwd:workspace,status:'completed',exitCode:0,
+          read,...(['pre-verification-continuation','pre-verification-inspection-failure'].includes(fault)?[{id:'initialization-discovery',type:'commandExecution',
+            command:fault==='pre-verification-inspection-failure'?'cat missing-discovery-path requirements.md':'/bin/zsh -lc "sed -n \'1,5p\' package.json"',cwd:workspace,
+            status:fault==='pre-verification-inspection-failure'?'failed':'completed',exitCode:fault==='pre-verification-inspection-failure'?1:0,
             aggregatedOutput:'Synthetic discovery only; no command executed by this fixture.',commandActions:[]}]:[]),
           {id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'Arbitrary initialization; no verification yet.'}]});
         turn.items.push({id:randomUUID(),type:'subAgentActivity',kind:'completed',agentPath,agentThreadId:childId});
@@ -266,6 +268,8 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
           if(!admittedContinuation)await new Promise(resolve=>setTimeout(resolve,1));
         }
         if(!admittedContinuation)throw Error('public continuation admission unavailable');
+        if(fault==='pre-verification-inspection-failure')assert.deepEqual(admittedContinuation.initializationCommandFailures,
+          [{itemIndex:2,status:'failed',exitCode:1}],'caller receives failure feedback before one admitted follow-up');
         const second={id:randomUUID(),status:'inProgress',error:null,itemsView:'full',items:[]};child.turns.push(second);
         turn.items.push({id:randomUUID(),type:'subAgentActivity',kind:'interacted',agentPath,agentThreadId:childId});
       }

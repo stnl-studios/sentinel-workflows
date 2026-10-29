@@ -478,7 +478,7 @@ for (const [name, mutate] of [
       'foreign binding':'continuation public identity/source differs','first bytes changed':'continuation public identity/source differs',
       'first API response changed':'continuation first public response changed','first contract truncated':'generic runner complete contract output absent, truncated or foreign',
       'first explicit mutation':'continuation initialization has denied, uncertain or unexpected effects (itemIndex=1; failed=ITEM_TYPE,CWD,EXIT_CODE; itemType=fileChange; cwd=differs; status=completed; exitCode=absent)',
-      'first command denied':'continuation initialization has denied, uncertain or unexpected effects (itemIndex=0; failed=EXIT_CODE; itemType=commandExecution; cwd=matches; status=completed; exitCode=1)',
+      'first command denied':'generic runner contract read not observed before scope actions',
       'profile changed':'child metadata foreign, forked or version differs','formal response projection drift':'public child surfaces disagree'}[name];
     assert.ok(expected,`missing diagnostic contract for ${name}`);return refuses(expected)(error);
   });
@@ -705,7 +705,8 @@ for (const [name, changes, failed, detail] of [
   ['foreign cwd', { cwd: '/private/cwd-secret' }, 'CWD', 'cwd=differs'],
   ['uncertain command', { status: 'inProgress', exitCode: null }, 'STATUS,EXIT_CODE', 'status=inProgress'],
   ['denied command', { status: 'declined', exitCode: 1 }, 'STATUS,EXIT_CODE', 'status=declined'],
-  ['failed command', { exitCode: 2 }, 'EXIT_CODE', 'exitCode=2'],
+  ['contradictory failed command', { status: 'failed', exitCode: 0 }, 'EXIT_CODE', 'exitCode=0'],
+  ['negative exit', { status:'failed',exitCode:-1 }, 'EXIT_CODE', 'exitCode=-1'],
   ['missing metadata', { status: undefined, exitCode: undefined }, 'STATUS,EXIT_CODE', 'status=absent'],
   ['unknown metadata', { status: 'private-status-secret', exitCode: 'private-exit-secret' }, 'STATUS,EXIT_CODE', 'status=other'],
   ['explicit file mutation', { type: 'fileChange' }, 'ITEM_TYPE', 'itemType=fileChange'],
@@ -753,9 +754,15 @@ for (const [name, changes, failed, detail] of [
 });
 
 for (const fault of [null, 'first-file-removed', 'first-alias', 'simultaneous-drift', 'duplicate-admission', 'expired',
-  'parent-closed-during-admission', 'expired-during-admission'])
+  'parent-closed-during-admission', 'expired-during-admission','inspection-failure','inspection-failure-history-drift','inspection-failure-feedback-drift'])
 test(`continued provider preserves both sources and reobserves without another turn (${fault ?? 'valid'})`, async t => {
   const f = await fixture(t), s = server({ bundle: f.bundle, cwd: f.root, provider: true, response: 'Initialization is not a verdict.\n' });
+  const inspectionFailure=fault?.startsWith('inspection-failure');
+  if(inspectionFailure) {
+    s.state.items.splice(1,0,{id:'inspection-failed',type:'commandExecution',command:'cat private-missing-file private-document',
+      cwd:f.root,status:'failed',exitCode:1,aggregatedOutput:'private-output-secret',commandActions:[]});
+    s.state.turns[0].items=structuredClone(s.state.items);
+  }
   s.state.parentItems.push({ ...s.state.parentItems[0], id: 'first-completion', kind: 'completed' });
   const request = s.rpc.request.bind(s.rpc); let parentDone = false, admissionCount = 0, firstFile;
   const now=Date.now;t.after(()=>{Date.now=now;});
@@ -782,8 +789,15 @@ test(`continued provider preserves both sources and reobserves without another t
       return { format: 'stnl-native-pre-verification-continuation-v1', binding, firstTurnId,
         firstToolResultUtf8, firstToolResultSha256: sha(firstToolResultUtf8) };
     },
-    onChildCompleted: ({ initialization }) => {
+    onChildCompleted: async ({ initialization }) => {
       if (initialization) {
+        if(inspectionFailure) {
+          const events=(await fs.readFile(path.join(f.root,'continued-provider.events.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+          const admission=events.find(e=>e.type==='native.child.continuation.admitted');
+          assert.deepEqual(admission.initializationCommandFailures,[{itemIndex:1,status:'failed',exitCode:1}],
+            'feedback is in the existing event before the caller follows up');
+          assert.doesNotMatch(JSON.stringify(admission),/private-missing-file|private-output-secret/);
+        }
         s.state.turns.push({ id: 'formal-turn', rootTurnId: 'parent-turn', itemsView: 'full', status: 'completed',
           error: null, items: [{ id: 'judgment', type: 'agentMessage', phase: 'final_answer', text: 'Literal formal judgment\r\n' }] });
         s.state.parentItems.push({ ...s.state.parentItems[0], id: 'second-completion', kind: 'completed' });
@@ -807,6 +821,12 @@ test(`continued provider preserves both sources and reobserves without another t
     s.state.turns[0].items.at(-1).text += 'changed';
     const changed = JSON.parse(saved); changed.finalResponse += 'changed'; await fs.writeFile(firstFile, JSON.stringify(changed) + '\n');
   }
+  if(fault==='inspection-failure-history-drift')s.state.turns[0].items.find(x=>x.id==='inspection-failed').exitCode=2;
+  if(fault==='inspection-failure-feedback-drift') {
+    const events=(await fs.readFile(result.eventsPath,'utf8')).trim().split('\n').map(JSON.parse);
+    events.find(e=>e.type==='native.child.continuation.admitted').initializationCommandFailures[0].exitCode=2;
+    await fs.writeFile(result.eventsPath,events.map(e=>JSON.stringify(e)+'\n').join(''));
+  }
   if (fault === 'duplicate-admission') {
     const events = (await fs.readFile(result.eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
     await fs.appendFile(result.eventsPath, JSON.stringify(events.find(event => event.type === 'native.child.continuation.admitted')) + '\n');
@@ -819,11 +839,11 @@ test(`continued provider preserves both sources and reobserves without another t
   if (fault === 'duplicate-admission') await assert.rejects(provider.runTurn(replayArgs), blocked);
   else {
     const replay = await provider.runTurn(replayArgs);
-    assert.equal(replay.completed, fault === null, replay.error);
-    if (fault === null) assert.deepEqual(replay.captures[0].toolResult, result.captures[0].toolResult);
+    assert.equal(replay.completed, fault === null||fault==='inspection-failure', replay.error);
+    if (fault === null||fault==='inspection-failure') assert.deepEqual(replay.captures[0].toolResult, result.captures[0].toolResult);
   }
   assert.deepEqual(await fs.readFile(result.captures[0].file), finalBytes, 'later observation cannot replace the formal result');
-  if (fault === null) assert.deepEqual(await fs.readFile(firstFile), saved);
+  if (fault === null||inspectionFailure) assert.deepEqual(await fs.readFile(firstFile), saved);
   assert.equal(s.calls.filter(call => call.method === 'turn/start').length, 1, 'only the original principal is dispatched');
 });
 
@@ -2387,4 +2407,43 @@ for (const mode of ['author', 'review', 'foreign-resume']) test(`normal continui
     model: 'gpt-6.1-sol', effort: 'high', operationId: mode, role: mode === 'review' ? 'review' : 'author', priorAuthorThread: prior });
   assert.equal(result.completed, false);
   assert.equal(s.calls.some(call => call.method === 'turn/start'), false);
+});
+
+
+for(const status of ['failed','completed'])test(`terminal inspection failure is observed without a grant (${status})`,async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,response:'Literal initialization; recipe not started.'});
+  const missing=path.join(f.root,'private-missing-inspection.txt'),good=path.join(f.root,'private-inspection.txt');
+  await fs.writeFile(good,'private-document-secret');
+  const cat=spawnSync('/bin/cat',[missing,good],{cwd:f.root,encoding:'utf8'});
+  assert.equal(cat.status,1);assert.match(cat.stderr,/No such file or directory/);assert.equal(cat.stdout,'private-document-secret');
+  s.state.items.splice(1,0,{id:'failed-inspection',type:'commandExecution',command:`cat '${missing}' '${good}'`,
+    cwd:f.root,status,exitCode:cat.status,aggregatedOutput:cat.stdout+cat.stderr,commandActions:[]});
+  s.state.turns[0].items=structuredClone(s.state.items);
+  const binding=await bindAppServerChild(s.rpc,identity);let observation;
+  const result=await readAppServerChild(s.rpc,{binding,bundle:f.bundle,cwd:f.root,initialization:true,
+    onInitializationObserved:failures=>{observation=failures;}});
+  assert.deepEqual(observation,[{itemIndex:1,status,exitCode:1}]);
+  assert.equal(result.finalResponse,'Literal initialization; recipe not started.');
+  assert.deepEqual(Object.keys(result).sort(),['agentId','finalResponse','status'],'observation is not a new canonical envelope');
+  assert.equal(result.preVerificationContinuation,undefined,'observed failure grants no permission');
+  assert.ok(s.calls.every(x=>x.method.startsWith('thread/')),'observation has no model turn or verification');
+  assert.doesNotMatch(JSON.stringify(observation),/private-|document-secret/);
+});
+
+
+test('known initialization failure without flow eligibility grants no continuation or extra producer',async t=>{
+  const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true,response:'Literal blocked initialization'});
+  s.state.items.splice(1,0,{id:'failed-read',type:'commandExecution',command:'cat missing',cwd:f.root,
+    status:'failed',exitCode:1,aggregatedOutput:'not authority',commandActions:[]});
+  s.state.turns[0].items=structuredClone(s.state.items);s.state.parentItems.push({...s.state.parentItems[0],id:'first-completion',kind:'completed'});
+  const request=s.rpc.request.bind(s.rpc);let done=false,probes=0;
+  s.rpc.request=async(method,params)=>{const value=await request(method,params);
+    if(method==='thread/turns/list'&&params.threadId===parent)value.data[0].status=done?'completed':'inProgress';return value;};
+  const provider=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc,pollMs:1});
+  const result=await provider.runTurn({prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',
+    role:'review',operationId:'ineligible-initialization',observeFormalBinding:()=>({agentPath:identity.agentPath}),
+    onPrepareContinuation:async()=>{probes++;return null;},onChildCompleted:({initialization})=>{assert.notEqual(initialization,true);done=true;}});
+  assert.equal(result.completed,true,result.error);assert.equal(probes,1);assert.equal(s.state.turns.length,1);
+  const events=await fs.readFile(result.eventsPath,'utf8');assert.equal(events.includes('native.child.continuation.admitted'),false);
+  assert.equal(s.calls.filter(x=>x.method==='turn/start').length,1);
 });
