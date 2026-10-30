@@ -709,12 +709,16 @@ function terminalInterruptedObservationSettled(state, ledger, runId, evidence) {
   const ledgerTurn=ledger.turns.find(item=>item.number===pending?.mainNumber);
   const uncertain=ledger.turns.filter(item=>item.state==='uncertain');
   const unclean=ledger.turns.filter(item=>!['completed','not_dispatched'].includes(item.state));
+  const caseRunners=ledger.turns.filter(item=>item.caseId===state.caseId&&item.role==='runner');
   const interruptedDiagnostic='parent turn failed/interrupted (status=interrupted; error=absent; cause=absent)';
   return state.status==='BLOCKED'&&state.terminal?.result==='BLOCKED'
     &&state.terminal.blocker==='NATIVE_TRANSPORT_UNPROVEN'
     &&pending?.operation==='PLAN'&&pending.slice===null&&Number.isSafeInteger(pending.sequence)
     &&pending.sequence===state.operations?.length&&Number.isSafeInteger(pending.mainNumber)
-    &&pending.reserved?.length===0&&pending.startedChildren?.length===0
+    &&Array.isArray(pending.reserved)&&new Set(pending.reserved).size===pending.reserved.length
+    &&pending.reserved.every(id=>typeof id==='string'&&id.length>0)
+    &&isDeepStrictEqual(pending.reserved,pending.admission?.runners)
+    &&Array.isArray(pending.startedChildren)&&pending.startedChildren.length===0
     &&typeof dispatch?.threadId==='string'&&dispatch.threadId.length>0
     &&typeof dispatch?.turnId==='string'&&dispatch.turnId.length>0
     &&record?.operation==='PLAN'&&record.slice===null&&record.threadId===dispatch.threadId
@@ -724,12 +728,13 @@ function terminalInterruptedObservationSettled(state, ledger, runId, evidence) {
     &&turn?.completed===false&&turn.terminalObserved===true
     &&turn.errorCode==='NATIVE_TRANSPORT_UNPROVEN'&&turn.error===interruptedDiagnostic
     &&turn.threadId===dispatch.threadId&&turn.turnId===dispatch.turnId
-    &&ledger.reservations.length===0&&uncertain.length===1&&unclean.length===1
+    &&ledger.reservations.length===0&&caseRunners.length===0&&uncertain.length===1&&unclean.length===1
     &&ledgerTurn?.runId===runId&&ledgerTurn.caseId===state.caseId&&ledgerTurn.role==='main'
     &&ledgerTurn.operation==='PLAN'&&ledgerTurn.slice===null&&ledgerTurn.sequence===pending.sequence
     &&ledgerTurn.threadId===dispatch.threadId&&ledgerTurn.state==='uncertain'
     &&Number.isSafeInteger(state.finalizer?.exitCode)&&state.finalizer.exitCode>0
-    &&evidence?.finalizer?.caseId===state.caseId&&evidence.finalizer.status==='BLOCKED';
+    &&evidence?.finalizer?.caseId===state.caseId&&evidence.finalizer.status==='FAIL'
+    &&evidence.finalizer.productAcceptance?.passed===false;
 }
 
 export function settledNativeCleanupCase(state, ledger, runId, evidence = null) {

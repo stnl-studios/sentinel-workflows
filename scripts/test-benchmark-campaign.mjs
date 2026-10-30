@@ -568,6 +568,8 @@ async function writeOldTerminalNativeBlockedFull(f, variant = null) {
   };
   const pendingVariants = new Set(['terminal-observation', 'terminal-interrupted', 'terminal-interrupted-history-only',
     'terminal-interrupted-wrong-turn', 'terminal-interrupted-wrong-case', 'terminal-interrupted-extra-uncertain',
+    'terminal-interrupted-started-child', 'terminal-interrupted-reservation-mismatch',
+    'terminal-interrupted-finalizer-status',
     'pending-case-mismatch', 'pending-sequence-mismatch',
     'pending-operation-mismatch', 'pending-thread-mismatch', 'pending-turnid-mismatch', 'pending-evidence-missing',
     'pending-evidence-incomplete', 'pending-terminal-unobserved', 'pending-ledger-uncertain', 'pending-finalizer-mismatch']);
@@ -594,14 +596,18 @@ async function writeOldTerminalNativeBlockedFull(f, variant = null) {
   }
   if (pendingVariants.has(variant)) {
     const evidencePath = path.join(dir, 'case-c', '03-plan.json');
+    const reserved=['runner-a','runner-b'];
     caseStates.C.pendingObservation = { sequence: 3, operation: 'PLAN', slice: null, mainNumber: 15,
-      dispatch: { threadId: cThreadId, turnId: cTurnId }, reserved: [], startedChildren: [] };
+      admission:{runners:reserved},dispatch: { threadId: cThreadId, turnId: cTurnId }, reserved, startedChildren: [] };
+    if(variant==='terminal-interrupted-started-child')caseStates.C.pendingObservation.startedChildren=['runner-a'];
+    if(variant==='terminal-interrupted-reservation-mismatch')caseStates.C.pendingObservation.reserved=['foreign-runner'];
     caseStates.C.operations = [
       { operation: 'SPEC_INIT', slice: null, threadId: 'case-c-thread-1', outcome: { result: 'PASS' } },
       { operation: 'PLAN', slice: null, threadId: 'case-c-thread-2', outcome: { result: 'PASS' } },
       { operation: 'PLAN', slice: null, threadId: cThreadId, outcome: structuredClone(caseStates.C.terminal), evidencePath },
     ];
     caseStates.C.finalizer = { exitCode: 1, rawPath: path.join(dir, 'case-c', 'raw.json') };
+    if(variant==='terminal-interrupted-finalizer-status')caseStates.C.finalizer.rawStatus='BLOCKED';
   }
   if (variant === 'pending-case-mismatch') ledger.turns[14].caseId = 'B';
   if (variant === 'pending-sequence-mismatch') caseStates.C.pendingObservation.sequence = 2;
@@ -627,7 +633,10 @@ async function writeOldTerminalNativeBlockedFull(f, variant = null) {
     const stateBytes = Buffer.from(JSON.stringify(caseStates[caseId]));
     await fs.writeFile(path.join(caseRoot, 'case-state.json'), stateBytes);
     await fs.writeFile(path.join(caseRoot, 'raw.json'), JSON.stringify({ caseId,
-      ...(caseId === 'C' && pendingVariants.has(variant) ? { status: 'BLOCKED' } : {}), preserved: true }));
+      ...(caseId === 'C' && pendingVariants.has(variant)
+        ? variant?.startsWith('terminal-interrupted')
+          ? { status: caseStates.C.finalizer.rawStatus??'FAIL',productAcceptance:{passed:false} }
+          : { status: 'BLOCKED' } : {}), preserved: true }));
     if (caseId === 'C' && pendingVariants.has(variant) && variant !== 'pending-evidence-missing') {
       await fs.writeFile(path.join(caseRoot, '03-plan.json'), JSON.stringify(operationEvidence));
     }
@@ -732,7 +741,8 @@ test('native terminal cleanup remains fail-closed for active processes and unset
     });
   }
   for(const variant of ['terminal-interrupted-history-only','terminal-interrupted-wrong-turn',
-    'terminal-interrupted-wrong-case','terminal-interrupted-extra-uncertain'])await t.test(variant,async child=>{
+    'terminal-interrupted-wrong-case','terminal-interrupted-extra-uncertain','terminal-interrupted-started-child',
+    'terminal-interrupted-reservation-mismatch','terminal-interrupted-finalizer-status'])await t.test(variant,async child=>{
     const f=await functionalFixture(child);await writeOldTerminalNativeBlockedFull(f,variant);
     await assert.rejects(runFunctionalBenchmark({root:f.root,hooks:f.hooks}),error=>error.code==='BLOCKED_CLEANUP');
     assert.equal(f.runs,0,
