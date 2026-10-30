@@ -706,8 +706,12 @@ function checkLifecycleStatic(root) {
     if (/READINESS_SCOPE\s*=\s*(?!LOCAL\|GLOBAL|\{\{READINESS_SCOPE\}\})(?:local|global|localized|repository)|`(?:local|global|localized|repository)`/u.test(text)) reject("C016_READINESS_SCOPE", `noncanonical READINESS scope remains: ${file}`);
   }
   const lifecycleText = publicFiles.filter((file) => file.startsWith(lifecycle)).map((file) => read(file)).join("\n");
+  const canonicalIds = read(path.join(lifecycle, "references/canonical-ids.md"));
+  if (!/\bnever\s+(?:physically\s+)?remove,\s*renumber,\s*reuse,\s*(?:or\s+)?fill gaps\b/iu.test(canonicalIds)) {
+    reject("C015_LIFECYCLE_AUTHORITY", "lifecycle contracts lack immutable IDs");
+  }
   for (const [marker, label] of [
-    ["never remove, renumber, reuse, fill gaps", "immutable IDs"], ["retired_reason", "tombstone reason"],
+    ["retired_reason", "tombstone reason"],
     ["runtime/create-readiness-attestation.mjs", "attestation creator"], ["--readiness-attestation", "attestation binding"],
     ["CLOSE <TARGET>", "direct target-only CLOSE publisher binding"], ["Recheck backup digest before promotion", "post-rename verification"],
   ]) if (!lifecycleText.includes(marker)) reject("C015_LIFECYCLE_AUTHORITY", `lifecycle contracts lack ${label}`);

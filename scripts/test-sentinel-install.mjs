@@ -83,10 +83,9 @@ test("clean install includes all workflow and domain skills plus native platform
     assert.doesNotMatch(operation.destination, /(?:package-lock\.json|package\.json|validation-runner\.mjs|runner-broker\.mjs)/u);
     assert.doesNotMatch(operation.destination, /(?:benchmarks?|sdk|app-server)/iu);
     for (const relative of operation.sourceFiles?.keys() ?? []) {
+      assert.doesNotMatch(operation.sourceFiles.get(relative).toString("utf8"), /\bcommand_execution\b|App Server|benchmark/iu);
       assert.doesNotMatch(relative, /(?:^|\/)(?:benchmarks?|node_modules|maintenance|evals|sdk|app-server)(?:\/|$)|(?:^|\/)runtime\/test(?:\/|$)/iu);
-      if (operation.target === "claude") {
-        assert.doesNotMatch(relative, /^(?:runtime\/runner-command-events\.mjs|runtime\/runner-validate-response\.schema\.json)$/u);
-      }
+      assert.doesNotMatch(relative, /^(?:runtime\/runner-command-events\.mjs|runtime\/runner-validate-response\.schema\.json)$/u);
     }
   }
   for (const target of ["codex", "claude"]) {
@@ -315,21 +314,46 @@ test("partial application returns applied and incomplete paths without rollback 
   assert.ok(result.error);
 });
 
-test('native-only bundle excludes exactly two development stubs and upgrade removes their old installed copies',async t=>{
+test('native packages exclude development stubs and SDK event artifacts for both clients, removing prior copies on reinstall',async t=>{
  const home=await isolatedHome(t),stub='runtime/managed-slice-context.mjs',names=['stnl-slice-executor','stnl-slice-quality-manager'];
- for(const name of WORKFLOW_SKILLS){assert.equal(isDistributedSkillResource(name,stub,'codex'),!names.includes(name));assert.equal(isDistributedSkillResource(name,'references/managed-slice-context.mjs','codex'),true);assert.equal(isDistributedSkillResource(name,'runtime/nested/managed-slice-context.mjs','codex'),true);}
- for(const name of names)for(const relative of ['runtime/runner-command-events.mjs','runtime/runner-validate-response.schema.json']){
-   assert.equal(isDistributedSkillResource(name,relative,'codex'),true);
-   assert.equal(isDistributedSkillResource(name,relative,'claude'),false);
- }
+ const sdkResources=[
+   ['stnl-slice-executor','runtime/runner-command-events.mjs'],
+   ['stnl-slice-executor','runtime/runner-validate-response.schema.json'],
+   ['stnl-slice-quality-manager','runtime/runner-command-events.mjs'],
+ ];
+ for(const name of WORKFLOW_SKILLS){assert.equal(isDistributedSkillResource(name,stub),!names.includes(name));assert.equal(isDistributedSkillResource(name,'references/managed-slice-context.mjs'),true);assert.equal(isDistributedSkillResource(name,'runtime/nested/managed-slice-context.mjs'),true);}
+ for(const [name,relative] of sdkResources){assert.equal(isDistributedSkillResource(name,relative),false);}
  assert.equal(isDistributedSkillResource('unrelated-skill',stub),true);
- await install(home,['codex']);
- for(const name of names){const original=path.join(REPOSITORY_ROOT,'skills/workflows',name,stub),installed=path.join(home,'.codex/skills',name,stub);assert.equal((await fs.stat(original)).isFile(),true);await assert.rejects(fs.access(installed));await fs.writeFile(installed,'old installed managed stub\n');}
- const before=await buildInstallPlan({repositoryRoot:REPOSITORY_ROOT,home,targets:['codex']});
- for(const name of names)assert.equal(before.operations.find(item=>item.kind==='skill'&&item.name===name).status,'REPLACE');
+ await install(home);
+ for(const target of ['codex','claude']){
+   const platformRoot=target==='codex'?'.codex':'.claude';
+   for(const name of names){
+     const sourceStub=path.join(REPOSITORY_ROOT,'skills/workflows',name,stub);
+     const installedStub=path.join(home,platformRoot,'skills',name,stub);
+     assert.equal((await fs.stat(sourceStub)).isFile(),true);
+     await assert.rejects(fs.access(installedStub));
+     await fs.writeFile(installedStub,'old installed managed stub\n');
+   }
+   for(const [name,relative] of sdkResources){
+     const source=path.join(REPOSITORY_ROOT,'skills/workflows',name,relative);
+     const installed=path.join(home,platformRoot,'skills',name,relative);
+     assert.equal((await fs.stat(source)).isFile(),true);
+     await fs.mkdir(path.dirname(installed),{recursive:true});
+     await fs.copyFile(source,installed);
+     const helper=path.join(home,platformRoot,'skills',name,'runtime/runner-verification.mjs');
+     assert.equal((await fs.stat(helper)).isFile(),true);
+   }
+ }
+ const before=await buildInstallPlan({repositoryRoot:REPOSITORY_ROOT,home,targets:['codex','claude']});
+ for(const target of ['codex','claude'])for(const name of names)assert.equal(before.operations.find(item=>item.target===target&&item.kind==='skill'&&item.name===name).status,'REPLACE');
  await applyInstallPlan(before);
- for(const name of names)await assert.rejects(fs.access(path.join(home,'.codex/skills',name,stub)));
- const after=await buildInstallPlan({repositoryRoot:REPOSITORY_ROOT,home,targets:['codex']});assert.equal(after.operations.every(item=>item.status==='NO-OP'),true);
+ for(const target of ['codex','claude']){
+   const platformRoot=target==='codex'?'.codex':'.claude';
+   for(const name of names)await assert.rejects(fs.access(path.join(home,platformRoot,'skills',name,stub)));
+   for(const [name,relative] of sdkResources)await assert.rejects(fs.access(path.join(home,platformRoot,'skills',name,relative)));
+   for(const name of names)assert.equal((await fs.stat(path.join(home,platformRoot,'skills',name,'runtime/runner-verification.mjs'))).isFile(),true);
+ }
+ const after=await buildInstallPlan({repositoryRoot:REPOSITORY_ROOT,home,targets:['codex','claude']});assert.equal(after.operations.every(item=>item.status==='NO-OP'),true);
 });
 
 test('installed reader closure runs outside the checkout without development stubs or benchmark',async t=>{

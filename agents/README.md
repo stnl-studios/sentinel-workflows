@@ -10,7 +10,7 @@ A instalação global parte deste checkout. Na raiz do repositório, execute:
 npm run sentinel:install
 ```
 
-Por padrão, o comando instala sete skills de workflow, sete skills de domínio e dois agents nativos do cliente escolhido nas pastas `~/.codex/skills` e `~/.codex/agents`, ou `~/.claude/skills` e `~/.claude/agents`. `npm run sentinel:install -- --preview` lista criações, substituições e remoções sem escrever. Para instalar apenas uma plataforma, use `--target codex` ou `--target claude`.
+Por padrão, o comando instala sete skills de workflow, sete skills de domínio e dois agents nativos do cliente escolhido nas pastas `~/.codex/skills` e `~/.codex/agents`, ou `~/.claude/skills` e `~/.claude/agents`. O pacote não inclui o parser de eventos nem o schema de resposta específicos do SDK Codex, App Server ou infraestrutura de benchmark; o helper normal de verificação das skills permanece incluído. `npm run sentinel:install -- --preview` lista criações, substituições e remoções sem escrever. Para instalar apenas uma plataforma, use `--target codex` ou `--target claude`.
 
 Na reinstalação, agents Sentinel modificados são substituídos e agents obsoletos com o padrão de nome daquela plataforma são removidos. A limpeza alcança somente os arquivos Sentinel diretamente em cada pasta global `agents`; agents alheios permanecem preservados. O planejamento completo acontece antes da primeira alteração.
 

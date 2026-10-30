@@ -213,12 +213,42 @@ test("operational sources contain no obsolete taxonomy or flat skill paths", asy
 
 test('copied consumers require a complete installed invocation guide and neutral generic body', async t => {
   assert.equal(runRepositoryContract(ROOT).status, 0, runRepositoryContract(ROOT).stderr);
+  await t.test('immutable ID wording allows harmless physical and conjunction variants', async child => {
+    const root = await contractFixture(child, async fixtureRoot => {
+      const file = path.join(fixtureRoot, 'skills/workflows/stnl-spec-lifecycle-manager/references/canonical-ids.md');
+      const source = await fs.readFile(file, 'utf8');
+      assert.ok(source.includes('never physically remove, renumber, reuse, fill gaps'));
+      await fs.writeFile(file, source.replace('never physically remove, renumber, reuse, fill gaps', 'never remove, renumber, reuse, or fill gaps'));
+    });
+    const result = runRepositoryContract(root);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
   for (const [name, mutate, category] of [
     ['missing guide', async root => fs.rm(path.join(root, 'skills/workflows/stnl-slice-executor/references/runner-invocation.md')), 'C006_DISTRIBUTION'],
     ['missing independence guarantee', async root => {
       const file = path.join(root, 'skills/workflows/stnl-slice-executor/references/runner-invocation.md');
       await fs.writeFile(file, (await fs.readFile(file, 'utf8')).replace('without that contract is not the runner', 'without that contract is permitted'));
     }, 'C006_DISTRIBUTION'],
+    ['physical removal prohibition', async root => {
+      const file = path.join(root, 'skills/workflows/stnl-spec-lifecycle-manager/references/canonical-ids.md');
+      const text = await fs.readFile(file, 'utf8');
+      await fs.writeFile(file, text.replace('never physically remove, renumber, reuse, fill gaps', 'allow physical removal, renumber, reuse, fill gaps'));
+    }, 'C015_LIFECYCLE_AUTHORITY'],
+    ['renumbering prohibition', async root => {
+      const file = path.join(root, 'skills/workflows/stnl-spec-lifecycle-manager/references/canonical-ids.md');
+      const text = await fs.readFile(file, 'utf8');
+      await fs.writeFile(file, text.replace('renumber', 'relabel'));
+    }, 'C015_LIFECYCLE_AUTHORITY'],
+    ['reuse prohibition', async root => {
+      const file = path.join(root, 'skills/workflows/stnl-spec-lifecycle-manager/references/canonical-ids.md');
+      const text = await fs.readFile(file, 'utf8');
+      await fs.writeFile(file, text.replace('reuse', 'assign a new ID'));
+    }, 'C015_LIFECYCLE_AUTHORITY'],
+    ['gap-filling prohibition', async root => {
+      const file = path.join(root, 'skills/workflows/stnl-spec-lifecycle-manager/references/canonical-ids.md');
+      const text = await fs.readFile(file, 'utf8');
+      await fs.writeFile(file, text.replace('fill gaps', 'fill reserved gaps'));
+    }, 'C015_LIFECYCLE_AUTHORITY'],
     ['legacy external CLOSE candidate',async root=>fs.appendFile(path.join(root,'skills/workflows/stnl-spec-lifecycle-manager/references/close-policy.md'),'\nCLOSE <TARGET> <CANDIDATE>\n'),'C015_LIFECYCLE_AUTHORITY'],
     ['missing coordinated locator contract',async root=>{const file=path.join(root,'skills/workflows/stnl-spec-lifecycle-manager/README.md');await fs.writeFile(file,(await fs.readFile(file,'utf8')).replaceAll('materialRoot/lifecycle.lock','unbound sibling lock'));},'C015_LIFECYCLE_AUTHORITY'],
     ['vendor syntax in generic core', async root => fs.appendFile(path.join(root, 'skills/workflows/stnl-slice-executor/SKILL.md'), '\nSelect Codex directly.\n'), 'C004_VENDOR_NEUTRALITY'],

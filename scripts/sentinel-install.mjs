@@ -53,27 +53,27 @@ function excluded(relativePath) {
     || parts.some((part, index) => part === "test" && parts[index - 1] === "runtime");
 }
 
-async function walkFiles(root, relative = "", skillName = null, target = "codex") {
+async function walkFiles(root, relative = "", skillName = null) {
   const found = [];
   const entries = await fs.readdir(path.join(root, relative), { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name, "en"));
   for (const entry of entries) {
     const child = path.join(relative, entry.name);
-    if (excluded(child)||!isDistributedSkillResource(skillName,toPosix(child),target)) continue;
+    if (excluded(child)||!isDistributedSkillResource(skillName,toPosix(child))) continue;
     if (entry.isSymbolicLink()) throw new Error(`symlink in canonical skill source: ${path.join(root, child)}`);
-    if (entry.isDirectory()) found.push(...await walkFiles(root, child,skillName,target));
+    if (entry.isDirectory()) found.push(...await walkFiles(root, child,skillName));
     else if (entry.isFile()) found.push(child);
   }
   return found;
 }
 
-async function readSkillSource(repositoryRoot, name, target) {
+async function readSkillSource(repositoryRoot, name) {
   const sourceRoot = path.dirname(path.join(repositoryRoot, canonicalSkillRelativePath(name)));
   const sourceInfo = await lstatOrNull(sourceRoot);
   if (!sourceInfo?.isDirectory() || sourceInfo.isSymbolicLink()) {
     throw new Error(`skill source root is missing or not a regular directory: ${sourceRoot}`);
   }
-  const files = await walkFiles(sourceRoot,"",name,target);
+  const files = await walkFiles(sourceRoot,"",name);
   if (files.length === 0) throw new Error(`skill source is empty: ${sourceRoot}`);
   return new Map(await Promise.all(files.map(async (relative) => [
     toPosix(relative), await fs.readFile(path.join(sourceRoot, relative)),
@@ -198,7 +198,7 @@ export async function buildInstallPlan({ repositoryRoot = REPOSITORY_ROOT, home 
     const agentEntries = await listImmediate(agentsRoot);
     const currentSkills = new Map();
     for (const name of CANONICAL_SKILLS) {
-      currentSkills.set(name, await readSkillSource(repositoryRoot, name, target));
+      currentSkills.set(name, await readSkillSource(repositoryRoot, name));
     }
     for (const name of CANONICAL_SKILLS) {
       operations.push({
