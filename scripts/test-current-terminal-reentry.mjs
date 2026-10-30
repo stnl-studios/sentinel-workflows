@@ -7,10 +7,12 @@ import {completedNativeCase,reopeningInput} from './fixtures/current-completed-n
 import {retireActive} from './fixtures/current-reader-campaign.mjs';
 import {prepareCurrentSetReplacement,finalizeCurrentSetReplacement} from '../skills/workflows/stnl-execution-planner/runtime/execution-preparation-current.mjs';
 import {captureCurrentExecution,validateCurrentReviewCandidate} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
+import {retainedQ20TerminalReplacement} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current.mjs';
 import {preparePreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {currentImage} from './fixtures/current-native-seed.mjs';
 import {execFile} from 'node:child_process';
+import {createHash} from 'node:crypto';
 import {promisify} from 'node:util';
 import {publishPreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
 import {preparePlanCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs';
@@ -75,6 +77,69 @@ test('Q20 public admission refuses an already current integral certificate befor
   const ids=f.source.inspection.completed.filter(item=>item.deliveryId!==f.delivery.deliveryId).map(item=>item.deliveryId);
   await assert.rejects(()=>preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:ids,terminalValidation:true}),
     error=>error.code==='REPLAN_REQUIRED');
+});
+
+test('Q20 retained native v2 implementation binding accepts exact predecessor and rejects altered authority',async t=>{
+  const f=await emptyFixture(t),input=reopeningInput(f.source,f.delivery.deliveryId,{terminalValidation:true});
+  const draft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',
+    completedDeliveryIds:input.completedDeliveryIds,terminalValidation:true});
+  const options={specPath:f.specPath,candidateExecutionRoot:draft.candidateExecutionRoot};
+  for(const [name,bytes]of input.artifacts) {
+    const target=path.join(draft.candidateExecutionRoot,name);await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,bytes);
+  }
+  await preparePlanCandidate(options);
+  const proposal=await publishPreparationCandidate(options);
+  await publishPreparationCandidate({...options,reviewDecision:reviewFor({reviewRequest:proposal.reviewRequest})});
+  const before=await captureCurrentExecution(f.specPath),current=decode(before.files.get('continuity.json')).deliveries[0];
+  const predecessor=decode(before.files.get(current.evidence.path));
+  assert.equal(predecessor.implementation.length,0);
+  await normalizedFormal({...f,delivery:current},{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+  const complete=await captureCurrentExecution(f.specPath);
+  assert.equal(complete.inspection.state,'COMPLETE');
+  assert.equal(complete.inspection.normalHandoff,null);
+  const evidencePath=decode(complete.files.get('continuity.json')).deliveries[0].evidence.path;
+  const snapshot=decode(complete.files.get('approved-preparation.json'));
+  const currentFinal=decode(complete.files.get('continuity.json')).deliveries[0];
+  const terminalBundle=decode(complete.files.get(evidencePath)),terminalRecord=terminalBundle.validation;
+  const makeCase=()=>{
+    const bundle=structuredClone(terminalBundle),record=bundle.validation;
+    const implementation=structuredClone(record);
+    implementation.kind='implementation-check';implementation.id='implementation-check-01';
+    implementation.origin.operation='EXECUTE_SLICE';implementation.origin.preparationRevision=snapshot.preparationRevision-1;
+    implementation.origin.operationAttemptId='1a111111-1111-4111-8111-111111111111';
+    implementation.contract.terminal=null;bundle.implementation=[implementation];
+    const current=structuredClone(currentFinal);current.counters.implementationChecks=1;
+    const approved=structuredClone(snapshot),decision=approved.deliveries[0].review.evidenceDecisions[0];
+    const predecessorBytes=Buffer.from(JSON.stringify({...predecessor,implementation:[implementation]})+'\n');
+    const digest=`sha256:${createHash('sha256').update(predecessorBytes).digest('hex')}`;decision.evidenceSha256=digest;
+    const originObject=bundle.objects.find(item=>item.id===record.sources.origin);
+    const capsule=decode(Buffer.from(originObject.bytesBase64,'base64'));
+    const origin=decode(Buffer.from(capsule.originUtf8,'utf8'));
+    const request=decode(Buffer.from(capsule.validationRequestUtf8,'utf8'));
+    request.format='stnl-current-validation-request-v1';
+    request.base.evidenceSha256=digest;request.base.counters.implementationChecks=1;
+    capsule.validationRequestUtf8=JSON.stringify(request);
+    origin.terminalPreparationUtf8=JSON.stringify(approved)+'\n';capsule.originUtf8=JSON.stringify(origin);
+    const capsuleBytes=Buffer.from(JSON.stringify(capsule));
+    originObject.id=`sha256:${createHash('sha256').update(capsuleBytes).digest('hex')}`;
+    originObject.bytesBase64=capsuleBytes.toString('base64');record.sources.origin=originObject.id;implementation.sources.origin=originObject.id;
+    bundle.objects.sort((a,b)=>a.id.localeCompare(b.id));
+    return {current,decision,bundle,record,approvedDelivery:approved.deliveries[0],leaf:approved.normativeProjection.deliveries[0],
+      global:approved.normativeProjection.global,snapshot:approved,files:new Map([['approved-preparation.json',Buffer.from(JSON.stringify(approved)+'\n')]])};
+  };
+  const accepted=makeCase();assert.equal(retainedQ20TerminalReplacement(accepted),true);
+  const rejected=mutate=>{const sample=makeCase();mutate(sample);assert.equal(retainedQ20TerminalReplacement(sample),false);};
+  rejected(sample=>{sample.decision.evidenceSha256='sha256:'+'0'.repeat(64);});
+  rejected(sample=>{const cap=decode(Buffer.from(sample.bundle.objects.find(x=>x.id===sample.record.sources.origin).bytesBase64,'base64'));
+    const request=decode(Buffer.from(cap.validationRequestUtf8));request.base.counters.implementationChecks+=1;
+    cap.validationRequestUtf8=JSON.stringify(request);const bytes=Buffer.from(JSON.stringify(cap));
+    const object=sample.bundle.objects.find(x=>x.id===sample.record.sources.origin);object.id=`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    object.bytesBase64=bytes.toString('base64');sample.record.sources.origin=object.id;});
+  rejected(sample=>{sample.current.deliveryId='00000000-0000-4000-8000-000000000000';});
+  rejected(sample=>{sample.record.origin.preparationRevision-=1;});
+  rejected(sample=>{sample.record.contract.delivery.taskResult='altered contract';});
+  rejected(sample=>{sample.bundle.implementation[0].origin.operationAttemptId=sample.record.origin.operationAttemptId;});
+  rejected(sample=>{sample.bundle.implementation[0].contract.recipe.dependencyReview='altered evidence contract';});
 });
 
 for(const {single=false,independent=true}of [{},{single:true},{independent:false}])

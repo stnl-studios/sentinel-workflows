@@ -658,6 +658,70 @@ export function currentTerminalProjection(snapshot) {
     objective: projection.global.objective, strategy: projection.global.strategy,
     risks: projection.global.risks, deliveries});
 }
+export function retainedQ20TerminalReplacement({current,decision,bundle,record,approvedDelivery,leaf,global,snapshot,files}) {
+  if(decision.disposition!=='retain-current'||!approvedDelivery
+    ||decision.evidenceSha256===current.evidence?.sha256
+    ||snapshot.deliveries.length!==1||current.validation!=='current'
+    ||current.localRevision!==approvedDelivery.localRevision
+    ||bundle?.implementation?.length===0||bundle?.findingsChecks?.length
+    ||bundle?.support?.length>5||bundle?.openFindings?.length||bundle?.openDivergences?.length
+    ||!record||record.origin?.operation!=='VALIDATE_SLICE'
+    ||record.origin?.deliveryId!==current.deliveryId||record.origin?.slice!==current.slice
+    ||record.origin?.preparationRevision!==snapshot.preparationRevision
+    ||record.origin?.localRevision!==current.localRevision
+    ||record.origin?.normativeSha256!==current.authoritySha256
+    ||!same(record.contract?.delivery,leaf)
+    ||!same(record.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
+      objective:global.objective,strategy:global.strategy,risks:global.risks})
+    ||!same(record.contract?.recipe,leaf.verificationRecipe)
+    ||bundle.support.some(item=>item.kind!=='validation'||item.recordFormat!=='stnl-task-record-v2'
+      ||item.origin?.transport!=='native'||item.origin?.operation!=='VALIDATE_SLICE'
+      ||item.origin?.deliveryId!==current.deliveryId||item.origin?.slice!==current.slice
+      ||item.origin?.localRevision!==current.localRevision
+      ||item.origin?.preparationRevision>=snapshot.preparationRevision
+      ||!HASH.test(item.origin?.normativeSha256)
+      ||!same(item.contract?.delivery,leaf)||!same(item.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
+        objective:global.objective,strategy:global.strategy,risks:global.risks})
+      ||!same(item.contract?.recipe,leaf.verificationRecipe)))return false;
+  if(bundle.implementation.some(item=>item.kind!=='implementation-check'
+    ||item.recordFormat!=='stnl-task-record-v2'||item.origin?.transport!=='native'
+    ||item.origin?.operation!=='EXECUTE_SLICE'||item.origin?.deliveryId!==current.deliveryId
+    ||item.origin?.slice!==current.slice||item.origin?.localRevision!==current.localRevision
+    ||item.origin?.preparationRevision>=snapshot.preparationRevision
+    ||!HASH.test(item.origin?.normativeSha256)
+    ||item.origin?.operationAttemptId===record.origin.operationAttemptId
+    ||!same(item.contract?.delivery,leaf)
+    ||!same(item.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
+      objective:global.objective,strategy:global.strategy,risks:global.risks})
+    ||!same(item.contract?.recipe,leaf.verificationRecipe)))return false;
+  const objectById=new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')]));
+  const capsuleBytes=objectById.get(record.sources?.origin);
+  if(!capsuleBytes)return false;
+  let capsule,origin,request;
+  try {
+    capsule=parseCurrentJson(decode(capsuleBytes,'Q20 terminal origin capsule'));
+    if(capsule.format!=='stnl-native-validation-origin-bundle-v1')return false;
+    origin=parseCurrentJson(capsule.originUtf8);
+    request=parseCurrentJson(capsule.validationRequestUtf8);
+  } catch {return false;}
+  const approvedBytes=Map.prototype.get.call(files,'approved-preparation.json');
+  const owner=request.owner;
+  return ['stnl-current-validation-request-v1','stnl-current-validation-request-v2'].includes(request.format)
+    &&request.terminal!==undefined
+    &&request.base?.evidenceSha256===decision.evidenceSha256
+    &&same(request.base?.counters,{...current.counters,validationAttempts:current.counters.validationAttempts-1})
+    &&same(request.base?.openFindings,[])
+    &&owner?.operation==='VALIDATE_SLICE'&&owner.deliveryId===current.deliveryId
+    &&owner.slice===current.slice&&owner.localRevision===current.localRevision
+    &&owner.preparationRevision===snapshot.preparationRevision
+    &&owner.operationAttemptId===record.origin.operationAttemptId
+    &&owner.originActivationId===record.origin.originActivationId
+    &&origin.transport==='native'&&same(origin.owner,owner)
+    &&typeof origin.terminalPreparationUtf8==='string'
+    &&raw(Buffer.from(origin.terminalPreparationUtf8,'utf8'))===raw(approvedBytes)
+    &&same(request.terminal,currentTerminalProjection(snapshot))
+    &&same(record.contract.terminal,request.terminal);
+}
 function record(value, label, rejection = false) {
   plain(value, label);
   if (rejection) object(value, ['kind', 'operationAttemptId', 'origin', 'diagnostic', 'consumedInvocations', 'round', 'sources'], label);
@@ -887,7 +951,8 @@ function validateCurrentContent(files) {
           &&item.origin.deliveryId===current.deliveryId&&item.origin.slice===current.slice
           &&item.origin.localRevision<=current.localRevision);
     return decision.evidenceSha256!==current.evidence?.sha256 && approvedDelivery
-      && (bundle?.implementation?.length===0
+      && (bundle?.implementation?.length===0 || retainedQ20TerminalReplacement({current,decision,bundle,record,
+        approvedDelivery,leaf,global,snapshot,files})
       && (bundle.findingsChecks?.length===0 || convertedFindings || retainedRemoval)
       && (bundle.support?.length===0 || convertedFindings || convertedRejection || retainedRemoval)
       && bundle.openDivergences?.length===0
