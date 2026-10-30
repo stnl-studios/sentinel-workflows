@@ -36,10 +36,8 @@ node --test scripts/test-execution-contract.mjs
 node scripts/test-benchmark-contract.mjs
 node scripts/test-benchmark-measurement.mjs
 node --test scripts/test-benchmark-campaign.mjs
-node --test scripts/test-benchmark-manager.mjs scripts/test-benchmark-ui.mjs scripts/test-benchmark-runner-broker.mjs scripts/test-codex-runner-adapter.mjs scripts/test-managed-validation-context.mjs
-node --test scripts/test-capacity-retry.mjs
-node --test scripts/test-command-environment.mjs
-node --test scripts/test-isolated-home.mjs
+node --test scripts/test-benchmark-manager.mjs scripts/test-benchmark-ui.mjs scripts/test-codex-runner-adapter.mjs
+node --test scripts/test-app-server-transport.mjs scripts/test-command-environment.mjs scripts/test-current-runtime-boundaries.mjs
 
 node scripts/check-contracts.mjs repository --root "$ROOT"
 node scripts/check-contracts.mjs launchers --root templates/prompts
@@ -50,12 +48,20 @@ execution_skills=(
   skills/workflows/stnl-plan-reviewer
   skills/workflows/stnl-slice-executor
   skills/workflows/stnl-slice-quality-manager
-)
-node scripts/check-distributable-skills.mjs \
-  "${execution_skills[@]}" \
-  skills/workflows/stnl-spec-lifecycle-manager \
-  skills/workflows/stnl-spec-roadmap \
+  skills/workflows/stnl-spec-lifecycle-manager
+  skills/workflows/stnl-spec-roadmap
   skills/workflows/stnl-spec-test-runbook
+)
+domain_skills=(
+  skills/domains/stnl-backend-dotnet
+  skills/domains/stnl-backend-node-typescript
+  skills/domains/stnl-database-persistence
+  skills/domains/stnl-frontend-react-next-angular
+  skills/domains/stnl-mobile-ios-swift
+  skills/domains/stnl-security-auth
+  skills/domains/stnl-testing
+)
+node scripts/check-distributable-skills.mjs "${execution_skills[@]}" "${domain_skills[@]}"
 
 if [[ "$SKIP_SMOKE" == "0" ]]; then
   bash scripts/smoke-structure.sh
