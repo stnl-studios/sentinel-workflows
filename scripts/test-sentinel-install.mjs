@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {execFile} from "node:child_process";
 import {promisify} from "node:util";
-import { DOMAIN_SKILLS, WORKFLOW_SKILLS, isDistributedSkillResource } from "./lib/skill-registry.mjs";
+import { DOMAIN_SKILLS, WORKFLOW_SKILLS, isDistributedSkillResource, registrySkills } from "./lib/skill-registry.mjs";
+import { selectDomainSkills } from "./lib/skill-routing.mjs";
 import { applyInstallPlan, buildInstallPlan, main, parseArguments, summarize } from "./sentinel-install.mjs";
 
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -35,6 +36,23 @@ async function install(home, targets = ["codex", "claude"]) {
   return plan;
 }
 
+async function sourceFixture(t) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "sentinel-install-source-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (const [family, names] of [["workflows", WORKFLOW_SKILLS], ["domains", DOMAIN_SKILLS]]) {
+    for (const name of names) {
+      const source = path.join(REPOSITORY_ROOT, "skills", family, name);
+      const destination = path.join(root, "skills", family, name);
+      await fs.mkdir(path.dirname(destination), { recursive: true });
+      await fs.cp(source, destination, { recursive: true });
+    }
+  }
+  for (const relative of ["agents/codex/.codex/agents", "agents/claude-code/.claude/agents"]) {
+    await fs.cp(path.join(REPOSITORY_ROOT, relative), path.join(root, relative), { recursive: true });
+  }
+  return root;
+}
+
 test("CLI defaults to both platforms and exposes only preview and target selection", async () => {
   assert.deepEqual(parseArguments([]), { targets: ["codex", "claude"], preview: false });
   assert.deepEqual(parseArguments(["--preview"]), { targets: ["codex", "claude"], preview: true });
@@ -46,18 +64,29 @@ test("CLI defaults to both platforms and exposes only preview and target selecti
   await assert.rejects(buildInstallPlan({ targets: [] }), /targets must contain/u);
 });
 
-test("clean install includes workflow skills and native platform agents only", async (t) => {
+test("clean install includes all workflow and domain skills plus native platform agents only", async (t) => {
   const home = await isolatedHome(t);
   const plan = await install(home);
   const skillNames = new Set(plan.operations.filter((item) => item.kind === "skill").map((item) => item.name));
-  assert.deepEqual([...skillNames].sort(), [...WORKFLOW_SKILLS].sort());
+  assert.deepEqual([...skillNames].sort(), [...registrySkills()].sort());
+  assert.equal(new Set([...skillNames].map(name => name.toLocaleLowerCase("en-US"))).size, 14);
   assert.equal(plan.platforms.length, 2);
+  assert.equal(skillNames.size, 14);
+  assert.equal(plan.operations.length, 32);
+  for (const target of ["codex", "claude"]) {
+    assert.equal(plan.operations.filter(item => item.target === target && item.kind === "skill").length, 14);
+    assert.equal(plan.operations.filter(item => item.target === target && item.kind === "agent").length, 2);
+  }
   assert.equal(plan.operations.some((item) => item.destination.endsWith("stnl_validation_runner.toml")), true);
   assert.equal(plan.operations.some((item) => item.destination.endsWith("stnl-validation-runner.md")), true);
   for (const operation of plan.operations) {
     assert.doesNotMatch(operation.destination, /(?:package-lock\.json|package\.json|validation-runner\.mjs|runner-broker\.mjs)/u);
+    assert.doesNotMatch(operation.destination, /(?:benchmarks?|sdk|app-server)/iu);
     for (const relative of operation.sourceFiles?.keys() ?? []) {
-      assert.doesNotMatch(relative, /(?:^|\/)(?:benchmarks?|node_modules|maintenance|evals)(?:\/|$)|(?:^|\/)runtime\/test(?:\/|$)/u);
+      assert.doesNotMatch(relative, /(?:^|\/)(?:benchmarks?|node_modules|maintenance|evals|sdk|app-server)(?:\/|$)|(?:^|\/)runtime\/test(?:\/|$)/iu);
+      if (operation.target === "claude") {
+        assert.doesNotMatch(relative, /^(?:runtime\/runner-command-events\.mjs|runtime\/runner-validate-response\.schema\.json)$/u);
+      }
     }
   }
   for (const target of ["codex", "claude"]) {
@@ -107,16 +136,18 @@ test("identical second install is a no-op and preserves unrelated files", async 
 test("reinstall replaces modified Sentinel files and removes extra dirt inside a known skill", async (t) => {
   const home = await isolatedHome(t);
   await install(home, ["codex"]);
-  const skillRoot = path.join(home, ".codex/skills", WORKFLOW_SKILLS[0]);
-  const managedFile = path.join(skillRoot, "SKILL.md");
-  const extraFile = path.join(skillRoot, "user-dirt.txt");
-  await fs.writeFile(managedFile, "locally modified\n");
-  await fs.writeFile(extraFile, "remove this\n");
+  const managedRoots = [WORKFLOW_SKILLS[0], DOMAIN_SKILLS[0]].map(name => path.join(home, ".codex/skills", name));
+  const managedFiles = managedRoots.map(root => path.join(root, "SKILL.md"));
+  const extraFiles = managedRoots.map(root => path.join(root, "user-dirt.txt"));
+  for (const file of managedFiles) await fs.writeFile(file, "locally modified\n");
+  for (const file of extraFiles) await fs.writeFile(file, "remove this\n");
   const plan = await buildInstallPlan({ repositoryRoot: REPOSITORY_ROOT, home, targets: ["codex"] });
   assert.equal(plan.operations.find((item) => item.kind === "skill" && item.name === WORKFLOW_SKILLS[0]).status, "REPLACE");
+  assert.equal(plan.operations.find((item) => item.kind === "skill" && item.name === DOMAIN_SKILLS[0]).status, "REPLACE");
   await applyInstallPlan(plan);
-  assert.deepEqual(await fs.readFile(managedFile), await fs.readFile(path.join(REPOSITORY_ROOT, "skills/workflows", WORKFLOW_SKILLS[0], "SKILL.md")));
-  await assert.rejects(fs.access(extraFile));
+  assert.deepEqual(await fs.readFile(managedFiles[0]), await fs.readFile(path.join(REPOSITORY_ROOT, "skills/workflows", WORKFLOW_SKILLS[0], "SKILL.md")));
+  assert.deepEqual(await fs.readFile(managedFiles[1]), await fs.readFile(path.join(REPOSITORY_ROOT, "skills/domains", DOMAIN_SKILLS[0], "SKILL.md")));
+  for (const file of extraFiles) await assert.rejects(fs.access(file));
 });
 
 test("reinstall removes obsolete Sentinel skills and agents but keeps unrelated components", async (t) => {
@@ -124,10 +155,9 @@ test("reinstall removes obsolete Sentinel skills and agents but keeps unrelated 
   await install(home, ["codex"]);
   const staleSkill = path.join(home, ".codex/skills/stnl-obsolete-skill/old.txt");
   const unrelatedSkill = path.join(home, ".codex/skills/other-skill/keep.txt");
-  const domainSkill = path.join(home, ".codex/skills", DOMAIN_SKILLS[0], "keep.txt");
   const staleAgent = path.join(home, ".codex/agents/stnl_old_runner.toml");
   const unrelatedAgent = path.join(home, ".codex/agents/custom.toml");
-  for (const file of [staleSkill, unrelatedSkill, domainSkill, staleAgent, unrelatedAgent]) {
+  for (const file of [staleSkill, unrelatedSkill, staleAgent, unrelatedAgent]) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, "keep or remove as appropriate\n");
   }
@@ -135,7 +165,7 @@ test("reinstall removes obsolete Sentinel skills and agents but keeps unrelated 
   assert.equal(summarize(plan).REMOVE, 2);
   await applyInstallPlan(plan);
   for (const file of [staleSkill, staleAgent]) await assert.rejects(fs.access(file));
-  for (const file of [unrelatedSkill, domainSkill, unrelatedAgent]) assert.equal(await fs.readFile(file, "utf8"), "keep or remove as appropriate\n");
+  for (const file of [unrelatedSkill, unrelatedAgent]) assert.equal(await fs.readFile(file, "utf8"), "keep or remove as appropriate\n");
 });
 
 test("preview inventory does not write and lists changes before apply", async (t) => {
@@ -194,9 +224,104 @@ test("missing source and ambiguous managed names fail during preflight", async (
   assert.equal(await fs.readFile(ambiguous, "utf8"), "keep\n");
 });
 
+test("source-root and internal skill symlinks block preflight before destination changes", async t => {
+  for (const kind of ["source-root", "internal"]) {
+    await t.test(kind, async child => {
+      const home = await isolatedHome(child);
+      const source = await sourceFixture(child);
+      const stale = path.join(home, ".codex/skills/stnl-obsolete-before-source-check/old.md");
+      const personal = path.join(home, ".codex/settings.toml");
+      await fs.mkdir(path.dirname(stale), { recursive: true });
+      await fs.writeFile(stale, "preserve stale entry until inventory succeeds\n");
+      await fs.writeFile(personal, "user configuration\n");
+      const skillRoot = path.join(source, "skills/domains", DOMAIN_SKILLS[0]);
+      if (kind === "source-root") {
+        const replacement = `${skillRoot}.real`;
+        await fs.rename(skillRoot, replacement);
+        await fs.symlink(replacement, skillRoot, "dir");
+      } else {
+        await fs.symlink("SKILL.md", path.join(skillRoot, "linked-resource.md"), "file");
+      }
+      await assert.rejects(buildInstallPlan({ repositoryRoot: source, home, targets: ["codex"] }), /symlink in canonical skill source|skill source root/u);
+      assert.equal(await fs.readFile(stale, "utf8"), "preserve stale entry until inventory succeeds\n");
+      assert.equal(await fs.readFile(personal, "utf8"), "user configuration\n");
+      await assert.rejects(fs.access(path.join(home, ".codex/agents")));
+    });
+  }
+});
+
+test("install fixture exposes a fourteen-skill catalog and focused on-demand lookup", async t => {
+  const home = await isolatedHome(t);
+  await install(home);
+  const selectedBodies = [];
+  for (const target of ["codex", "claude"]) {
+    const root = path.join(home, target === "codex" ? ".codex/skills" : ".claude/skills");
+    const names = (await fs.readdir(root)).sort();
+    assert.deepEqual(names, [...registrySkills()].sort());
+    const catalog = new Map();
+    for (const name of names) {
+      const source = await fs.readFile(path.join(root, name, "SKILL.md"), "utf8");
+      const frontmatter = /^---\n([\s\S]*?)\n---/u.exec(source)?.[1] ?? "";
+      const skillName = /^name:\s*(.+)$/mu.exec(frontmatter)?.[1];
+      const description = /^description:\s*(.+)$/mu.exec(frontmatter)?.[1];
+      assert.equal(skillName, name);
+      assert.ok(description?.trim(), `${name} must be catalogable by native description`);
+      catalog.set(name, description);
+      for (const [, href] of source.matchAll(/\]\(([^)]+)\)/gu)) {
+        if (/^(?:[a-z]+:|\/|#)/iu.test(href)) continue;
+        const relative = href.split("#", 1)[0];
+        if (relative) await fs.access(path.resolve(root, name, relative));
+      }
+    }
+    assert.equal(catalog.size, 14);
+    const scope = ".NET endpoint with SQL persistence and tenant authorization";
+    const routing = selectDomainSkills(scope);
+    const selected = [routing.primaryDomainSkill, ...routing.specializedDomainSkills];
+    assert.deepEqual(selected, ["stnl-backend-dotnet", "stnl-database-persistence", "stnl-security-auth"]);
+    for (const name of selected) {
+      assert.ok(catalog.has(name));
+      selectedBodies.push(name);
+      const body = await fs.readFile(path.join(root, name, "SKILL.md"), "utf8");
+      assert.ok(body.length > 0);
+    }
+    assert.deepEqual(selectDomainSkills("documentation only, no product change"), {
+      primaryDomainSkill: null,
+      specializedDomainSkills: [],
+    });
+  }
+  assert.deepEqual(selectedBodies, [
+    "stnl-backend-dotnet", "stnl-database-persistence", "stnl-security-auth",
+    "stnl-backend-dotnet", "stnl-database-persistence", "stnl-security-auth",
+  ]);
+});
+
+test("partial application returns applied and incomplete paths without rollback claims", async t => {
+  const home = await isolatedHome(t);
+  const appliedPath = path.join(home, ".codex/agents/stnl-scout.toml");
+  const blockedParent = path.join(home, ".codex/skills-blocked-parent");
+  await fs.mkdir(path.dirname(blockedParent), { recursive: true });
+  await fs.writeFile(blockedParent, "not a directory\n");
+  const finalPath = path.join(home, ".codex/agents/stnl-runner.toml");
+  const result = await applyInstallPlan({ operations: [
+    { kind: "agent", status: "CREATE", destination: appliedPath, sourceBytes: Buffer.from("written\n") },
+    { kind: "skill", status: "CREATE", destination: path.join(blockedParent, "skill"), sourceFiles: new Map([["SKILL.md", Buffer.from("source\n")]]) },
+    { kind: "agent", status: "CREATE", destination: finalPath, sourceBytes: Buffer.from("not reached\n") },
+  ] });
+  assert.equal(result.blocked, true);
+  assert.deepEqual(result.applied, [appliedPath]);
+  assert.deepEqual(result.incomplete, [path.join(blockedParent, "skill"), finalPath]);
+  assert.equal(await fs.readFile(appliedPath, "utf8"), "written\n");
+  await assert.rejects(fs.access(finalPath));
+  assert.ok(result.error);
+});
+
 test('native-only bundle excludes exactly two development stubs and upgrade removes their old installed copies',async t=>{
  const home=await isolatedHome(t),stub='runtime/managed-slice-context.mjs',names=['stnl-slice-executor','stnl-slice-quality-manager'];
- for(const name of WORKFLOW_SKILLS){assert.equal(isDistributedSkillResource(name,stub),!names.includes(name));assert.equal(isDistributedSkillResource(name,'references/managed-slice-context.mjs'),true);assert.equal(isDistributedSkillResource(name,'runtime/nested/managed-slice-context.mjs'),true);}
+ for(const name of WORKFLOW_SKILLS){assert.equal(isDistributedSkillResource(name,stub,'codex'),!names.includes(name));assert.equal(isDistributedSkillResource(name,'references/managed-slice-context.mjs','codex'),true);assert.equal(isDistributedSkillResource(name,'runtime/nested/managed-slice-context.mjs','codex'),true);}
+ for(const name of names)for(const relative of ['runtime/runner-command-events.mjs','runtime/runner-validate-response.schema.json']){
+   assert.equal(isDistributedSkillResource(name,relative,'codex'),true);
+   assert.equal(isDistributedSkillResource(name,relative,'claude'),false);
+ }
  assert.equal(isDistributedSkillResource('unrelated-skill',stub),true);
  await install(home,['codex']);
  for(const name of names){const original=path.join(REPOSITORY_ROOT,'skills/workflows',name,stub),installed=path.join(home,'.codex/skills',name,stub);assert.equal((await fs.stat(original)).isFile(),true);await assert.rejects(fs.access(installed));await fs.writeFile(installed,'old installed managed stub\n');}

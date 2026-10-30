@@ -543,10 +543,10 @@ Essa hipótese fica explícita no plano futuro e pode ser delimitada documentalm
 
 **Entrada:** aceite funcional U3.18 3/3 no escopo atual (§26.104), U4.1 aprovada e autorização aplicável para execução; medição incompleta está adiada para depois de P1-B. **Saída:** contratos/checks pertinentes equalizados, distribuição completa verificada, impacto Codex revalidado e revisão disposta. **Provas:** positivas/negativas mecânicas/contratuais, homes temporários isolados e H1 medido versus H2 posterior; sem prova nativa Claude extra pré-main.
 
-**Situação:** U4 em andamento; U4.1 refinada e aguardando aprovação de Aj; U4.2 não iniciada.
+**Situação em 2026-10-30:** U4 em andamento; U4.1 aprovada por Aj e U4.2 implementada localmente com os gates offline de produto aprovados. A terminalização de U4.2 permanece pendente pelo resultado `C015_LIFECYCLE_AUTHORITY` no teste amplo `scripts/test-skill-consolidation.mjs`, proveniente do contrato de lifecycle fora do escopo U4.2; esse problema não foi corrigido nem classificado como PASS. Não iniciar U4.3 até disposição deste resultado.
 
-- [ ] **U4.1 — Delimitar/aprovar:** mapa e proposta documental preparados na [delimitação detalhada](#u41-delimitacao-da-equalizacao-claude); aceite do escopo por Aj pendente. A etapa não altera produto e U4.2 permanece não iniciada.
-- [ ] **U4.2 — Equalizar e verificar:** primeiro corrigir runner Claude e fechar offline os contratos/helper/receipt/round/recovery, sem tocar no installer. Só após esse gate, ampliar installer/registry a sete workflows + sete domains e dois agents de cada cliente, acrescentar guidance nativa sob demanda e testar cópia/lookup em home fixture. Por último provar reinstalação, isolamento, stale, symlink/ambiguidade, preflight e falha parcial, preservando conteúdo/config não Sentinel. Reusar testes existentes por arquivo e distinguir prova de contrato/lookup de adesão do modelo. Não instalar em home real nem executar Claude pago/nativo.
+- [x] **U4.1 — Delimitar/aprovar:** mapa e proposta documental preparados na [delimitação detalhada](#u41-delimitacao-da-equalizacao-claude); Aj aprovou o pacote em 2026-10-30 (“Ok, aprovado”). A etapa não alterou produto.
+- [ ] **U4.2 — Equalizar e verificar:** implementação e gates diretos estão documentados em [U4.2 — Execução local e evidências](#u42-execucao-local-e-evidencias); a terminalização aguarda disposição do blocker de teste amplo `C015_LIFECYCLE_AUTHORITY` fora do escopo, sem ampliar lifecycle. A sequência Claude → checks → installer foi seguida para o trabalho efetivado; consultar ali os comandos e limites. Não instalar em home real nem executar Claude pago/nativo.
 - [ ] **U4.3 — Dispor impacto/requalificação:** registrar H1 medido versus H2 com delta Claude, comparar core/bundle/harness/oracle/config; revalidar comportamento Codex afetado. Nova campanha só com decisão/autorização. **Não impor nem alegar prova nativa Claude pré-main:** testes nativos por Aj ficam em U6. Bug shared conhecido não é ignorado.
 
 <a id="u5"></a>
@@ -573,7 +573,7 @@ Essa hipótese fica explícita no plano futuro e pode ser delimitada documentalm
 <a id="u41-delimitacao-da-equalizacao-claude"></a>
 ### U4.1 — Delimitação da equalização Claude
 
-**Estado:** planejamento U4.1 revisado após alteração explícita de requisito de Aj: as sete skills de domínio fazem parte do produto esperado porque fornecem orientação de qualidade. A prova isolada anterior confirmou somente o pacote então selecionado (sete workflows e dois agents por cliente), não a completude do produto esperado; não deve ser lida como PASS para as skills de domínio, nem como prova de que os fluxos as consomem. O aceite de Aj do plano revisto segue pendente; U4.2 não começou. Nenhuma instalação real/global ou chamada de modelo ocorreu.
+**Estado:** planejamento U4.1 foi revisado após alteração explícita de requisito de Aj: as sete skills de domínio fazem parte do produto esperado porque fornecem orientação de qualidade. Aj aprovou as cinco decisões do checklist em 2026-10-30. A prova anterior cobria somente sete workflows e dois agents por cliente; não provava pacote domain nem uso. U4.2 é executada offline nesta branch; nenhuma instalação real/global ou chamada de modelo ocorreu.
 
 ### U4.1.1 — Inventário com fontes e entradas
 
@@ -661,13 +661,36 @@ Componente registrado divergente é substituído como árvore inteira para skill
 
 **Checklist de decisão para Aj (U4.1 ainda não aprovada):**
 
-- [ ] Confirmar que, em current Claude EXECUTE/APPLY, o contrato deve chamar o helper/origin/observation oficial da skill de workflow e relatar só os comandos/exits observados; transporte nativo Claude permanece específico.
-- [ ] Confirmar `/5` derivado do `request.round` oficial nas operações EXECUTE/APPLY; VALIDATE omite o campo; `/3` só permanece no parser existente para entradas antigas e não define dispatch current.
-- [ ] Confirmar discovery nativo de domains pelas descrições e consulta on-demand do `SKILL.md` primário + especializações realmente aplicáveis; nenhuma guidance pode alargar Approved Slice/authority.
-- [ ] Confirmar a sequência de gates: contrato Claude + checks offline primeiro → instalar payload 14+agents de ambos → testes de install/reinstall/isolamento/preservação → U4.3 e gates posteriores → U6 manual pós-main.
-- [ ] Confirmar limites: sem novo router/engine/legado, sem SDK/App Server/benchmark/modelos Claude, sem global install/push/PR/merge/RECONCILE/main; U3.18 permanece aceita como está.
+- [x] Confirmar que, em current Claude EXECUTE/APPLY, o contrato deve chamar o helper/origin/observation oficial da skill de workflow e relatar só os comandos/exits observados; transporte nativo Claude permanece específico.
+- [x] Confirmar `/5` derivado do `request.round` oficial nas operações EXECUTE/APPLY; VALIDATE omite o campo; `/3` só permanece no parser existente para entradas antigas e não define dispatch current.
+- [x] Confirmar discovery nativo de domains pelas descrições e consulta on-demand do `SKILL.md` primário + especializações realmente aplicáveis; nenhuma guidance pode alargar Approved Slice/authority.
+- [x] Confirmar a sequência de gates: contrato Claude + checks offline primeiro → instalar payload 14+agents de ambos → testes de install/reinstall/isolamento/preservação → U4.3 e gates posteriores → U6 manual pós-main.
+- [x] Confirmar limites: sem novo router/engine/legado, sem SDK/App Server/benchmark/modelos Claude, sem global install/push/PR/merge/RECONCILE/main; U3.18 permanece aceita como está.
 
-**Status/aceite:** planejamento U4.1 foi refinado documentalmente com decisões recomendadas, rastreio de produtor/consumidor e gates mensuráveis; não está aprovado até Aj responder ao checklist. U4.2 não começou e nenhuma autorização de implementação/instalação decorre deste plano.
+**Status/aceite:** Aj aprovou o escopo e a sequência do checklist acima; isso autorizou a execução offline U4.2 nos limites registrados.
+
+<a id="u42-execucao-local-e-evidencias"></a>
+### U4.2 — Execução local e evidências (2026-10-30)
+
+**Estado:** implementação local realizada em `feature/p1b-workflow-redesign`; gate de contrato Claude passou antes do gate de instalação. U4.2 permanece aberta porque o teste amplo de consolidação termina em `CONTRACT_ERROR[C015_LIFECYCLE_AUTHORITY]: lifecycle contracts lack immutable IDs`, fora dos arquivos/decisões U4.2. Não alterar lifecycle para mascarar esse resultado; nenhuma aprovação de U4.3 é presumida.
+
+| Gate | Evidência | Estado |
+| --- | --- | --- |
+| Claude nativo e schema | `node scripts/check-contracts.mjs validation-runner --root agents` | PASS |
+| Contrato/offline | `node scripts/test-validation-runner-contract.mjs` — 45/45 | PASS |
+| Observation e exits | `node scripts/test-runner-command-events.mjs` — 8/8; texto Claude validado sem exigir transporte Codex | PASS |
+| Helper/recipe e identidade | `test-current-initial-native-operation.mjs` filtrado — 3/3; `test-current-native-operation.mjs` filtrado — 4/4 | PASS |
+| Round e resume | `test-current-native-findings-recovery.mjs` filtrado — 3/3 (rodadas globais, sem round 6, retoma mesma captura) | PASS |
+| Distribuição e instalação | `node scripts/test-sentinel-install.mjs` — 16/16 em homes temporários | PASS |
+| Lookup e orientação | `test-skill-consolidation.mjs` focado — 7/7; incluindo roteamento esperado para .NET + SQL + authorization e nenhuma domain para documentação | PASS |
+| Consolidação ampla | `node scripts/test-skill-consolidation.mjs` completo | BLOCKED: o precheck do repository contract retorna o marcador C015 de lifecycle acima; os arquivos lifecycle não foram alterados para corrigir ou ocultar a falha |
+| Diff mecânico | `git diff --check` | PASS |
+
+**Implementado:** Claude preserva frontmatter e transporte nativo; EXECUTE/APPLY usa helper/origin/observation da recipe oficial, repete `request.round` 1/5–5/5, omite round em VALIDATE e retoma captura sem replay. O checker agora compara invariantes sem exigir corpos idênticos entre providers. O installer existente distribui as 14 skills e os dois agents específicos por destino; para Claude omite ainda o parser de eventos e schema específicos do transporte SDK Codex, mantidos no bundle Codex. As duas cópias da recipe não carregam observação de benchmark. Origem canônica de skill ou recurso interno symlink bloqueia no preflight. Quatro workflows incluem consulta condicional e sob demanda ao catálogo nativo. README, descrição do pacote e fixtures foram atualizados.
+
+**Alcance comprovado:** os testes de instalação conferem 32 componentes (14 skills + 2 agents por cliente), bytes e referências relativas, descrições catalogáveis, lookup focado de três domains e caso sem domain, reinstalação `NO-OP`, substituição domain/workflow, stale Sentinel, configuração pessoal, isolamento de target, exclusão dos dois arquivos de transporte Codex no target Claude, entrada ambígua, fonte ausente/symlink, falha parcial com paths `applied`/`incomplete` e remoção dos dois stubs de desenvolvimento. Execução da CLI global com `os.homedir()` e instalação real não ocorreram. SDK, App Server, benchmark e novos motores não foram adicionados.
+
+**Limites:** nenhum teste chamou Claude real ou mediu aderência/qualidade nativa; isso continua em U6 após main. Os checks helper/receipt/round exercitam o runtime e fixtures offline, não descobrem ou observam uma sessão Claude. O amplo `test-skill-consolidation` continua sem PASS até disposição do bloqueio C015; os 7 testes focados que cobrem catálogo/lookup e instruções passam separadamente. U4.3 e U6 não iniciadas.
 
 ## 11. Confiança, orçamento e condução
 

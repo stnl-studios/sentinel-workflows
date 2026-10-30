@@ -63,6 +63,8 @@ npm run sentinel:install -- --target codex
 
 Abra um chat novo no cliente escolhido para descobrir as skills e os agents globais. Comece por `stnl-spec-lifecycle-manager`, fornecendo o caminho da SPEC e a fonte dos requisitos. Os [prompts por operação](templates/prompts/) mostram os nomes das operações e os campos a preencher; use um por vez. Operações de execução e validação também precisam do `SLICE` correspondente.
 
+O catálogo nativo contém sete skills de workflow e sete skills de domínio em cada cliente. Nas etapas de planejamento, revisão, execução e validação, consulte as descrições do catálogo e leia sob demanda somente a orientação de domínio primária e as especializações aplicáveis ao escopo técnico aprovado. A orientação ajuda a identificar limites, riscos e checks; não amplia os requisitos ou o escopo aprovado.
+
 ### O que a instalação altera
 
 O instalador administra somente as pastas globais Sentinel selecionadas: `~/.codex/skills`, `~/.codex/agents`, `~/.claude/skills` e `~/.claude/agents`. Uma reinstalação substitui arquivos extras ou modificados **dentro de skills Sentinel gerenciadas** e agents Sentinel existentes; entradas Sentinel obsoletas no namespace gerenciado podem ser removidas. Use `--preview` para revisar essas ações antes de aplicá-las. Skills e agents sem relação com Sentinel, projetos consumidores e arquivos fora dessas áreas permanecem preservados.
@@ -71,8 +73,8 @@ O instalador não instala dependências nem modifica o projeto em que você usa 
 
 ## O que este repositório contém
 
-- `skills/workflows/` — skills de SPEC, planejamento, revisão, execução, validação e operações auxiliares.
-- `skills/domains/` — orientação por domínio; fica fora do instalador de workflow.
+- `skills/workflows/` — sete skills de SPEC, planejamento, revisão, execução, validação e operações auxiliares.
+- `skills/domains/` — sete skills com orientação por domínio, distribuídas no catálogo nativo de ambos os clientes.
 - `agents/codex/` e `agents/claude-code/` — agents nativos distribuídos para cada cliente.
 - `templates/prompts/` — entradas curtas por operação; veja também o [guia dos agents](agents/README.md).
 - `scripts/sentinel-install.mjs` — prévia, comparação e instalação global.

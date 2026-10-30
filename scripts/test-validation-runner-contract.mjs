@@ -114,6 +114,7 @@ test('Claude contract checker rejects self-selected commands, round drift and re
     ['Execute uma vez `node <verificationHelper> verify-native --origin-file <originFile>`', 'Execute comandos de verificação escolhidos pelo runner'],
     ['devolva exatamente esse ordinal em `automaticCheckRound`', 'escolha um automaticCheckRound próprio'],
     ['sem executar a recipe novamente', 'executando a recipe novamente'],
+    ['limite oficial de cinco invocações', 'orçamento existente de três rodadas'],
   ]) {
     const root = await fixture(t);
     const file = path.join(root, 'claude-code/.claude/agents/stnl-validation-runner.md');
@@ -455,7 +456,7 @@ test("prepared check defects use bounded execution failures while unclassified f
     const contract = await fs.readFile(path.join(canonical, relative), "utf8");
     assert.match(contract, /Em `EXECUTE_SLICE` e `APPLY_FINDINGS`,[^\n]*teste, fixture ou asserção preparado pelo executor[^\n]*correção possível dentro do escopo aprovado[^\n]*retorne `TESTS_FAIL`/u);
     assert.match(contract, /Não é necessário demonstrar defeito da implementação[^\n]*diagnóstico[^\n]*evidência/u);
-    assert.match(contract, relative.startsWith('codex/')?/O runner permanece read-only[^\n]*contexto principal[^\n]*cinco invocações locais/u:/O runner permanece read-only[^\n]*contexto principal[^\n]*três rodadas/u);
+    assert.match(contract, /O runner permanece read-only[^\n]*contexto principal[^\n]*cinco invocações/u);
     assert.match(contract, /Fora dessa exceção, defeito do próprio script, fixture, quoting ou asserção[^\n]*`BLOCKED`/u);
     assert.match(contract, /Negação de sandbox ou permissão[^\n]*insumo realmente indisponível[^\n]*`BLOCKED`/u);
     assert.doesNotMatch(contract, /Se a falha é do próprio script, fixture, quoting ou asserção do check, retorne `BLOCKED`/u);

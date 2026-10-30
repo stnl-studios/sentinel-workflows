@@ -9,6 +9,10 @@ description: Author a complete serial Plan and operational Tasks together using 
 
 Run PLAN for an absent official execution, or the bounded current REPLAN described below. One author produces plan.md, every active plans/slice-NN.md, tasks.md and every active tasks/slice-NN.md together. Do not implement or approve your preparation. Use the local templates and references/workspace.md. Requirements authority: sha256:<64hex> and Plan revision: <positive integer> bind the existing canonical requirements fingerprint and normative revision. Runtime delivery IDs do not establish acceptance.
 
+### Domain guidance
+
+For a technical change, inspect the native skill catalog descriptions and consult only the primary domain guidance and applicable specializations for the proposed scope. Use that guidance to shape boundaries, risks and checks; it does not expand requirements or authority. Administrative work and documentation without a product change do not load domain guidance by default.
+
 ## Inputs
 
 SPEC_PATH is required. REPLAN_REASON is required for REPLAN.

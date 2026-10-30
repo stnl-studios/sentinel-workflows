@@ -9,6 +9,10 @@ description: Independently review the complete final Plan and Tasks, including i
 
 Run only REVIEW_PLAN in an independent context. Read current requirements, the global Plan/Tasks and every detailed Plan/Task, initial checklist and decisive technical premises. Review the complete content that will be activated; a hash binds content but does not prove independence, semantic completeness or acceptance.
 
+### Domain guidance
+
+When reviewing a technical change, inspect the native skill catalog descriptions and read only the primary domain guidance and specializations that apply to the reviewed scope. Use them to check domain risks, boundaries and acceptance coverage; they cannot broaden the approved requirements or authority. Administrative plans and documentation without a product change do not load domain guidance by default.
+
 ## Inputs
 
 SPEC_PATH and the exact CANDIDATE_EXECUTION_ROOT returned by PLAN or supported REPLAN are required; optional concrete concerns cannot change requirements.

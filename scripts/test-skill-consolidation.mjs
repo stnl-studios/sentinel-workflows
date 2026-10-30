@@ -26,7 +26,7 @@ const OBSOLETE_NAMES = [
   "stnl-frontend-quality",
   "stnl-database-migrations",
 ];
-const IGNORED_DIRECTORIES = new Set(["__MACOSX", "node_modules", ".git", "tmp", "dist", "coverage"]);
+const IGNORED_DIRECTORIES = new Set(["__MACOSX", "node_modules", ".git", "tmp", "dist", "coverage", "benchmark-temp"]);
 const TEXT_EXTENSIONS = new Set([".md", ".mjs", ".sh", ".json", ".toml", ".yaml", ".yml"]);
 
 async function directNames(directory) {
@@ -150,6 +150,20 @@ test("semantic routing selects a primary and only applicable specialized domains
     specializedDomainSkills: ["stnl-database-persistence"],
   });
   assert.throws(() => routeSkills({ workflowSkill: "stnl-database-persistence", scope: "SQL" }), /unknown workflow skill/u);
+});
+
+test("planning, review, execution and quality workflows define focused native domain lookup", async () => {
+  for (const [name, expected] of [
+    ["stnl-execution-planner", /For a technical change, inspect the native skill catalog descriptions and consult only the primary domain guidance and applicable specializations/u],
+    ["stnl-plan-reviewer", /When reviewing a technical change, inspect the native skill catalog descriptions and read only the primary domain guidance and specializations that apply/u],
+    ["stnl-slice-executor", /For a technical approved slice, inspect the native skill catalog descriptions and consult only the primary domain guidance and applicable specializations/u],
+    ["stnl-slice-quality-manager", /When validating a technical change, inspect the native skill catalog descriptions and consult only the primary domain guidance and applicable specializations/u],
+  ]) {
+    const instruction = await fs.readFile(path.join(ROOT, "skills/workflows", name, "SKILL.md"), "utf8");
+    assert.match(instruction, expected, name);
+    assert.match(instruction, /do not load domain guidance by default/u, name);
+    assert.match(instruction, /authority/u, name);
+  }
 });
 
 test("Codex discovers canonical workflow and domain skills without copies", () => {

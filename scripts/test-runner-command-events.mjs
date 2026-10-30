@@ -18,16 +18,16 @@ test("isolated executor and quality-manager use identical event resolvers", asyn
   assert.deepEqual(executor, manager);
 });
 
-test("Codex and Claude validation-runner contracts require isolated marked verification", async () => {
+test("native contracts bind checks to isolated verification while preserving provider-specific capture", async () => {
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const contracts = await Promise.all([
+  const [codex, claude] = await Promise.all([
     fs.readFile(path.join(root, "agents/codex/.codex/agents/stnl_validation_runner.toml"), "utf8"),
     fs.readFile(path.join(root, "agents/claude-code/.claude/agents/stnl-validation-runner.md"), "utf8"),
   ]);
+  assert.match(codex, /NATIVE_VERIFICATION_HELPER[\s\S]{0,260}NATIVE_ORIGIN_FILE[\s\S]{0,260}verify-native/u);
+  assert.match(codex, /A captura consome a observação salva e recusa divergência/u);
   const requiredInstructions = [
-    "Cada verification command deve ocupar sua própria `command_execution`",
     "shell invocation isolada",
-    "`item.command` deve começar literalmente com `STNL_VERIFICATION_COMMAND=1`",
     "Execute discovery e inspection primeiro, em chamadas separadas",
     "nunca misture discovery ou inspection com verification na mesma invocation",
     "nunca anexe comandos antes do marker",
@@ -36,9 +36,10 @@ test("Codex and Claude validation-runner contracts require isolated marked verif
     "`git diff ...; STNL_VERIFICATION_COMMAND=1 npm test`",
     "`git diff ... && STNL_VERIFICATION_COMMAND=1 npm test`",
   ];
-  for (const contract of contracts) {
-    for (const instruction of requiredInstructions) assert.ok(contract.includes(instruction), `missing contract instruction: ${instruction}`);
-  }
+  for (const instruction of requiredInstructions) assert.ok(claude.includes(instruction), `missing Claude contract instruction: ${instruction}`);
+  assert.match(claude, /`verificationHelper` e `originFile` absolutos retornados pela admissão oficial/u);
+  assert.match(claude, /`commands` somente os comandos e exits da observation concluída pelo helper/u);
+  assert.doesNotMatch(claude, /command_execution|App Server|benchmark|\bSDK\b/iu);
 });
 
 async function fixture(t, commands, operation = "EXECUTE_SLICE") {
@@ -64,7 +65,7 @@ async function fixture(t, commands, operation = "EXECUTE_SLICE") {
 }
 
 for (const operation of ["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]) {
-  test(`${operation}: completed marked SDK events own exact command and exit`, async (t) => {
+test(`${operation}: completed marked observation events own exact command and exit`, async (t) => {
     const examples = [
       "STNL_VERIFICATION_COMMAND=1 npm test",
       `/bin/zsh -lc 'STNL_VERIFICATION_COMMAND=1 node -e "console.log(\\\"quoted\\\")"'`,

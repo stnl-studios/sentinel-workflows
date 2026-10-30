@@ -67,7 +67,11 @@ export function registrySkills() {
 
 // Exact distributed-resource exclusions; development callers retain these stubs
 // in the checkout until the external harness retires them in its own phase.
-export function isDistributedSkillResource(skillName,relativePath) {
-  return !(['stnl-slice-executor','stnl-slice-quality-manager'].includes(skillName)
-    && relativePath==='runtime/managed-slice-context.mjs');
+export function isDistributedSkillResource(skillName,relativePath,target='codex') {
+  const developmentStub = ['stnl-slice-executor','stnl-slice-quality-manager'].includes(skillName)
+    && relativePath==='runtime/managed-slice-context.mjs';
+  const codexTransport = target==='claude'
+    && ['stnl-slice-executor','stnl-slice-quality-manager'].includes(skillName)
+    && ['runtime/runner-command-events.mjs','runtime/runner-validate-response.schema.json'].includes(relativePath);
+  return !developmentStub && !codexTransport;
 }

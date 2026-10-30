@@ -9,6 +9,10 @@ description: Delegate independent validation, own formal finding disposition, an
 
 Run one explicitly selected VALIDATE_SLICE operation on its exact current EC-1 handoff. Read the requirements, approved Plan and Task, referenced code/tests and the evidence needed for that operation. Preserve requirements, normative preparation, other deliveries and completed proof. Preparation review and implementation checks do not confer formal PASS.
 
+### Domain guidance
+
+When validating a technical change, inspect the native skill catalog descriptions and consult only the primary domain guidance and applicable specializations for that slice. Use them to assess relevant domain risks and evidence coverage without changing the Approved Slice, requirements or authority. Administrative work and documentation without a product change do not load domain guidance by default.
+
 ## Inputs
 
 SPEC_PATH, the explicitly selected operation and canonical slice are required. Use the exact activation returned by current inspection for begin; preserve the returned handle for all later commands.

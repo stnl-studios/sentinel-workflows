@@ -6,7 +6,7 @@ status: not_applicable
 read_when: Current native delegation requires an independent runner.
 do_not_read_when: The operation is outside the supported current native profiles.
 contains: Current native contract loading, complete literal capture and evidence limits.
-owner: stnl-slice-executor
+owner: stnl-slice-quality-manager
 update_policy: Keep both consumer guides equivalent when supported platform invocation changes.
 ```
 
@@ -18,7 +18,7 @@ The current controller procedure is reserve-dispatch, bind-native, verify-native
 
 For an EXECUTE_SLICE check whose admitted global check round is later than `1/5`, give the fresh runner references to the previous literal response and concrete diagnostic, plus evidence of the actual author correction, alongside the current official request/origin. These are inputs to independent inspection, not an inherited verdict or permission to repeat the earlier recipe. `previousCheck: null` in an Initial request does not mean there was no previous invocation. The post-first history fields describe the earlier failure and the principal’s correction before this check; they do not describe edits by the read-only runner. Preserve the original captures and let the existing controller decide the next legal action.
 
-A public `prepareNativeContinuation` admission is the only pre-verification continuation authority. The caller must authenticate the concluded initialization turn and reserve its additional cost before committing admission. The controller serializes admission against the existing verification-start marker and freezes the same owner, origin, bound work and child. After admission, continue only that child once, under the original active-principal deadline. Preserve the complete initialization result separately and retain the first subsequent formal judgment literally; neither may overwrite the other. Started verification, uncertain effects, denial, drift, identity mismatch or missing admission blocks this path. Readback of a recorded admission is not permission for another turn, recipe or judgment. The benchmark exposes the typed admission and separate result files through its existing event collector; it does not bind identities or synthesize judgments for the principal.
+A public `prepareNativeContinuation` admission is the only pre-verification continuation authority. The caller must authenticate the concluded initialization turn and reserve its additional cost before committing admission. The controller serializes admission against the existing verification-start marker and freezes the same owner, origin, bound work and child. After admission, continue only that child once, under the original active-principal deadline. Preserve the complete initialization result separately and retain the first subsequent formal judgment literally; neither may overwrite the other. Started verification, uncertain effects, denial, drift, identity mismatch or missing admission blocks this path. Readback of a recorded admission is not permission for another turn, recipe or judgment.
 
 ### Formal corrective credit
 

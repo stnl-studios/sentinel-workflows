@@ -284,6 +284,12 @@ function checkClaudeObservationContract(contract) {
     'R030_CLAUDE_OBSERVATION', 'Claude resume must reuse captured response and observation');
   requirePattern(contract, /dentro do limite global oficial de cinco invocações/u,
     'R030_CLAUDE_OBSERVATION', 'Claude recovery must respect the admitted five-call budget');
+  requirePattern(contract, /dentro do limite oficial de cinco invocações/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude correction retries must respect the five-call budget');
+  forbidPattern(contract, /\bSDK\b|App Server|benchmark/iu,
+    'R030_CLAUDE_OBSERVATION', 'Claude distribution must remain free of SDK, App Server and benchmark mechanics');
+  forbidPattern(contract, /budgeto existente de três rodadas|three-round budget/iu,
+    'R030_CLAUDE_OBSERVATION', 'Claude contract retains the obsolete three-round limit');
   forbidPattern(contract, /(?:Claude|agent Claude)[^\n]{0,100}(?:automaticCheckRound.{0,30}1\/3|\b1\/3\b)/u,
     'R030_CLAUDE_OBSERVATION', 'Claude current flow must not retain the obsolete three-call round');
 }
