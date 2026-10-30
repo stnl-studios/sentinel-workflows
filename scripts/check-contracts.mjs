@@ -147,7 +147,7 @@ const checkSchemas = {
   EXECUTE_SLICE: [
     "{",
     '  "status": "TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",',
-    '  "automaticCheckRound": "1/3 | 2/3 | 3/3",',
+    '  "automaticCheckRound": "1/5 | 2/5 | 3/5 | 4/5 | 5/5",',
     '  "head": "<semantic value>",',
     '  "discoverySources": "<semantic value>",',
     '  "discoveryActions": "<semantic value>",',
@@ -173,7 +173,7 @@ const checkSchemas = {
   APPLY_FINDINGS: [
     "{",
     '  "status": "TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",',
-    '  "automaticCheckRound": "1/3 | 2/3 | 3/3",',
+    '  "automaticCheckRound": "1/5 | 2/5 | 3/5 | 4/5 | 5/5",',
     '  "head": "<semantic value>",',
     '  "discoverySources": "<semantic value>",',
     '  "discoveryActions": "<semantic value>",',
@@ -249,9 +249,61 @@ function checkRunner(root, platform = null) {
   if (claude && (!keysEqual(claude.metadata, expectedClaude) || Object.entries(expectedClaude).some(([key, value]) => claude.metadata[key] !== value))) {
     reject("R001_ADAPTER_METADATA", "Claude runner adapter metadata changed");
   }
-  const contract = platform === 'claude' ? claude.body : String(codex.developer_instructions ?? "").trim();
-  if (platform === null && contract !== claude.body) reject("R003_EQUIVALENCE", "runner platform contracts diverge");
-  checkRunnerContract(contract, readmeFile, platform);
+  if (platform === 'claude') {
+    checkRunnerContract(claude.body, readmeFile, 'claude');
+    checkClaudeObservationContract(claude.body);
+    return;
+  }
+  if (platform === 'codex') {
+    checkRunnerContract(String(codex.developer_instructions ?? "").trim(), readmeFile, 'codex');
+    return;
+  }
+  const codexBody = String(codex.developer_instructions ?? "").trim();
+  checkRunnerContract(codexBody, readmeFile, 'codex');
+  checkRunnerContract(claude.body, readmeFile, 'claude');
+  checkClaudeObservationContract(claude.body);
+  checkRunnerParity(codexBody, claude.body);
+}
+
+function checkClaudeObservationContract(contract) {
+  requirePattern(contract, /`EXECUTE_SLICE` e `APPLY_FINDINGS`[\s\S]{0,220}`verificationHelper` e `originFile` absolutos retornados pela admissão oficial/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must use the admitted helper and origin');
+  requirePattern(contract, /`node <verificationHelper> verify-native --origin-file <originFile>`/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must invoke the official recipe helper once');
+  requirePattern(contract, /`commands` somente os comandos e exits da observation concluída pelo helper/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude commands must come from the completed observation');
+  requirePattern(contract, /captura confere essa lista com a observation ligada ao receipt; qualquer divergência bloqueia/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must reject command or exit divergence from its receipt');
+  requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/5`, `2\/5`, `3\/5`, `4\/5`, or `5\/5`/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude round must match the five-call native budget');
+  requirePattern(contract, /exatamente esse ordinal em `automaticCheckRound`/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must echo the official request round');
+  requirePattern(contract, /Pending ou uncertain não autoriza novo dispatch/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must block pending or uncertain redispatch');
+  requirePattern(contract, /`resume` e a publicação\/readback reutilizam exatamente essa resposta e a observation existente sem executar a recipe novamente/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude resume must reuse captured response and observation');
+  requirePattern(contract, /dentro do limite global oficial de cinco invocações/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude recovery must respect the admitted five-call budget');
+  forbidPattern(contract, /(?:Claude|agent Claude)[^\n]{0,100}(?:automaticCheckRound.{0,30}1\/3|\b1\/3\b)/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude current flow must not retain the obsolete three-call round');
+}
+
+function checkRunnerParity(codex, claude) {
+  const pairs = [
+    [/NATIVE_VERIFICATION_HELPER[\s\S]{0,260}NATIVE_ORIGIN_FILE[\s\S]{0,260}verify-native/u,
+      /`verificationHelper`[\s\S]{0,220}`originFile`[\s\S]{0,220}verify-native/u, 'official recipe execution'],
+    [/observação real retornada[\s\S]{0,160}reporte seus comandos\/exits exatos/u,
+      /`commands` somente os comandos e exits da observation concluída pelo helper/u, 'commands from observation'],
+    [/captura consome a observação salva e recusa divergência/u,
+      /captura confere essa lista com a observation ligada ao receipt; qualquer divergência bloqueia/u, 'capture consistency'],
+    [/pending\/uncertain não permite uma segunda chamada/u,
+      /Pending ou uncertain não autoriza novo dispatch/u, 'uncertain dispatch blocking'],
+    [/retomada de persistência não cria invocação/u,
+      /`resume` e a publicação\/readback reutilizam exatamente essa resposta e a observation existente sem executar a recipe novamente/u, 'resume without recipe replay'],
+  ];
+  for (const [left, right, label] of pairs) {
+    if (!left.test(codex) || !right.test(claude)) reject('R031_SEMANTIC_PARITY', `runner behavior differs for ${label}`);
+  }
 }
 
 function checkRunnerContract(contract, readmeFile, platform) {
@@ -264,8 +316,7 @@ function checkRunnerContract(contract, readmeFile, platform) {
   }
   for (const [operation, expected] of Object.entries(checkSchemas)) {
     const actual = extractSchema(contract, operation);
-    const selected=platform==='codex'?expected.map(line=>line.replace('1/3 | 2/3 | 3/3','1/5 | 2/5 | 3/5 | 4/5 | 5/5')):expected;
-    if (actual.length !== selected.length || actual.some((line, index) => line !== selected[index])) reject("R007_OUTPUT_SCHEMA", `${operation} output schema changed`);
+    if (actual.length !== expected.length || actual.some((line, index) => line !== expected[index])) reject("R007_OUTPUT_SCHEMA", `${operation} output schema changed`);
   }
   if(platform==='codex') {
     requirePattern(contract, /responseVariant:"stnl-current-native-judgment-v1"[\s\S]{0,900}omita.*`head` e `requestSha256`/u,
@@ -283,7 +334,7 @@ function checkRunnerContract(contract, readmeFile, platform) {
     requirePattern(contract, new RegExp(`^# ${heading}$`, "mu"), "R004_OPERATION_SCOPE", `missing runner section: ${heading}`);
   }
   forbidPattern(contract, /^# (?:CLOSE|REPLAN|FINALIZE_SLICE|PARALLELIZE_SLICES|RUN_TESTS)$/mu, "R004_OPERATION_SCOPE", "runner contains a forbidden operation");
-  requirePattern(contract, platform==='codex' ? /`EXECUTE_SLICE` (?:and|e) `APPLY_FINDINGS`[\s\S]{0,180}rodada automática atual como `1\/5`, `2\/5`, `3\/5`, `4\/5` ou `5\/5`/u : /`EXECUTE_SLICE` (?:and|e) `APPLY_FINDINGS`[\s\S]{0,180}rodada automática atual como `1\/3`, `2\/3` ou `3\/3`/u, "R004_OPERATION_SCOPE", "runner lacks its exact bounded input set");
+  requirePattern(contract, /`EXECUTE_SLICE` (?:and|e) `APPLY_FINDINGS`[\s\S]{0,220}rodada automática atual como `1\/5`, `2\/5`, `3\/5`, `4\/5` ou `5\/5`/u, "R004_OPERATION_SCOPE", "runner lacks its exact bounded input set");
   forbidPattern(contract, /(?:1\/4|2\/4|3\/4|4\/4)/u, "R004_OPERATION_SCOPE", "runner permits a fourth automatic round");
   requirePattern(contract, /conclusões do contexto principal como não verificadas/iu, "R014_INDEPENDENCE", "runner does not independently verify main-context claims");
   requirePattern(contract, /Leia somente o escopo necessário/iu, "R014_INDEPENDENCE", "runner read scope is not bounded");
@@ -304,7 +355,7 @@ function checkRunnerContract(contract, readmeFile, platform) {
   } else {
   requirePattern(contract,/Only native transport is supported/u,'R029_FIELD_SHAPE','native-only transport contract is missing');
   forbidPattern(contract,/managed ownership|optional diagnostic data in managed mode/u,'R029_FIELD_SHAPE','removed managed ownership must not remain operational');
-  requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/3`, `2\/3`, or `3\/3`/u, "R029_FIELD_SHAPE", "native round requirement is missing");
+    requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/5`, `2\/5`, `3\/5`, `4\/5`, or `5\/5`, identical to the admitted `request\.round`/u, "R029_FIELD_SHAPE", "native round requirement is missing or not tied to the request");
   requirePattern(contract, /optional legacy `findingsCycle` never defines ownership/u, "R029_FIELD_SHAPE", "legacy cycle cannot grant ownership");
   }
   if(platform==='codex')requirePattern(contract,/Preserve the complete first concluded response; format refusal follows the current controller policy and never a manual replacement of those bytes/u,'R009_VALIDATION_ATTEMPT','native capture must preserve its first literal response without manual repair');
@@ -379,17 +430,17 @@ function checkRunnerContract(contract, readmeFile, platform) {
   forbidPattern(readme, /stnl-execution-closer|OPERATION=CLOSE|EXECUTION_(?:APPROVED|BLOCKED)/u, "R012_README", "README retains the removed execution closer contract");
   requirePattern(readme, /não existe fallback/iu, "R012_README", "README fallback boundary is missing");
   requirePattern(readme, /não existe passo manual adicional de testes/iu, "R012_README", "README manual-test-step boundary is missing");
-  requirePattern(readme, /no mínimo uma vez e no máximo três vezes/iu, "R012_README", "README bounded automatic-round policy is missing");
+  requirePattern(readme, /no mínimo uma vez e no máximo cinco vezes/iu, "R012_README", "README bounded automatic-round policy is missing");
   requirePattern(readme, /sem histórico da conversa[\s\S]{0,500}Históricos e logs completos não são encaminhados/iu, "R012_README", "README history/minimum-payload boundary is missing");
-  if(platform!=='codex') requirePattern(readme, /Falha de inicialização ou transporte[\s\S]{0,300}não consomem rodada `N\/3`/iu, "R012_README", "README transport/round separation is missing");
+  if(platform!=='codex') requirePattern(readme, /Falhas de inicialização ou transporte[\s\S]{0,300}não consomem uma rodada `N\/5`/iu, "R012_README", "README transport/round separation is missing");
   if(platform!=='codex') requirePattern(readme, /não criam `implementation-check-NN`, `findings-check-NN` ou `attempt-NN`/iu, "R012_README", "README transport/evidence separation is missing");
-  if(platform!=='codex') requirePattern(readme, /retoma diretamente na delegação[\s\S]{0,240}não reinicia identificadores/iu, "R012_README", "README initialization-resume semantics are missing");
+  if(platform!=='codex') requirePattern(readme, /retomam? diretamente na delegação[\s\S]{0,240}(?:não reinicia|sem reiniciar) identificadores/iu, "R012_README", "README initialization-resume semantics are missing");
   if(platform==='codex') {
     requirePattern(readme,/Uma publicação interrompida retoma esses mesmos bytes sem novo spawn nem recipe/u,'R012_README','current publication recovery must reuse its captured proof');
     requirePattern(readme,/Pending\/uncertain não concede redispatch/u,'R012_README','uncertain native transport cannot create another invocation');
     requirePattern(readme,/Somente normalização explícita admitida pelo runtime cria um sucessor, preservando o episódio e saldo originais/u,'R012_README','current successor must retain the original episode budget');
   }
-  requirePattern(readme, /terceira falha entra em `IMPLEMENTATION_RETRY_EXHAUSTED` ou `FINDINGS_RETRY_EXHAUSTED`[\s\S]{0,180}`VALIDATE_SLICE` é a única próxima operação/iu, "R012_README", "README third-failure recovery is missing");
+  requirePattern(readme, /quinta falha entra em `IMPLEMENTATION_RETRY_EXHAUSTED` ou `FINDINGS_RETRY_EXHAUSTED`[\s\S]{0,180}`VALIDATE_SLICE` é a única próxima operação/iu, "R012_README", "README final-round recovery is missing");
   requirePattern(readme, /última slice aberta[\s\S]{0,320}cobertura global[\s\S]{0,180}cross-slice[\s\S]{0,180}`BLOCKED`[\s\S]{0,80}`REPLAN`/iu, "R017_TERMINAL_VALIDATION", "README terminal semantic validation is missing");
   requirePattern(readme, /`COMPLETE`[\s\S]{0,260}runtime[\s\S]{0,260}ownership final[\s\S]{0,240}inspeção read-only[\s\S]{0,100}drift[\s\S]{0,520}REPLAN/iu, "R018_TERMINAL_INTEGRITY", "README terminal deterministic inspection is missing");
   requirePattern(readme, /fontes em `Discovery sources`, métodos em `Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "README discovery labels are not canonical");

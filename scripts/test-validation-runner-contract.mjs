@@ -23,6 +23,10 @@ function check(root) {
   return spawnSync(process.execPath, [checker, "validation-runner", "--root", root, '--platform', 'codex'], { encoding: "utf8" });
 }
 
+function checkClaude(root) {
+  return spawnSync(process.execPath, [checker, "validation-runner", "--root", root, '--platform', 'claude'], { encoding: "utf8" });
+}
+
 async function replaceSelected(root, oldValue, newValue) {
   for (const relative of ["codex/.codex/agents/stnl_validation_runner.toml"]) {
     const file = path.join(root, relative);
@@ -85,11 +89,38 @@ test('Codex operation instructions preserve the selected native envelope over le
   assert.match(contract, /exemplos semânticos de referência[^\n]*não são o envelope final/u);
 });
 
-test('aggregate runner gate preserves real R003 pending Claude equalization', () => {
+test('aggregate runner gate accepts semantic parity with provider-native contracts', () => {
   const result = spawnSync(process.execPath, [checker, 'validation-runner', '--root', canonical], { encoding: 'utf8' });
-  expectCategory(result, 'R003_EQUIVALENCE');
+  assert.equal(result.status, 0, result.stdout + result.stderr);
   for (const args of [['--platform', 'unknown'], ['--platform', 'codex', '--platform', 'claude']]) {
     assert.equal(spawnSync(process.execPath, [checker, 'validation-runner', '--root', canonical, ...args]).status, 2);
+  }
+});
+
+test('Claude native check contract binds helper, observation, official round and resume', async () => {
+  const contract = await fs.readFile(path.join(canonical, 'claude-code/.claude/agents/stnl-validation-runner.md'), 'utf8');
+  assert.match(contract, /Verification Recipe aprovada[\s\S]{0,180}`verificationHelper` e `originFile` absolutos retornados pela admissão oficial/u);
+  assert.match(contract, /Execute uma vez `node <verificationHelper> verify-native --origin-file <originFile>`/u);
+  assert.match(contract, /`commands` somente os comandos e exits da observation concluída pelo helper/u);
+  assert.match(contract, /captura confere essa lista com a observation ligada ao receipt; qualquer divergência bloqueia/u);
+  assert.match(contract, /devolva exatamente esse ordinal em `automaticCheckRound`/u);
+  assert.match(contract, /`resume` e a publicação\/readback reutilizam exatamente essa resposta e a observation existente sem executar a recipe novamente/u);
+  assert.match(contract, /Somente falha concluída pode admitir successor elegível dentro do limite global oficial de cinco invocações/u);
+  assert.doesNotMatch(contract, /automaticCheckRound[^\n]{0,60}1\/3|\b1\/3\b/u);
+});
+
+test('Claude contract checker rejects self-selected commands, round drift and recipe replay', async t => {
+  for (const [before, after] of [
+    ['Execute uma vez `node <verificationHelper> verify-native --origin-file <originFile>`', 'Execute comandos de verificação escolhidos pelo runner'],
+    ['devolva exatamente esse ordinal em `automaticCheckRound`', 'escolha um automaticCheckRound próprio'],
+    ['sem executar a recipe novamente', 'executando a recipe novamente'],
+  ]) {
+    const root = await fixture(t);
+    const file = path.join(root, 'claude-code/.claude/agents/stnl-validation-runner.md');
+    const original = await fs.readFile(file, 'utf8');
+    assert.ok(original.includes(before));
+    await fs.writeFile(file, original.replace(before, after));
+    expectCategory(checkClaude(root), 'R030_CLAUDE_OBSERVATION');
   }
 });
 
@@ -199,7 +230,7 @@ test("offline coverage examples expose effective inputs and assertion limits, no
   }
 });
 
-test("Codex and Claude schemas are exact; aggregate body divergence remains visible", async () => {
+test("Codex and Claude schemas are exact while native bodies remain distinct", async () => {
   const toml = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
   const claude = await fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
   for (const contract of [toml, claude]) {
