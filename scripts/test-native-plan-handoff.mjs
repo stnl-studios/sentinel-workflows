@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parseStructuredCommandResults} from '../agents/codex/runtime/native-provider.mjs';
-import {preparationHandoff} from '../benchmarks/sentinel-todo/runtime/native-evidence.mjs';
+import {preparationHandoff,preparationRedelivery} from '../benchmarks/sentinel-todo/runtime/native-evidence.mjs';
 
 const authority = {
   requirementsAuthority: 'sha256:requirements',
@@ -80,6 +80,30 @@ test('redelivery still requires the retained same root and complete authority',a
   await assert.rejects(preparationHandoff(officialProduct(candidate),'/spec',[candidate],{
     ...redelivery,candidateExecutionRoot:'/owned/other-operation-candidate',
   }),{code:'NATIVE_EVIDENCE_UNPROVEN'});
+});
+
+test('an incomplete not-started handoff can request official re-delivery of the same owned candidate',async()=>{
+  const candidate=request(),incomplete={status:'AWAITING_REVIEW',candidateExecutionRoot:candidate.candidateExecutionRoot,
+    publication:'not-started',requirementsAuthority:authority.requirementsAuthority,
+    artifactHashes:structuredClone(authority.artifactHashes)};
+  const turn={completed:true,turnStarted:true,terminalObserved:true,threadId:'author',turnId:'turn-incomplete',
+    authorThread:{threadId:'author',cwd:'/workspace',role:'author'},commandResults:[incomplete]};
+  const product={...officialProduct(candidate),inspectExecutionState:async()=>({state:'NO_EXECUTION',requirementsAuthority:authority.requirementsAuthority}),
+    assertPreparationCandidate:async root=>({root,marker:{operation:'PLAN',source:null,expectedActivationId:null,allocationId:'owned'}})};
+  const proof=await preparationRedelivery(product,'/workspace/spec',{workspace:'/workspace',turn});
+  assert.equal(proof.candidateExecutionRoot,candidate.candidateExecutionRoot);
+  const preservedCandidate=structuredClone(candidate);
+  const firstCorrection={...turn,turnId:'turn-correction-1',commandResults:[incomplete]};
+  const secondProof=await preparationRedelivery(product,'/workspace/spec',{
+    workspace:'/workspace',turn:firstCorrection,previous:proof});
+  assert.deepEqual(secondProof,proof,'a second corrective opportunity remains bound to the same candidate and official hashes');
+  assert.deepEqual(await preparationHandoff(product,'/workspace/spec',[candidate],secondProof),candidate,
+    'the second correction may complete the handoff without republication');
+  assert.deepEqual(candidate,preservedCandidate,'recovery never mutates the preserved candidate');
+  await assert.rejects(preparationRedelivery({...product,inspectExecutionState:async()=>({state:'DIVERGENCE_BLOCKED'})},
+    '/workspace/spec',{workspace:'/workspace',turn}),{code:'NATIVE_EVIDENCE_UNPROVEN'});
+  await assert.rejects(preparationRedelivery(product,'/workspace/spec',{workspace:'/workspace',turn:{...turn,
+    commandResults:[{...incomplete,publication:'confirmed'}]}}),{code:'NATIVE_EVIDENCE_UNPROVEN'});
 });
 
 test('AWAITING_REVIEW text without a complete official candidate is not evidence',async()=>{

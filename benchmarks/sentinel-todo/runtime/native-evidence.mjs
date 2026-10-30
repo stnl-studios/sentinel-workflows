@@ -174,7 +174,9 @@ export async function preparationHandoff(product, specPath, commandResults, rede
   const request = candidates[0];
   if (request.publication !== 'not-started' || typeof request.candidateExecutionRoot !== 'string'
     || !request.authority || typeof request.authority !== 'object' || Array.isArray(request.authority))
-    fail('PLAN AWAITING_REVIEW return is incomplete or reports publication');
+    throw Object.assign(new Error('PLAN AWAITING_REVIEW return is incomplete or reports publication'),
+      {code:'NATIVE_EVIDENCE_UNPROVEN',preparationHandoffMissing:request.publication==='not-started'
+        &&typeof request.candidateExecutionRoot==='string'});
   if(redelivery!==null&&request.candidateExecutionRoot!==redelivery.candidateExecutionRoot)
     fail('re-delivered PLAN belongs to another candidate');
   const owned = await product.assertPreparationCandidate(request.candidateExecutionRoot, specPath);
@@ -198,10 +200,15 @@ export async function preparationRedelivery(product, specPath, {workspace,turn=n
     || turn.authorThread?.role!=='author')) fail('PLAN re-delivery requires a proven completed author turn');
   if((turn?.commandResults??[]).some(item=>['BLOCKED','FAIL'].includes(item?.status)
     || item?.publication && item.publication!=='not-started'))fail('PLAN reports a real refusal or publication effect');
-  const roots=[...new Set((turn?.commandResults??[]).filter(item=>item?.status==='DRAFT'
-    && typeof item.candidateExecutionRoot==='string').map(item=>item.candidateExecutionRoot))];
+  // An incomplete AWAITING_REVIEW envelope may enter the existing redelivery
+  // path only when its public candidate root is explicit. Ownership and the
+  // complete current authority are then independently read from the product.
+  const roots=[...new Set((turn?.commandResults??[]).filter(item=>
+    ['DRAFT','AWAITING_REVIEW'].includes(item?.status)&&typeof item.candidateExecutionRoot==='string'
+    &&(item.status!=='AWAITING_REVIEW'||item.publication==='not-started'))
+    .map(item=>item.candidateExecutionRoot))];
   if ((previous===null && roots.length!==1) || roots.some(root=>previous!==null&&root!==previous.candidateExecutionRoot))
-    fail('PLAN re-delivery has no unique same public DRAFT allocation');
+    fail('PLAN re-delivery has no unique same public Initial candidate allocation');
   const root=previous?.candidateExecutionRoot??roots[0];
   const current=await product.inspectExecutionState(specPath);
   if(current.state!=='NO_EXECUTION') fail('PLAN re-delivery cannot advance or replace execution');

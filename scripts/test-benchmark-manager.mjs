@@ -60,6 +60,28 @@ test('PLAN re-delivery requires complete observation and the same public allocat
     e=>e.preparationHandoffMissing===false,'different full return content remains ambiguous');
 });
 
+test('PLAN handoff allows two ledger-counted re-deliveries and blocks after the second failure',()=>{
+  const proof={candidateExecutionRoot:'/workspace/candidate',source:{threadId:'author',turnId:'origin',workspace:'/workspace',specPath:'/workspace/spec'}};
+  const ledger=[],operations=[];
+  const ledgerTurn=sequence=>ledger.push({number:ledger.length+1,caseId:'C',slice:null,sequence,operation:'PLAN',role:'main',state:'completed'});
+  const failed=()=>operations.push({operation:'PLAN',outcome:{blocker:'PREPARATION_HANDOFF_REDELIVERY'},handoffRedelivery:proof});
+  const used=()=>manager.operationalCorrectionUsage(ledger,{caseId:'C',slice:null,operation:'PLAN'});
+  ledgerTurn(1);
+  assert.deepEqual(manager.preparationHandoffFailureOutcome({priorFailures:operations.length,correctionUsage:used()}),
+    {result:'NEEDS_FIX',blocker:'PREPARATION_HANDOFF_REDELIVERY'},'the initial miss admits a first correction');
+  failed();ledgerTurn(2);
+  assert.deepEqual(manager.preparationHandoffFailureOutcome({priorFailures:operations.length,correctionUsage:used()}),
+    {result:'NEEDS_FIX',blocker:'PREPARATION_HANDOFF_REDELIVERY'},'a first failed re-delivery admits the necessary second correction');
+  failed();ledgerTurn(3);
+  assert.deepEqual(manager.preparationHandoffFailureOutcome({priorFailures:operations.length,correctionUsage:used()}),
+    {result:'BLOCKED',blocker:'PREPARATION_HANDOFF_REDELIVERY_EXHAUSTED'},'a second failed re-delivery exhausts the exact two-attempt budget');
+  assert.equal(used(),2,'the bound is based on completed PLAN main turns in the ledger');
+  assert.equal(manager.preparationHandoffFailureOutcome({priorFailures:1,correctionUsage:2,repeated:true}).blocker,
+    'PREPARATION_HANDOFF_NO_CORRECTION_PROGRESS');
+  assert.deepEqual(manager.preparationHandoffFailureOutcome({priorFailures:0,correctionUsage:4}),
+    {result:'BLOCKED',blocker:'PREPARATION_HANDOFF_REDELIVERY_EXHAUSTED'},'the existing shared stage ceiling still applies');
+});
+
 test('operational corrections share a stage across categories, owners and replay',()=>{
   const rows=[];
   const main=(sequence,operation)=>rows.push({number:rows.length+1,caseId:'A',slice:'slice-01',sequence,operation,role:'main',state:'completed'});

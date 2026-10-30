@@ -158,6 +158,13 @@ function availableTurns(ledger) {
 }
 export { operationalCorrectionUsage } from './native-evidence.mjs';
 const MAX_OPERATIONAL_CORRECTIONS = 4;
+export function preparationHandoffFailureOutcome({priorFailures,correctionUsage,repeated=false}) {
+  if(priorFailures>=2||correctionUsage>=MAX_OPERATIONAL_CORRECTIONS)
+    return {result:'BLOCKED',blocker:'PREPARATION_HANDOFF_REDELIVERY_EXHAUSTED'};
+  if(correctionUsage>=2&&repeated)
+    return {result:'BLOCKED',blocker:'PREPARATION_HANDOFF_NO_CORRECTION_PROGRESS'};
+  return {result:'NEEDS_FIX',blocker:'PREPARATION_HANDOFF_REDELIVERY'};
+}
 function assertOperationalCorrections(turns,scope) {
   if(operationalCorrectionUsage(turns,scope)>MAX_OPERATIONAL_CORRECTIONS)
     throw Object.assign(new Error('operational stage correction limit exhausted'),{code:'STAGE_CORRECTIONS_EXHAUSTED'});
@@ -785,6 +792,12 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         redeliverySource=await readJson(preceding.evidencePath);
         if(!isDeepStrictEqual(redeliverySource.handoffRedelivery,handoffRedelivery))fail('PLAN re-delivery evidence differs');
         await revalidatePlanRedelivery({product,runRoot,caseRoot,state,specPath,workspace,proof:handoffRedelivery});
+        const sourceItems=redeliverySource.turn?.commandResults??[];
+        const sourceBound=sourceItems.some(item=>item?.status==='DRAFT'
+            &&item.candidateExecutionRoot===handoffRedelivery.candidateExecutionRoot)
+          ||sourceItems.some(item=>item?.status==='AWAITING_REVIEW'&&item.publication==='not-started'
+            &&item.candidateExecutionRoot===handoffRedelivery.candidateExecutionRoot);
+        if(!sourceBound)fail('PLAN re-delivery source is not a correctable same-candidate allocation/envelope');
       }
       const correctingPreparation = operation === 'PLAN' && preceding?.operation === 'REVIEW_PLAN'
         && preceding.outcome?.result === 'NEEDS_FIX'
@@ -828,7 +841,7 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
           : readiness?.verdict === 'FINDINGS' ? JSON.stringify(readiness.findings) : '',
         REPLAN_REASON: 'Follow the exact current public requirements and handoff.' })
         + (operation === 'REVIEW_PLAN' || correctingPreparation ? `\nCANDIDATE_EXECUTION_ROOT=${preparation.candidateExecutionRoot}\n` : '')
-        + (handoffRedelivery ? `\nThis is handoff re-delivery only, not another planning/publication operation. CANDIDATE_EXECUTION_ROOT=${handoffRedelivery.candidateExecutionRoot}\nThe preceding completed turn did not expose one complete official AWAITING_REVIEW JSON return. Re-deliver the exact full return from the preserved producer stdout file as one JSON command output. Do not rerun prepare, serialization, publication or planning; do not change any artifact or fabricate the return. If the original is unavailable, report that fact. The caller will independently revalidate ownership, requirements authority and all artifact hashes; no approval or phase transition is inherited.\nEXPECTED_AUTHORITY_SHA256=${hash(JSON.stringify(handoffRedelivery.authority))}\nExpected artifact hashes: ${JSON.stringify(handoffRedelivery.authority.artifactHashes)}\nPrior literal response (context, not proof):\n${redeliverySource.turn.response}\n` : '')
+        + (handoffRedelivery ? `\nThis is handoff re-delivery only for the same owned PLAN candidate, not another planning/publication operation. CANDIDATE_EXECUTION_ROOT=${handoffRedelivery.candidateExecutionRoot}\nThe prior completed turn exposed this same candidate allocation but did not return a complete official AWAITING_REVIEW handoff (it may have returned only DRAFT, or an incomplete AWAITING_REVIEW envelope). Read the preserved producer stdout and return its exact complete official AWAITING_REVIEW JSON object as one command output, including status, candidateExecutionRoot, authority (requirementsAuthority, preparationRevision, and artifactHashes), and publication=not-started. Do not derive or fill authority from this prompt; do not rerun prepare, serialization, publication or planning; do not change any artifact. If no complete original producer result exists, report that fact. The caller independently verifies owner, root, current requirements authority and every artifact hash; this conveys no approval or phase transition.\nEXPECTED_AUTHORITY_SHA256=${hash(JSON.stringify(handoffRedelivery.authority))}\nExpected artifact hashes: ${JSON.stringify(handoffRedelivery.authority.artifactHashes)}\nPrior literal response (context, not proof):\n${redeliverySource.turn.response}\n` : '')
         + (correctingPreparation ? '\nThis is a bounded author correction of the existing unapproved Initial candidate, whose ownership and source were checked by the caller. Reuse that allocation; do not allocate another PLAN root or use REPLAN. Inspect the canonical authority and justify corrections from the prior review feedback below. Run the existing prepare-plan-candidate.mjs and serialize-plan-paths.mjs producers, then publish without a review decision to return AWAITING_REVIEW. No approval is inherited; return control for a new independent REVIEW_PLAN.\nPrior review feedback (not an approval or a replacement authority):\n'
           + refusedReview.turn.response + '\n' : '')
         + (operation === 'VALIDATE_SLICE' ? '\nSolicito validação integral terminal do estado atual quando admissível pelo contrato normal; se não for admissível, reporte o bloqueio. Não certifique COMPLETE com julgamento apenas local.\n' : '')
@@ -1032,10 +1045,13 @@ export async function runCase({ runRoot, caseId, configuration, snapshotMetadata
         outcome = decideOutcome(operation, { ...readback, preparation, handoffRedelivery }, true, readiness);
         if(outcome.blocker==='PREPARATION_HANDOFF_REDELIVERY') {
           const used=operationalCorrectionUsage((await readJson(ledgerPath(runRoot))).turns,{caseId,slice,operation});
-          if(used>=MAX_OPERATIONAL_CORRECTIONS)outcome={result:'BLOCKED',blocker:'PREPARATION_HANDOFF_REDELIVERY_EXHAUSTED'};
-          else if(used>=2 && redeliverySource && turn.response===redeliverySource.turn.response
-            && isDeepStrictEqual(turn.commandResults,redeliverySource.turn.commandResults))
-            outcome={result:'BLOCKED',blocker:'PREPARATION_HANDOFF_NO_CORRECTION_PROGRESS'};
+          const priorRedeliveries=state.operations.filter(item=>item.operation==='PLAN'
+            &&item.outcome?.blocker==='PREPARATION_HANDOFF_REDELIVERY'
+            &&item.handoffRedelivery?.candidateExecutionRoot===handoffRedelivery?.candidateExecutionRoot
+            &&isDeepStrictEqual(item.handoffRedelivery?.source,handoffRedelivery?.source)).length;
+          outcome=preparationHandoffFailureOutcome({priorFailures:priorRedeliveries,correctionUsage:used,
+            repeated:Boolean(used>=2&&redeliverySource&&turn.response===redeliverySource.turn.response
+              &&isDeepStrictEqual(turn.commandResults,redeliverySource.turn.commandResults))});
         }
         if (operation === 'REVIEW_PLAN' && outcome.blocker === 'PREPARATION_REVIEW_NOT_APPROVED') {
           const priorReviews = state.operations.slice(0, sequence - 1).filter(item => item.operation === 'REVIEW_PLAN');
