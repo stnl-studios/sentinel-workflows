@@ -544,22 +544,56 @@ async function writeOldTerminalNativeBlockedFull(f, variant = null) {
   const run = { runId: id, mode: 'full', status: 'BLOCKED', cases: ['A', 'B', 'C'] };
   const summary = { runId: id, mode: 'full', status: 'BLOCKED', cases: {
     A: { status: 'PASS' }, B: { status: 'BLOCKED', terminal: { blocker: 'FULL_SIBLING_TERMINAL' } },
-    C: { status: 'BLOCKED', terminal: { blocker: 'PLAN' } },
+    C: { status: 'BLOCKED', terminal: { blocker: 'NATIVE_EVIDENCE_UNPROVEN',
+      diagnostic: 'PLAN has no single official AWAITING_REVIEW return' } },
   } };
-  const turnCounts = { A: 7, B: 4, C: 4 };
+  const turnCounts = { A: 8, B: 4, C: 3 };
+  const cThreadId = 'case-c-thread-3';
+  const cTurnId = 'case-c-turn-3';
   const ledger = { version: 1, total: 15, limit: 150, reservations: [],
     turns: ['A', 'B', 'C'].flatMap(caseId => Array.from({ length: turnCounts[caseId] }, (_, index) => ({
       number: Object.values(turnCounts).slice(0, ['A', 'B', 'C'].indexOf(caseId)).reduce((sum, count) => sum + count, 0) + index + 1,
-      runId: id, caseId, role: 'main', operation: 'SPEC_INIT', slice: null, sequence: index + 1,
+      runId: id, caseId, role: 'main', operation: caseId === 'C' && index > 0 ? 'PLAN' : 'SPEC_INIT',
+      slice: null, sequence: index + 1,
+      threadId: caseId === 'C' && index === 2 ? cThreadId : `${caseId.toLowerCase()}-thread-${index + 1}`,
       state: 'completed', startedAt: '2026-10-29T23:00:00.000Z', endedAt: '2026-10-29T23:00:01.000Z',
     }))) };
   const caseStates = {
-    A: { caseId: 'A', status: 'PASS', protocol: 'native-app-server-v1', pendingObservation: null, mainTurns: 7, runnerTurns: 0 },
+    A: { caseId: 'A', status: 'PASS', protocol: 'native-app-server-v1', pendingObservation: null, mainTurns: 8, runnerTurns: 0 },
     B: { caseId: 'B', status: 'BLOCKED', protocol: 'native-app-server-v1', pendingObservation: null,
       mainTurns: 4, runnerTurns: 0, terminal: { result: 'BLOCKED', blocker: 'FULL_SIBLING_TERMINAL' } },
     C: { caseId: 'C', status: 'BLOCKED', protocol: 'native-app-server-v1', pendingObservation: null,
-      mainTurns: 4, runnerTurns: 0, terminal: { result: 'BLOCKED', blocker: 'PLAN' } },
+      mainTurns: 3, runnerTurns: 0, terminal: { result: 'BLOCKED', blocker: 'NATIVE_EVIDENCE_UNPROVEN',
+        diagnostic: 'PLAN has no single official AWAITING_REVIEW return' } },
   };
+  const pendingVariants = new Set(['terminal-observation', 'pending-case-mismatch', 'pending-sequence-mismatch',
+    'pending-operation-mismatch', 'pending-thread-mismatch', 'pending-turnid-mismatch', 'pending-evidence-missing',
+    'pending-evidence-incomplete', 'pending-terminal-unobserved', 'pending-ledger-uncertain', 'pending-finalizer-mismatch']);
+  const operationEvidence = {
+    sequence: 3, operation: 'PLAN', slice: null,
+    turn: { completed: true, terminalObserved: true, threadId: cThreadId, turnId: cTurnId },
+    outcome: structuredClone(caseStates.C.terminal),
+  };
+  if (pendingVariants.has(variant)) {
+    const evidencePath = path.join(dir, 'case-c', '03-plan.json');
+    caseStates.C.pendingObservation = { sequence: 3, operation: 'PLAN', slice: null, mainNumber: 15,
+      dispatch: { threadId: cThreadId, turnId: cTurnId }, reserved: [], startedChildren: [] };
+    caseStates.C.operations = [
+      { operation: 'SPEC_INIT', slice: null, threadId: 'case-c-thread-1', outcome: { result: 'PASS' } },
+      { operation: 'PLAN', slice: null, threadId: 'case-c-thread-2', outcome: { result: 'PASS' } },
+      { operation: 'PLAN', slice: null, threadId: cThreadId, outcome: structuredClone(caseStates.C.terminal), evidencePath },
+    ];
+    caseStates.C.finalizer = { exitCode: 1, rawPath: path.join(dir, 'case-c', 'raw.json') };
+  }
+  if (variant === 'pending-case-mismatch') ledger.turns[14].caseId = 'B';
+  if (variant === 'pending-sequence-mismatch') caseStates.C.pendingObservation.sequence = 2;
+  if (variant === 'pending-operation-mismatch') operationEvidence.operation = 'REPLAN';
+  if (variant === 'pending-thread-mismatch') operationEvidence.turn.threadId = 'other-thread';
+  if (variant === 'pending-turnid-mismatch') operationEvidence.turn.turnId = 'other-turn';
+  if (variant === 'pending-evidence-incomplete') operationEvidence.turn.completed = false;
+  if (variant === 'pending-terminal-unobserved') operationEvidence.turn.terminalObserved = false;
+  if (variant === 'pending-ledger-uncertain') ledger.turns[14].state = 'uncertain';
+  if (variant === 'pending-finalizer-mismatch') caseStates.C.finalizer.exitCode = 0;
   if (variant === 'uncertain-turn') ledger.turns[0].state = 'uncertain';
   if (variant === 'reservation') ledger.reservations.push({ id: 'reservation-16', runId: id, caseId: 'B' });
   if (variant === 'ledger-total') ledger.total -= 1;
@@ -574,8 +608,13 @@ async function writeOldTerminalNativeBlockedFull(f, variant = null) {
     await fs.mkdir(caseRoot);
     const stateBytes = Buffer.from(JSON.stringify(caseStates[caseId]));
     await fs.writeFile(path.join(caseRoot, 'case-state.json'), stateBytes);
-    await fs.writeFile(path.join(caseRoot, 'raw.json'), JSON.stringify({ caseId, preserved: true }));
-    evidence[caseId] = { stateBytes, rawBytes: await fs.readFile(path.join(caseRoot, 'raw.json')) };
+    await fs.writeFile(path.join(caseRoot, 'raw.json'), JSON.stringify({ caseId,
+      ...(caseId === 'C' && pendingVariants.has(variant) ? { status: 'BLOCKED' } : {}), preserved: true }));
+    if (caseId === 'C' && pendingVariants.has(variant) && variant !== 'pending-evidence-missing') {
+      await fs.writeFile(path.join(caseRoot, '03-plan.json'), JSON.stringify(operationEvidence));
+    }
+    evidence[caseId] = { stateBytes, rawBytes: await fs.readFile(path.join(caseRoot, 'raw.json')),
+      operationBytes: await fs.readFile(path.join(caseRoot, '03-plan.json')).catch(() => null) };
   }
   const preserved = {
     run: await fs.readFile(path.join(dir, 'run.json')),
@@ -606,15 +645,41 @@ test('functional cleanup retains a terminal native FULL_SIBLING_TERMINAL run wit
   }
 });
 
+test('functional cleanup retains the historical C rejected return only when its terminal observation is fully bound', async t => {
+  const f = await functionalFixture(t);
+  const old = await writeOldTerminalNativeBlockedFull(f, 'terminal-observation');
+  const result = await runFunctionalBenchmark({ root: f.root, hooks: f.hooks });
+  assert.equal(result.status, 'PASS');
+  assert.equal(f.runs, 1);
+  assert.deepEqual(await fs.readFile(path.join(old.dir, 'run.json')), old.preserved.run);
+  assert.deepEqual(await fs.readFile(path.join(old.dir, 'summary.json')), old.preserved.summary);
+  assert.deepEqual(await fs.readFile(path.join(old.dir, '.turn-ledger.json')), old.preserved.ledger);
+  for (const caseId of ['A', 'B', 'C']) {
+    const caseRoot = path.join(old.dir, `case-${caseId.toLowerCase()}`);
+    assert.deepEqual(await fs.readFile(path.join(caseRoot, 'case-state.json')), old.preserved.evidence[caseId].stateBytes);
+    assert.deepEqual(await fs.readFile(path.join(caseRoot, 'raw.json')), old.preserved.evidence[caseId].rawBytes);
+    const operationPath = path.join(caseRoot, '03-plan.json');
+    if (old.preserved.evidence[caseId].operationBytes === null) {
+      await assert.rejects(fs.lstat(operationPath), { code: 'ENOENT' });
+    } else assert.deepEqual(await fs.readFile(operationPath), old.preserved.evidence[caseId].operationBytes);
+  }
+});
+
 test('native terminal cleanup remains fail-closed for active processes and unsettled evidence', async t => {
   for (const variant of ['process-live', 'process-inspection-denied', 'uncertain-turn', 'reservation',
-    'ledger-total', 'pending-observation', 'nonterminal-case']) {
+    'ledger-total', 'pending-observation', 'nonterminal-case', 'pending-case-mismatch',
+    'pending-sequence-mismatch', 'pending-operation-mismatch', 'pending-thread-mismatch',
+    'pending-turnid-mismatch', 'pending-evidence-missing', 'pending-evidence-incomplete',
+    'pending-terminal-unobserved', 'pending-ledger-uncertain', 'pending-finalizer-mismatch']) {
     await t.test(variant, async child => {
       const f = await functionalFixture(child);
       const old = await writeOldTerminalNativeBlockedFull(f, variant);
       if (variant === 'process-live') f.hooks.processes = () => [
         `node ${path.join(f.scratch, old.id, 'snapshot', 'agents', 'codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js')} app-server --listen stdio://`,
       ];
+      if (variant === 'pending-evidence-missing') {
+        // The operation's path remains recorded, but no completion evidence exists.
+      }
       if (variant === 'process-inspection-denied') f.hooks.processes = () => {
         throw Object.assign(new Error('process inspection denied'), { code: 'BLOCKED_PROCESS_CHECK' });
       };
@@ -629,6 +694,10 @@ test('native terminal cleanup remains fail-closed for active processes and unset
         const caseRoot = path.join(old.dir, `case-${caseId.toLowerCase()}`);
         assert.deepEqual(await fs.readFile(path.join(caseRoot, 'case-state.json')), old.preserved.evidence[caseId].stateBytes);
         assert.deepEqual(await fs.readFile(path.join(caseRoot, 'raw.json')), old.preserved.evidence[caseId].rawBytes);
+        const operationPath = path.join(caseRoot, '03-plan.json');
+        if (old.preserved.evidence[caseId].operationBytes === null) {
+          await assert.rejects(fs.lstat(operationPath), { code: 'ENOENT' });
+        } else assert.deepEqual(await fs.readFile(operationPath), old.preserved.evidence[caseId].operationBytes);
       }
       assert.equal(await fs.stat(path.join(f.scratch, '.campaign-active.json')).then(() => true, () => false), false);
     });

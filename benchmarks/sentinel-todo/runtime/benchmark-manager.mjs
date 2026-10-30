@@ -653,11 +653,49 @@ export function settledNativeCase(state, ledger) {
 // Cleanup settlement is independent of product acceptance. A terminal native
 // case can fail its oracle while still having no pending observation, turn or
 // reservation; the normal-HOME App Server provider does not own a private home.
-export function settledNativeCleanupCase(state, ledger, runId) {
+function terminalObservationSettled(state, ledger, runId, evidence) {
+  const pending = state?.pendingObservation;
+  if (pending === null) return true;
+  if (pending === undefined) {
+    return Array.isArray(state.operations) && state.operations.length === 0
+      && state.mainTurns === 0 && state.runnerTurns === 0
+      && !ledger.turns.some(turn => turn.caseId === state.caseId);
+  }
+  const dispatch = pending.dispatch;
+  const record = Number.isSafeInteger(pending.sequence) && pending.sequence > 0
+    ? state.operations?.[pending.sequence - 1] : null;
+  const turn = evidence?.operation?.turn;
+  if (!evidence?.operation || !evidence?.finalizer) return false;
+  const ledgerTurn = ledger.turns.find(item => item.number === pending.mainNumber);
+  return state.status === 'BLOCKED' && state.terminal?.result === 'BLOCKED'
+    && Number.isSafeInteger(pending.mainNumber) && pending.mainNumber > 0
+    && typeof dispatch?.threadId === 'string' && dispatch.threadId.length > 0
+    && typeof dispatch?.turnId === 'string' && dispatch.turnId.length > 0
+    && Array.isArray(state.operations) && pending.sequence === state.operations.length
+    && record?.operation === pending.operation && record?.slice === pending.slice
+    && record?.threadId === dispatch.threadId && isDeepStrictEqual(record.outcome, state.terminal)
+    && evidence.operation?.sequence === pending.sequence
+    && evidence.operation?.operation === pending.operation && evidence.operation?.slice === pending.slice
+    && isDeepStrictEqual(evidence.operation?.outcome, state.terminal)
+    && turn?.completed === true && turn.terminalObserved === true
+    && turn.threadId === dispatch.threadId && turn.turnId === dispatch.turnId
+    // Legacy main-turn ledger rows carry the unique admission number and
+    // thread/operation binding, but not turnId. Tie turnId through the dispatch
+    // and completed evidence; if a newer ledger has it, require the same ID.
+    && (!Object.hasOwn(ledgerTurn ?? {}, 'turnId') || ledgerTurn.turnId === dispatch.turnId)
+    && ledgerTurn?.runId === runId && ledgerTurn.caseId === state.caseId
+    && ledgerTurn.sequence === pending.sequence && ledgerTurn.operation === pending.operation
+    && ledgerTurn.slice === pending.slice && ledgerTurn.role === 'main'
+    && ledgerTurn.threadId === dispatch.threadId && ledgerTurn.state === 'completed'
+    && Number.isSafeInteger(state.finalizer?.exitCode) && state.finalizer.exitCode > 0
+    && evidence.finalizer?.caseId === state.caseId && evidence.finalizer.status === 'BLOCKED';
+}
+
+export function settledNativeCleanupCase(state, ledger, runId, evidence = null) {
   const terminal = new Set(['PASS', 'BLOCKED', 'FAIL', 'ABORTED', 'CANCELLED',
     'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'RECOVERY_STOP']);
   if (state?.protocol !== 'native-app-server-v1' || !terminal.has(state.status)
-    || state.pendingObservation !== null || ledger?.version !== 1
+    || ledger?.version !== 1
     || !Array.isArray(ledger.turns) || !Array.isArray(ledger.reservations)
     || ledger.reservations.length !== 0
     || ledger.turns.some(turn => !['completed', 'not_dispatched'].includes(turn.state)
@@ -667,7 +705,7 @@ export function settledNativeCleanupCase(state, ledger, runId) {
   } catch {
     return false;
   }
-  return true;
+  return terminalObservationSettled(state, ledger, runId, evidence);
 }
 
 export async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal,

@@ -81,6 +81,36 @@ async function assertNoSymlinks(directory) {
   }
 }
 
+function pathWithin(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+async function readOwnedCaseJson(caseRoot, candidate) {
+  if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) return null;
+  const canonicalRoot = await fs.realpath(caseRoot).catch(() => null);
+  const resolved = path.resolve(candidate);
+  if (!canonicalRoot) return null;
+  const stat = await fs.lstat(resolved).catch(() => null);
+  if (!stat?.isFile() || stat.isSymbolicLink()) return null;
+  const canonicalFile = await fs.realpath(resolved).catch(() => null);
+  if (!canonicalFile || !pathWithin(canonicalRoot, canonicalFile)) return null;
+  return readJson(canonicalFile).catch(() => null);
+}
+
+async function nativeCleanupEvidence(caseRoot, state) {
+  if (state.pendingObservation == null) return null;
+  const pending = state.pendingObservation;
+  const record = Number.isSafeInteger(pending.sequence) && pending.sequence > 0
+    ? state.operations?.[pending.sequence - 1] : null;
+  if (!record) return null;
+  const [operation, finalizer] = await Promise.all([
+    readOwnedCaseJson(caseRoot, record.evidencePath),
+    readOwnedCaseJson(caseRoot, state.finalizer?.rawPath),
+  ]);
+  return operation && finalizer ? { operation, finalizer } : null;
+}
+
 async function assertSafeScratch(scratch) {
   if (!await exists(scratch)) return;
   const stat = await fs.lstat(scratch);
@@ -717,10 +747,12 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = u
           if (!child.isDirectory() || !/^case-[a-c]$/u.test(child.name)) continue;
           const caseRoot = path.join(item, child.name);
           const state = await readJson(path.join(caseRoot, 'case-state.json')).catch(() => null);
+          const observationEvidence = state?.protocol === 'native-app-server-v1'
+            ? await nativeCleanupEvidence(caseRoot, state) : null;
           if (!state || state.caseId !== child.name.slice(5).toUpperCase() || !run.cases.includes(state.caseId)
             || !TERMINAL.has(state.status) || summary.cases?.[state.caseId]?.status !== state.status
             || (state.protocol === 'native-app-server-v1'
-              ? !settledNativeCleanupCase(state, ledger, run.runId)
+              ? !settledNativeCleanupCase(state, ledger, run.runId, observationEvidence)
               : state.privateHomeRemoved !== true && !(state.privateHomeSuspended === true && state.suspendedHome)
                 && !privateHomeNeverCreated(state, await readJson(path.join(caseRoot, 'journal.json')).catch(() => null))))
             throw blocked('BLOCKED_CLEANUP', `active or ambiguous case state: ${caseRoot}`);
