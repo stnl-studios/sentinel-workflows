@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { measurementCompleteness, validateMeasurementReport } from './benchmark-measurement.mjs';
-import { privateHomeNeverCreated, settledNativeCase } from './benchmark-manager.mjs';
+import { privateHomeNeverCreated, settledNativeCase, settledNativeCleanupCase } from './benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const RUNTIME = path.join('benchmarks', 'sentinel-todo', 'runtime');
@@ -48,6 +48,16 @@ function realGitState(root) {
   return { head, branch, upstream };
 }
 
+export function isOwnedNativeAppServerCommand(command, root = ROOT) {
+  const scratchRoot = `${path.resolve(root, 'benchmark-temp')}${path.sep}`;
+  const launcherSuffix = [
+    'snapshot', 'agents', 'codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js',
+  ].join(path.sep);
+  return typeof command === 'string' && command.includes(scratchRoot)
+    && command.includes(`${path.sep}${launcherSuffix}`)
+    && command.includes(' app-server --listen stdio://');
+}
+
 function knownProcesses() {
   const result = spawnSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8', timeout: 10_000 });
   if (result.status !== 0) throw blocked('BLOCKED_PROCESS_CHECK', `cannot inspect processes: ${result.stderr || result.error?.message || 'ps failed'}`);
@@ -57,7 +67,8 @@ function knownProcesses() {
   const ancestors = new Set();
   for (let pid = process.pid; pid && !ancestors.has(pid); pid = byPid.get(pid)?.ppid) ancestors.add(pid);
   return rows.filter((row) => !ancestors.has(row.pid)
-    && /(?:^|[\s/])benchmark-(?:manager|campaign|measurement)\.mjs(?:\s|$)|(?:^|[\s/])benchmark\.mjs(?:\s|$)/u.test(row.command));
+    && (/(?:^|[\s/])benchmark-(?:manager|campaign|measurement)\.mjs(?:\s|$)|(?:^|[\s/])benchmark\.mjs(?:\s|$)/u.test(row.command)
+      || isOwnedNativeAppServerCommand(row.command)));
 }
 
 async function assertNoSymlinks(directory) {
@@ -701,15 +712,17 @@ export async function runFunctionalBenchmark({ root = ROOT, hooks = {}, runs = u
             throw blocked('BLOCKED_CLEANUP', `missing or ambiguous case identity: ${item}/${caseId}`);
           }
         }
+        const ledger = await readJson(path.join(item, '.turn-ledger.json')).catch(() => null);
         for (const child of await fs.readdir(item, { withFileTypes: true })) {
           if (!child.isDirectory() || !/^case-[a-c]$/u.test(child.name)) continue;
           const caseRoot = path.join(item, child.name);
           const state = await readJson(path.join(caseRoot, 'case-state.json')).catch(() => null);
           if (!state || state.caseId !== child.name.slice(5).toUpperCase() || !run.cases.includes(state.caseId)
             || !TERMINAL.has(state.status) || summary.cases?.[state.caseId]?.status !== state.status
-            || (!settledNativeCase(state, await readJson(path.join(item, '.turn-ledger.json')).catch(() => null))
-              && state.privateHomeRemoved !== true && !(state.privateHomeSuspended === true && state.suspendedHome)
-              && !privateHomeNeverCreated(state, await readJson(path.join(caseRoot, 'journal.json')).catch(() => null))))
+            || (state.protocol === 'native-app-server-v1'
+              ? !settledNativeCleanupCase(state, ledger, run.runId)
+              : state.privateHomeRemoved !== true && !(state.privateHomeSuspended === true && state.suspendedHome)
+                && !privateHomeNeverCreated(state, await readJson(path.join(caseRoot, 'journal.json')).catch(() => null))))
             throw blocked('BLOCKED_CLEANUP', `active or ambiguous case state: ${caseRoot}`);
         }
       } else if (entry.name.startsWith('campaign-')) {

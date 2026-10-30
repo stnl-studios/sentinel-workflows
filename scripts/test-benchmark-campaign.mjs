@@ -7,10 +7,11 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import * as campaignRuntime from '../benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs';
 import { createHash } from 'node:crypto';
-import { campaignSummary, runCampaign, runFunctionalBenchmark, parseCampaignArgs } from '../benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs';
+import { campaignSummary, runCampaign, runFunctionalBenchmark, parseCampaignArgs, isOwnedNativeAppServerCommand } from '../benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs';
 import { currentFunctionalIdentity } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 import { PRODUCT_CONTRACT, PRODUCT_CHECK_IDS, productInstrumentIdentity } from '../benchmarks/sentinel-todo/runtime/product-acceptance.mjs';
 import { measurementCompleteness } from '../benchmarks/sentinel-todo/runtime/benchmark-measurement.mjs';
+import { settledNativeCase } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE = 'benchmarks/sentinel-todo/baselines/baseline-v1.json';
@@ -533,6 +534,113 @@ test('functional cleanup rejects activity, identity ambiguity and unsafe home ev
       assert.equal(await fs.stat(path.join(f.scratch, '.campaign-active.json')).then(() => true, () => false), false);
     });
   }
+});
+
+async function writeOldTerminalNativeBlockedFull(f, variant = null) {
+  const id = 'run-20261029231721-71ea7240';
+  const dir = path.join(f.scratch, id);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path.join(dir, '.sentinel-benchmark-owned'), 'sentinel-todo-run-v2\n');
+  const run = { runId: id, mode: 'full', status: 'BLOCKED', cases: ['A', 'B', 'C'] };
+  const summary = { runId: id, mode: 'full', status: 'BLOCKED', cases: {
+    A: { status: 'PASS' }, B: { status: 'BLOCKED', terminal: { blocker: 'FULL_SIBLING_TERMINAL' } },
+    C: { status: 'BLOCKED', terminal: { blocker: 'PLAN' } },
+  } };
+  const turnCounts = { A: 7, B: 4, C: 4 };
+  const ledger = { version: 1, total: 15, limit: 150, reservations: [],
+    turns: ['A', 'B', 'C'].flatMap(caseId => Array.from({ length: turnCounts[caseId] }, (_, index) => ({
+      number: Object.values(turnCounts).slice(0, ['A', 'B', 'C'].indexOf(caseId)).reduce((sum, count) => sum + count, 0) + index + 1,
+      runId: id, caseId, role: 'main', operation: 'SPEC_INIT', slice: null, sequence: index + 1,
+      state: 'completed', startedAt: '2026-10-29T23:00:00.000Z', endedAt: '2026-10-29T23:00:01.000Z',
+    }))) };
+  const caseStates = {
+    A: { caseId: 'A', status: 'PASS', protocol: 'native-app-server-v1', pendingObservation: null, mainTurns: 7, runnerTurns: 0 },
+    B: { caseId: 'B', status: 'BLOCKED', protocol: 'native-app-server-v1', pendingObservation: null,
+      mainTurns: 4, runnerTurns: 0, terminal: { result: 'BLOCKED', blocker: 'FULL_SIBLING_TERMINAL' } },
+    C: { caseId: 'C', status: 'BLOCKED', protocol: 'native-app-server-v1', pendingObservation: null,
+      mainTurns: 4, runnerTurns: 0, terminal: { result: 'BLOCKED', blocker: 'PLAN' } },
+  };
+  if (variant === 'uncertain-turn') ledger.turns[0].state = 'uncertain';
+  if (variant === 'reservation') ledger.reservations.push({ id: 'reservation-16', runId: id, caseId: 'B' });
+  if (variant === 'ledger-total') ledger.total -= 1;
+  if (variant === 'pending-observation') caseStates.B.pendingObservation = { dispatchId: 'still-pending' };
+  if (variant === 'nonterminal-case') caseStates.B.status = 'ACTIVE';
+  await fs.writeFile(path.join(dir, 'run.json'), JSON.stringify(run));
+  await fs.writeFile(path.join(dir, 'summary.json'), JSON.stringify(summary));
+  await fs.writeFile(path.join(dir, '.turn-ledger.json'), JSON.stringify(ledger));
+  const evidence = {};
+  for (const caseId of ['A', 'B', 'C']) {
+    const caseRoot = path.join(dir, `case-${caseId.toLowerCase()}`);
+    await fs.mkdir(caseRoot);
+    const stateBytes = Buffer.from(JSON.stringify(caseStates[caseId]));
+    await fs.writeFile(path.join(caseRoot, 'case-state.json'), stateBytes);
+    await fs.writeFile(path.join(caseRoot, 'raw.json'), JSON.stringify({ caseId, preserved: true }));
+    evidence[caseId] = { stateBytes, rawBytes: await fs.readFile(path.join(caseRoot, 'raw.json')) };
+  }
+  const preserved = {
+    run: await fs.readFile(path.join(dir, 'run.json')),
+    summary: await fs.readFile(path.join(dir, 'summary.json')),
+    ledger: await fs.readFile(path.join(dir, '.turn-ledger.json')),
+    evidence,
+  };
+  return { id, dir, preserved };
+}
+
+test('functional cleanup retains a terminal native FULL_SIBLING_TERMINAL run with a settled ledger', async t => {
+  const f = await functionalFixture(t);
+  const old = await writeOldTerminalNativeBlockedFull(f);
+  const state = JSON.parse(old.preserved.evidence.B.stateBytes);
+  assert.equal(settledNativeCase(state, JSON.parse(old.preserved.ledger)), false,
+    'BLOCKED must remain ineligible for PASS acceptance/recovery');
+  const result = await runFunctionalBenchmark({ root: f.root, hooks: f.hooks });
+  assert.equal(result.status, 'PASS');
+  assert.equal(f.runs, 1);
+  assert.ok(!f.calls.includes(`clean-${old.id}`));
+  assert.deepEqual(await fs.readFile(path.join(old.dir, 'run.json')), old.preserved.run);
+  assert.deepEqual(await fs.readFile(path.join(old.dir, 'summary.json')), old.preserved.summary);
+  assert.deepEqual(await fs.readFile(path.join(old.dir, '.turn-ledger.json')), old.preserved.ledger);
+  for (const caseId of ['A', 'B', 'C']) {
+    const caseRoot = path.join(old.dir, `case-${caseId.toLowerCase()}`);
+    assert.deepEqual(await fs.readFile(path.join(caseRoot, 'case-state.json')), old.preserved.evidence[caseId].stateBytes);
+    assert.deepEqual(await fs.readFile(path.join(caseRoot, 'raw.json')), old.preserved.evidence[caseId].rawBytes);
+  }
+});
+
+test('native terminal cleanup remains fail-closed for active processes and unsettled evidence', async t => {
+  for (const variant of ['process-live', 'process-inspection-denied', 'uncertain-turn', 'reservation',
+    'ledger-total', 'pending-observation', 'nonterminal-case']) {
+    await t.test(variant, async child => {
+      const f = await functionalFixture(child);
+      const old = await writeOldTerminalNativeBlockedFull(f, variant);
+      if (variant === 'process-live') f.hooks.processes = () => [
+        `node ${path.join(f.scratch, old.id, 'snapshot', 'agents', 'codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js')} app-server --listen stdio://`,
+      ];
+      if (variant === 'process-inspection-denied') f.hooks.processes = () => {
+        throw Object.assign(new Error('process inspection denied'), { code: 'BLOCKED_PROCESS_CHECK' });
+      };
+      const expectedCode = variant === 'process-live' ? 'BLOCKED_ACTIVE'
+        : variant === 'process-inspection-denied' ? 'BLOCKED_PROCESS_CHECK' : 'BLOCKED_CLEANUP';
+      await assert.rejects(runFunctionalBenchmark({ root: f.root, hooks: f.hooks }), error => error.code === expectedCode);
+      assert.equal(f.runs, 0, 'no new FULL may start while cleanup proof is incomplete');
+      assert.deepEqual(await fs.readFile(path.join(old.dir, 'run.json')), old.preserved.run);
+      assert.deepEqual(await fs.readFile(path.join(old.dir, 'summary.json')), old.preserved.summary);
+      assert.deepEqual(await fs.readFile(path.join(old.dir, '.turn-ledger.json')), old.preserved.ledger);
+      for (const caseId of ['A', 'B', 'C']) {
+        const caseRoot = path.join(old.dir, `case-${caseId.toLowerCase()}`);
+        assert.deepEqual(await fs.readFile(path.join(caseRoot, 'case-state.json')), old.preserved.evidence[caseId].stateBytes);
+        assert.deepEqual(await fs.readFile(path.join(caseRoot, 'raw.json')), old.preserved.evidence[caseId].rawBytes);
+      }
+      assert.equal(await fs.stat(path.join(f.scratch, '.campaign-active.json')).then(() => true, () => false), false);
+    });
+  }
+});
+
+test('process inspection recognizes a benchmark-owned App Server but ignores the desktop server', () => {
+  const root = '/fixture/sentinel';
+  const owned = `node ${path.join(root, 'benchmark-temp', 'run-owned', 'snapshot', 'agents', 'codex', 'node_modules', '@openai', 'codex', 'bin', 'codex.js')} app-server --listen stdio://`;
+  const desktop = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex app-server';
+  assert.equal(isOwnedNativeAppServerCommand(owned, root), true);
+  assert.equal(isOwnedNativeAppServerCommand(desktop, root), false);
 });
 
 test('functional mode retains an old campaign without re-publishing or deleting its report', async (t) => {

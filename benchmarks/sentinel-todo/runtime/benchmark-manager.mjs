@@ -650,6 +650,26 @@ export function settledNativeCase(state, ledger) {
     && Array.isArray(ledger.turns) && ledger.turns.every(turn => ['completed', 'not_dispatched'].includes(turn.state));
 }
 
+// Cleanup settlement is independent of product acceptance. A terminal native
+// case can fail its oracle while still having no pending observation, turn or
+// reservation; the normal-HOME App Server provider does not own a private home.
+export function settledNativeCleanupCase(state, ledger, runId) {
+  const terminal = new Set(['PASS', 'BLOCKED', 'FAIL', 'ABORTED', 'CANCELLED',
+    'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'RECOVERY_STOP']);
+  if (state?.protocol !== 'native-app-server-v1' || !terminal.has(state.status)
+    || state.pendingObservation !== null || ledger?.version !== 1
+    || !Array.isArray(ledger.turns) || !Array.isArray(ledger.reservations)
+    || ledger.reservations.length !== 0
+    || ledger.turns.some(turn => !['completed', 'not_dispatched'].includes(turn.state)
+      || turn.childKind === 'pending')) return false;
+  try {
+    validateNativeLedger(ledger, state, runId, { settled: true });
+  } catch {
+    return false;
+  }
+  return true;
+}
+
 export async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal,
   resume = false, beforeOperation = null, reportTerminal = null }) {
   const policy = contextPolicy(configuration), turnLimit = configuration.turnBudget?.maxTurnsPerRun;
