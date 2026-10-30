@@ -165,15 +165,23 @@ export function contextPolicy(configuration) {
 }
 
 export async function preparationHandoff(product, specPath, commandResults, redelivery = null) {
-  const candidates = commandResults.filter(item => item?.status === 'AWAITING_REVIEW'
-    && item.publication === 'not-started' && typeof item.candidateExecutionRoot === 'string');
+  const candidates = [];
+  for (const item of commandResults.filter(item => item?.status === 'AWAITING_REVIEW')) {
+    if (!candidates.some(candidate => equal(candidate, item))) candidates.push(item);
+  }
   if (candidates.length !== 1) throw Object.assign(new Error('PLAN has no single official AWAITING_REVIEW return'),
     {code:'NATIVE_EVIDENCE_UNPROVEN',preparationHandoffMissing:candidates.length===0});
   const request = candidates[0];
+  if (request.publication !== 'not-started' || typeof request.candidateExecutionRoot !== 'string'
+    || !request.authority || typeof request.authority !== 'object' || Array.isArray(request.authority))
+    fail('PLAN AWAITING_REVIEW return is incomplete or reports publication');
   if(redelivery!==null&&request.candidateExecutionRoot!==redelivery.candidateExecutionRoot)
     fail('re-delivered PLAN belongs to another candidate');
   const owned = await product.assertPreparationCandidate(request.candidateExecutionRoot, specPath);
   if (owned.root !== request.candidateExecutionRoot) fail('PLAN root differs from its public ownership proof');
+  const serialized = await product.serializePlanPathClaims({specPath,candidateExecutionRoot:request.candidateExecutionRoot});
+  if (serialized.status !== 'PASS' || !equal(request.authority,serialized.authority))
+    fail('PLAN return differs from the current official candidate authority and artifact hashes');
   if (redelivery !== null && !equal(request, {status:'AWAITING_REVIEW',
     candidateExecutionRoot:redelivery.candidateExecutionRoot,authority:redelivery.authority,publication:'not-started'}))
     fail('re-delivered PLAN return differs from the retained candidate/authority/hashes');

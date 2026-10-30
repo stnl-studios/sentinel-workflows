@@ -16,6 +16,44 @@ const wait = (ms, signal) => new Promise((resolve, reject) => {
   if (signal?.aborted) cancel();
 });
 
+// Command output is a whitespace-delimited stream of complete JSON objects.
+// Scan object boundaries so pretty-printed objects and multiple records are
+// retained; any prose, malformed value, array, or partial tail invalidates the
+// whole stream instead of letting a later object mask it.
+export function parseStructuredCommandResults(output) {
+  if (typeof output !== 'string') return [];
+  const results = [];
+  let cursor = 0;
+  while (cursor < output.length) {
+    while (/\s/u.test(output[cursor] ?? '') && cursor < output.length) cursor++;
+    if (cursor === output.length) break;
+    if (output[cursor] !== '{') return [];
+    const start = cursor;
+    let depth = 0, quoted = false, escaped = false, end = -1;
+    for (; cursor < output.length; cursor++) {
+      const character = output[cursor];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') quoted = false;
+      } else if (character === '"') quoted = true;
+      else if (character === '{') depth++;
+      else if (character === '}') {
+        depth--;
+        if (depth === 0) { end = cursor + 1; break; }
+      }
+    }
+    if (end < 0) return [];
+    let value;
+    try { value = JSON.parse(output.slice(start, end)); } catch { return []; }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+    results.push(value);
+    cursor = end;
+    if (cursor < output.length && !/\s/u.test(output[cursor])) return [];
+  }
+  return results;
+}
+
 // One owned App Server per case, normal HOME. Tests inject only a fake public
 // RPC object; importing/calling the observer with it never opens a real client.
 export async function createNativeProvider({ snapshot, workspace, evidenceRoot, rpc = null, pollMs = 100 }) {
@@ -473,7 +511,7 @@ export async function createNativeProvider({ snapshot, workspace, evidenceRoot, 
         for (const item of observed.items) if (item.type === 'commandExecution') {
           await record({ type: 'native.command.completed', item });
           if (item.status === 'completed' && item.exitCode === 0 && typeof item.aggregatedOutput === 'string') {
-            try { commandResults.push(JSON.parse(item.aggregatedOutput)); } catch { /* prose is not structured proof */ }
+            commandResults.push(...parseStructuredCommandResults(item.aggregatedOutput));
           }
         }
         await assertAppServerBundle(bundle);

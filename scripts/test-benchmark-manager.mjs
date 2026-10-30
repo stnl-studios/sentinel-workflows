@@ -54,7 +54,10 @@ test('PLAN re-delivery requires complete observation and the same public allocat
     {...product,assertPreparationCandidate:async()=>({root,marker:{...marker,allocationId:'foreign'}})},
     {...product,serializePlanPathClaims:async()=>({status:'PASS',authority:{...authority,artifactHashes:[]}})},
   ])await assert.rejects(preparationRedelivery(changed,specPath,{workspace,previous:proof}),e=>e.code==='NATIVE_EVIDENCE_UNPROVEN');
-  await assert.rejects(preparationHandoff(product,specPath,[literal,literal],proof),e=>e.preparationHandoffMissing===false);
+  assert.deepEqual(await preparationHandoff(product,specPath,[literal,literal],proof),literal,
+    'an exact repeat of the complete return for the same owned candidate is idempotent');
+  await assert.rejects(preparationHandoff(product,specPath,[literal,{...literal,extra:'different content'}],proof),
+    e=>e.preparationHandoffMissing===false,'different full return content remains ambiguous');
 });
 
 test('operational corrections share a stage across categories, owners and replay',()=>{
