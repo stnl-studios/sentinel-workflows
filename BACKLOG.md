@@ -62,9 +62,9 @@ O fix pontual `af2aeb5` está commitado na branch local `fix/pristine-replacemen
 
 Não há declaração de suíte completa verde para esse fix: base `b4517fb` com 172 PASS/18 FAIL/1 SKIP, versão final com 191 PASS/18 FAIL/1 SKIP, mesmos nomes e diagnósticos de falha preexistentes conferidos na revisão independente. O check estático geral mantém `C004_VENDOR_NEUTRALITY` preexistente. Esses resultados de checks são distintos do FULL funcional `PASS` medido em `ddce03b`; o fix não recebeu nova rodada benchmark. Publicação/merge do fix local depende de autorização própria; Claude e Listou não foram alterados neste recorte. Evidências e comandos de revisão permanecem fora do repo, em `/tmp/sentinel-pristine-replacement-review.md` e `/tmp/sentinel-pristine-replacement-comparison.json`.
 
-## P1-B — Workflow redesign — situação corrente (2026-10-23)
+## P1-B — Workflow redesign — situação corrente (2026-10-30)
 
-**Foco vigente —26/10, §26.80:** campanha d5969c1 encerrou BLOCKED 0/3: A/C SPEC_CLOSED; B/APPLY expirou aos 15 minutos originais, com receita observada 20 PASS mas sem resposta/receipt formal. 28 admissões, um incerto e oito reservas preservados. Vínculo tardio ocultado por auxiliaryDone foi reproduzido; o experimento expôs acoplamento entre identidade e publicação mutável, terminou integração 43/49 e revisão recusada P1/P2. Seis arquivos próprios voltaram exatamente a d5969c1; não há nova candidata funcional aprovada. Consumo 443/600; trust exato removido, config/global/main/11 históricos intactos. Limpeza recuperável 126 alvos/1689524 KiB, mínimo ~1116 KiB/xcrun_db preservado. Decidir consulta de identidade consistente e pendência explícita antes de novo patch/prova, sem aumentar tolerâncias. [Evidência, recusa e limite](maintenance/P1-B-PLANO.md#u318-campanha-d5969c1-observacao-identidade).
+**Foco vigente —30/10, §26.104:** U3.18 teve aceite funcional A/B/C em 3/3 FULLs PASS na campanha automática indicada abaixo; a medição continua `incomplete` e foi adiada para depois de P1-B. P1-B e U3 permanecem em andamento; isso não conclui a unidade inteira. O próximo passo é U4.1: comparar e delimitar a equalização Claude. Não iniciar nova campanha nem inferir métricas ausentes. [Aceite, evidências e limites](maintenance/P1-B-PLANO.md#u318-campanha-funcional-aceita-com-medicao-adiada).
 
 Há planejamento revisado **e implementação local já realizada**, com aceites delimitados; P1-B não está apenas aguardando contexto. O plano único corrente é [P1-B — Plano de entrega](maintenance/P1-B-PLANO.md), com macro, micro e resultados dos cortes. Os nove resultados e seus critérios aprovados, decisões vigentes, macro/micro com checkboxes e resumos de aceite estão consolidados nesse documento; a proposta antiga de Tasks abaixo fica como histórico.
 
@@ -72,8 +72,8 @@ Há planejamento revisado **e implementação local já realizada**, com aceites
 | --- | --- | --- |
 | U1 | Preparação conjunta | Entregue com PASS histórico no recorte; sem recertificação global automática. |
 | U2 | Continuidade e recuperação | Entregue com PASS histórico no recorte; preservar garantias e histórico. |
-| U3 | Qualificação e QA | Em andamento. U3.5/U3.6 preservam o aceite EC-1 nativo/manual delimitado; U3.14 concluída no alcance local/mecânico; U3.15 aceita no recorte nativo da candidata D. U3.16 concluída no alcance offline (§25.14): bloqueio convertido corrigido, discriminantes e regressões/revisão final concluídos. Runtime S2 não provado; futura prova requer nova candidata. Bancada/benchmark posteriores pendentes; U3/P1-B abertos. |
-| U4 | Equalização Claude | Pendente, após benchmark U3.18 aprovado; checks pertinentes antes de main. |
+| U3 | Qualificação e QA | Em andamento. U3.5/U3.6 preservam o aceite EC-1 nativo/manual delimitado; U3.14 concluída no alcance local/mecânico; U3.15 aceita no recorte nativo da candidata D. U3.16 concluída no alcance offline (§25.14): bloqueio convertido corrigido, discriminantes e regressões/revisão final concluídos. Runtime S2 não provado; futura prova requer nova candidata. U3.18 funcional aceita em 3/3 no escopo atual (§26.104), com medição incompleta adiada para depois de P1-B. U3/P1-B seguem abertos. |
+| U4 | Equalização Claude | Pendente. Próximo passo: U4.1 comparar e delimitar a equalização; checks pertinentes antes de main. |
 | U5 | Entrega revisada | Pendente; publicação/PR/merge exigem os gates e autorizações próprios. |
 | U6 | Teste Claude por Aj | Pendente, depois de main. |
 
@@ -96,7 +96,7 @@ Baseline142paths/478registros preservada; delta desta etapa: duas referências d
 
 **Histórico da autorização —22/10, execução integrada aprovada:** Aj aprovou U3.15 + U3.15-A às11:52 UTC. Após salvaguarda em quatro commits locais (HEAD `aef443f2f200f56b09400c287ea6393ecf8259ca`, árvore/índice limpos), execução retomada12:05 UTC: regressão/correção/testes/revisão mecânica em fixtures próprias antes de recovery da publicação H0 preservada. Primeira janela≤2h até14:05 UTC;9/24 invocações,0runners, sem aceite novo do adendo ou prova integrada. [Estado e gates](maintenance/P1-B-PLANO.md#u315-execucao-a). Push pendente, sem rede Git nem commit do delta desta etapa; U3.16/benchmark/RECONCILE não iniciados. Os parágrafos anteriores registram a decisão de planejamento anterior, agora substituída por esta autorização.
 
-**Sequência vigente:** concluir produto e QA própria → qualificação Codex nativa → adaptar/testar o benchmark externo → U3.18, execução do benchmark completo via Node/terminal → benchmark aprovado → U4 → U5 → U6. O benchmark consome as interfaces normais do produto e fica fora das skills/fluxo; não antecipar sua implementação para obter aceite do produto.
+**Sequência vigente:** próximo passo imediato: U4.1 comparar e delimitar a equalização Claude. Depois, concluir U4 e seus checks pertinentes antes de main → U5 entrega revisada, sujeita aos próprios gates e autorizações → U6 teste nativo Claude por Aj depois de main. A aceitação funcional U3.18 está registrada em §26.104; a medição incompleta fica adiada para depois de P1-B e não é gate para reabrir a campanha nesta sequência. U3.18 funcional aceita não significa U3/P1-B concluídos.
 
 ### Índice macro, detalhe e atualização
 

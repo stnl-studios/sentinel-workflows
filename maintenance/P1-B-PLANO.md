@@ -14,7 +14,7 @@
 | Foco atual | **Campanha `campaign-functional-b0edcee7-68c5-4730-8ebb-6462c75c7ee4` encerrada: FULL 1/3, 2/3 e 3/3 com A/B/C PASS.** Estado automático `FUNCTIONAL_ACCEPTED`; measurement incomplete e adiada após P1-B. Relatórios automáticos preservados em `benchmark-temp/campaign-functional-b0edcee7-68c5-4730-8ebb-6462c75c7ee4`. |
 | Autorização atual | Campanha funcional autorizada e concluída no branch de trabalho; sem novo FULL, alteração de código, push, main, Site ou RECONCILE nesta atualização. Nove trusts literais dos workspaces temporários removidos após ausência dos processos; confiança do repositório preservada. |
 
-**Caminho:** produto/QA → Codex nativo → adaptação offline da bancada → prova focal autorizada → **U3.18, executar benchmark completo** → U4, equalização Claude → U5, entrega → U6, teste Claude por Aj.
+**Próximo passo imediato:** U4.1 — comparar e delimitar a equalização Claude. Em seguida, completar U4 e seus checks pertinentes antes de main → U5 entrega revisada sob os próprios gates/autorizações → U6 teste nativo Claude por Aj depois de main. U3.18 funcional está aceita em 3/3 (§26.104); a medição incompleta foi adiada para depois de P1-B e não cria nova campanha nesta sequência.
 
 ### Índice
 
@@ -49,12 +49,12 @@
 | --- | --- | --- | --- |
 | U1 | Preparação conjunta — pronta para trabalhar | Entregue e com PASS independente histórico no recorte/candidata U1; não recertificado globalmente nesta revisão. | Plan e Tasks nascem juntos, recebem revisão conjunta e só a versão aprovada libera execução. |
 | U2 | Continuidade e recuperação — sem perder trabalho | Entregue e com PASS independente do recorte offline U2; provas posteriores complementam o alcance nativo. | Corrigir a mesma entrega preservando identidade, trabalho, falhas, tentativas e PASS anteriores. |
-| U3 | Qualificação e QA | Em andamento; U3.5/U3.6 aceitos no recorte EC-1 nativo/manual; restante não globalmente aceito. | Concluir produto/QA, qualificar Codex nativo, adaptar/qualificar a bancada e, em U3.18 — Execução do benchmark completo, executar o benchmark real via Node/terminal e avaliar o resultado, antes de U4. |
-| U4 | Equalização Claude | Unidade proposta nesta organização; pendente. Não é numeração histórica recuperada. | Depende do benchmark U3.18 aprovado; equalização e checks pertinentes antes de main, sem impor prova nativa adicional antes de main. |
+| U3 | Qualificação e QA | Em andamento; U3.5/U3.6 aceitos no recorte EC-1 nativo/manual; U3.18 funcional aceita em 3/3 no escopo atual (§26.104), com medição incompleta adiada para depois de P1-B. U3/P1-B não estão concluídos. | Preservar aceites e limites registrados. Não repetir U3.18 nem inferir medição; trabalho restante de U3/P1-B segue o plano vigente. |
+| U4 | Equalização Claude | Unidade proposta nesta organização; pendente. Não é numeração histórica recuperada. | Próximo passo: U4.1 comparar e delimitar a equalização. Checks pertinentes de U4 antes de main; teste nativo por Aj em U6 depois de main. |
 | U5 | Entrega revisada | Unidade proposta nesta organização; pendente. | Candidata revisada, publicação/PR/merge somente quando autorizados. |
 | U6 | Teste Claude por Aj | Unidade proposta nesta organização; pendente. | Uso/teste nativo por Aj depois de main e registro do retorno. |
 
-**Ordem operacional:** saldo do produto e QA em U3 → qualificação nativa Codex → adaptação/testes offline/prova focal da bancada → U3.18 — Execução do benchmark completo (benchmark real via Node/terminal e avaliação do resultado) → benchmark aprovado → U4 — Equalização Claude → U5 → U6. U1/U2 entram como entregas existentes, com evidências reutilizadas conforme identidade/alcance. Não reabrir esses recortes nem antecipar benchmark para conseguir aceite funcional do produto.
+**Ordem operacional atual:** U4.1 comparar e delimitar equalização Claude → U4 equalizar/verificar e dispor impacto, com checks pertinentes antes de main → U5 entrega revisada e publicação/PR/merge somente sob gates e autorizações próprios → U6 teste nativo Claude por Aj depois de main. U3.18 funcional está aceita; medição incompleta segue adiada para depois de P1-B (§26.104). U1/U2 entram como entregas existentes, com evidências reutilizadas conforme identidade/alcance. Não reabrir esses recortes.
 
 <a id="escopo"></a>
 ## 2. Objetivo, experiência e limites
@@ -227,9 +227,11 @@ Evidência faltante: delta/qualificação desses consumidores. Checks offline n�
 <a id="u318"></a>
 ### U3.18 — Execução do benchmark completo
 
+**Gate inicial supersedido em 30/10 por §26.104:** o aceite funcional de 3/3 no escopo atual foi concedido; a medição completa continua `incomplete` e foi adiada para depois de P1-B. A execução da campanha registrada abaixo já ocorreu. Preserve os itens seguintes como histórico do planejamento e da autorização; eles não são uma ação pendente nem condição atual para U4.1.
+
 **Saída/gate:** N/N aprovados na mesma candidata, qualidade/métricas/limitações relatadas e decisão para seguir a U4. **Provas:** identidade, integridade, resultado de cada FULL e parecer técnico. Nenhuma nova campanha automática para reunir PASS.
 
-**Situação:** BLOQUEADA,0/3FULLs aprovados nas campanhas preservadas§26.57/59. A nova candidata b1f5d1a,cópia configurada e60882b,parou apósB;sem execução em andamento. **Entrada:** produto/U3.15 e bancada U3.16/17 aprovados, freeze H1 identificado, íntegro e estável. Publicação remota não é condição técnica universal da campanha; só ocorre quando uma etapa/autorização própria efetivamente a exigir, sem obrigação de Git implícita.
+**Situação histórica anterior à campanha aceita em §26.104:** BLOQUEADA,0/3 FULLs aprovados nas campanhas preservadas §26.57/59. A candidata então registrada, b1f5d1a/cópia configurada e60882b, parou após B; não havia execução em andamento. **Entrada histórica:** produto/U3.15 e bancada U3.16/17 aprovados, freeze H1 identificado, íntegro e estável. Publicação remota não é condição técnica universal da campanha; só ocorre quando uma etapa/autorização própria efetivamente a exigir, sem obrigação de Git implícita.
 
 - [x] **U3.18.1 — Gate admitido para as campanhas autorizadas (§26.57/59):** N/perfil/SDK/config/permissões/destino/orçamento/acompanhamento fixados e históricos dispostos. O bloqueio real posterior não foi dispensado nem autoriza uma próxima campanha. A equalização/checks Claude em U4 permanece uma saída posterior deliberada e não cria ciclo para iniciar o benchmark; quebra compartilhada conhecida recebe finding/disposição e não é ocultada como simples paridade futura. O comando funcional atual também faz FULL, não é smoke.
 - [ ] **U3.18.2 — Campanha:** N FULL sequenciais na mesma candidata; export/qualidade/identidade da anterior aprovados antes da próxima; primeira falha/incerteza bloqueia restantes. Parciais preservados, sem retry/nova campanha automática.
@@ -237,11 +239,11 @@ Evidência faltante: delta/qualificação desses consumidores. Checks offline n�
 
 Prioridades de medição já contratadas: trabalho até a primeira execução, falhas mecânicas após aprovação, recuperações por entrega original, intervenção humana, qualidade e custo/tempo/tokens efetivamente disponíveis. Usar somente fontes existentes demonstráveis, sem telemetria/score de confiança novos; ausente fica indisponível, não zero. Mudanças de perfil/modelo/oracle/permissões limitam comparação histórica. Qualidade funcional e completude/comparabilidade de métricas são conclusões separadas.
 
-### Decisão aprovada — aceite funcional simplificado, 29/10/2026
+### Decisão aprovada — aceite funcional simplificado, 29/10/2026 (campanha concluída em §26.104)
 
 Para destravar o fechamento funcional da P1-B, A/B/C exigem **3/3 FULLs coerentes na mesma candidata congelada**, além dos resultados de produto/oracle e dos gates atuais de identidade, formalização, segurança e fechamento. A medição de consumo é julgada separadamente: sua incompletude não bloqueia esse aceite funcional. Tempo e tokens observados permanecem no relatório; dimensões ausentes são explicitamente parciais/incompletas, nunca total nem zero, e não fundamentam alegação de economia. Falha funcional ou efeito incerto continua bloqueando.
 
-A próxima ação autorizada é uma campanha funcional com até 3 FULLs consecutivas na mesma candidata: `npm run benchmark -- --runs 3` (ou `npm run benchmark`, cujo padrão continua 3). O teto de 3 é validado antes da preparação e por chamada; `--runs 1`/`2` só entrega rodadas parciais, e a primeira falha/incerteza interrompe sem retry. O limite de 100 turnos é do ledger compartilhado por FULL e inclui principal, filhos, admissões auxiliares e correções/continuações: reservas reduzem o disponível, turnos iniciados incrementam o consumido. O teto agregado autorizado passa de 930 para **1100** admissões, mantendo752consumidas+44reservas históricas até nova evidência. Envelope de 1 FULL: 752+44+100=896/1100. Envelope máximo da campanha3/3: 752+44+(3×100)=1096/1100, margem4. O registro está em `tmp/u3-planejamento/U3.18-functional-2026-10-29/qualification/budget-ledger.json`; nenhuma reserva antiga foi liberada. Tokens e custo monetário reais continuam indisponíveis nas medições parciais.
+Naquela decisão, a ação autorizada era uma campanha funcional com até 3 FULLs consecutivas na mesma candidata: `npm run benchmark -- --runs 3` (ou `npm run benchmark`, cujo padrão continua 3). A campanha executada e aceita está registrada em §26.104; os limites de 100 turnos por FULL e 1100 admissões descrevem aquela autorização consumida, não abrem outra campanha. O teto de 3 era validado antes da preparação e por chamada; `--runs 1`/`2` só entregava rodadas parciais, e a primeira falha/incerteza interromperia sem retry. O limite de 100 turnos era do ledger compartilhado por FULL e incluía principal, filhos, admissões auxiliares e correções/continuações: reservas reduziam o disponível, turnos iniciados incrementavam o consumido. O teto agregado aprovado passou de 930 para **1100** admissões, mantendo752consumidas+44reservas históricas à época. Envelope de 1 FULL: 752+44+100=896/1100. Envelope máximo da campanha3/3: 752+44+(3×100)=1096/1100, margem4. O registro está em `tmp/u3-planejamento/U3.18-functional-2026-10-29/qualification/budget-ledger.json`; nenhuma reserva antiga foi liberada. Tokens e custo monetário reais continuam indisponíveis nas medições parciais.
 
 O destino isolado que o manager cria na próxima rodada tem raiz `benchmark-temp/<run-id>/`, snapshot congelado em `benchmark-temp/<run-id>/snapshot/` e cópias A/B/C em `benchmark-temp/<run-id>/case-a/workspace/`, `case-b/workspace/` e `case-c/workspace/`; o run-id é gerado pelo runtime, então o path físico só existe após iniciar a execução. Os artefatos da rodada ficam em `benchmark-temp/campaign-functional-<campaign-id>/`. Não existe cópia nova criada nesta preparação. Para criar o freeze, os arquivos OTel experimentais precisavam sair das raízes copiadas `agents/`; foram preservados sem alteração em `/tmp/sentinel-p1b-otel-experiments-9997575/` com hashes conferidos.
 
@@ -539,11 +541,11 @@ Essa hipótese fica explícita no plano futuro e pode ser delimitada documentalm
 <a id="u4"></a>
 ### U4 — Equalização Claude
 
-**Entrada:** U3.18 aprovado e delta Claude delimitado/autorizado. **Saída:** contratos/checks pertinentes equalizados, impacto Codex revalidado e revisão disposta. **Provas:** positivas/negativas mecânicas/contratuais, H1 medido versus H2 posterior; sem prova nativa Claude extra pré-main.
+**Entrada:** aceite funcional U3.18 3/3 no escopo atual (§26.104) e delta Claude delimitado/autorizado; a medição U3.18 incompleta está adiada para depois de P1-B. **Saída:** contratos/checks pertinentes equalizados, impacto Codex revalidado e revisão disposta. **Provas:** positivas/negativas mecânicas/contratuais, H1 medido versus H2 posterior; sem prova nativa Claude extra pré-main.
 
 **Situação:** pendente; numeração macro proposta nesta versão.
 
-- [ ] **U4.1 — Delimitar/aprovar:** depois da campanha Codex, comparar contrato Claude com corrente, variantes/metadados/commands/findings/budgets/terminal request e capacidade nativa declarada; delimitar impacto e obter aprovação de Aj.
+- [ ] **U4.1 — Delimitar/aprovar:** próximo passo; comparar o contrato Claude com a corrente, variantes/metadados/commands/findings/budgets/terminal request e capacidade nativa declarada; delimitar impacto e obter aprovação de Aj.
 - [ ] **U4.2 — Equalizar e verificar:** runner/guia/seleção/templates pertinentes, positivos/negativos e checks estáticos/mecânicos/contratuais; preservar identidade/modelos próprios, sem managed. Revisão pertinente.
 - [ ] **U4.3 — Dispor impacto/requalificação:** registrar H1 medido versus H2 com delta Claude, comparar core/bundle/harness/oracle/config; revalidar comportamento Codex afetado. Nova campanha só com decisão/autorização. **Não impor nem alegar prova nativa Claude pré-main:** testes nativos por Aj ficam em U6. Bug shared conhecido não é ignorado.
 
@@ -4933,6 +4935,8 @@ Fonte automática preservada em `benchmark-temp/campaign-functional-b0edcee7-68c
 | `run-03.json` | `949cfd4e198cd556f4be5343f060fa130e3d41d42afca940bb8545d49ad39f6f` |
 
 **Identidade da fonte medida:** os três relatórios apontam para base commit `aae1e461071df2f47c800b1db24cb3e7025642bf`, árvore limpa, `snapshotSha256=sha256:a158b00753200bd45068237e5e72454798aa5f65003030ddeebfedd72de5fce9` e `sourceFunctionalSha256=sha256:2059e67a5a67f3cbc4e0ad20b586e8fcd2a93f429fd2e28b664ea393c596855f`. Esse é o commit medido; esta atualização é apenas documental e recebe commit separado.
+
+**Separação dos artefatos:** `productAcceptance.product` em cada relatório identifica o aplicativo Sentinel Todo gerado pelo caso dentro do workspace isolado A/B/C; os testes finais daquele workspace avaliam esse produto gerado. Isso não é a fonte Sentinel medida. A fonte do benchmark é a árvore congelada do repositório identificada pelo `baseSha`, `snapshotSha256` e `sourceFunctionalSha256` acima; não misturar os hashes/resultado do aplicativo gerado com a identidade do código Sentinel.
 
 **Limitação de medição, sem qualificação:** o resumo automático lista lacunas de usage dos casos A/B, contagem agregada dos turnos principais, cobertura e usage de runners A/B e agregados de input/cache/output. Campos indisponíveis permanecem ausentes; não são zero nem estimativa. O estado automático é `FUNCTIONAL_ACCEPTED` com `measurementStatus: incomplete`; não houve promoção de medição qualificada. Esta limitação é explícita e adiada para depois de P1-B.
 
