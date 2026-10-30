@@ -1,117 +1,140 @@
 # Sentinel Workflows
 
-## Da intenção à implementação validada
+O Sentinel reúne skills e agents nativos para **Codex** e **Claude Code**. Ele ajuda equipes de software a transformar um pedido em plano aprovado, implementar mudanças delimitadas e manter evidências para uma validação independente.
 
-Skills de workflow e agents nativos para quem desenvolve software com **Codex** ou **Claude Code**. Sentinel organiza decisões, planejamento e evidências em etapas explícitas para que você possa acompanhar o trabalho e escolher o próximo passo.
+O fluxo é explícito e conduzido pelo usuário. Cada operação devolve o controle com um handoff; o Sentinel não executa o ciclo inteiro em segundo plano nem trata checks de implementação como aceite formal.
 
 <p align="center">
-  <img src="docs/workflow.svg" alt="Fluxo Sentinel: SPEC, Plan + Tasks, revisão conjunta, execução e validação. O runner apoia a execução com checks; correções voltam à execução antes de uma nova validação." width="100%">
+  <img src="docs/workflow.svg" alt="Fluxo Sentinel: definir uma SPEC, preparar e revisar Plan e Tasks, executar uma slice e validá-la de forma independente. Findings retornam a um handoff explícito de correção." width="100%">
 </p>
 
-O desenho é uma visão geral. Cada operação termina e retorna o controle: o estado registrado indica o próximo handoff; o fluxo completo não roda automaticamente.
+## Fluxo de trabalho
 
-## Como o fluxo se organiza
+```text
+SPEC → PLAN → REVIEW_PLAN → EXECUTE_SLICE → VALIDATE_SLICE
+                                 ↑                 │
+                                 └─ APPLY_FINDINGS ┘
+```
 
-1. **SPEC** — registre objetivo, escopo, critérios de aceitação e decisões em aberto com `stnl-spec-lifecycle-manager`.
-2. **Plan + Tasks** — produza a estratégia serial e a bancada operacional juntos com `stnl-execution-planner`.
-3. **Revisão conjunta** — um contexto independente revisa Plan, Tasks, checklist inicial e capacidade das provas; `stnl-plan-reviewer` ativa o conteúdo final examinado.
-4. **Execução** — implemente uma slice ativada com `stnl-slice-executor`, dentro das áreas e responsabilidades aprovadas. Ajustes técnicos de checklist e arquivos previstos recebem delta operacional.
-5. **Validação formal** — chame `stnl-slice-quality-manager` separadamente. Somente PASS formal atual conclui uma slice. NEEDS_FIX pode levar a APPLY_FINDINGS e nova validação.
+1. **Defina o trabalho.** `stnl-spec-lifecycle-manager` registra requisitos, critérios de aceite, restrições, riscos e decisões numa SPEC.
+2. **Prepare em conjunto.** `stnl-execution-planner` cria o Plan serial e as Tasks operacionais como uma única candidata.
+3. **Revise antes de executar.** `stnl-plan-reviewer` revisa Plan e Tasks completos de forma independente, incluindo o checklist inicial e a capacidade das provas, e ativa somente o conteúdo revisado.
+4. **Execute uma slice.** `stnl-slice-executor` trabalha dentro da autoridade aprovada. Ele pode delegar os checks da recipe ao runner nativo de validação.
+5. **Valide de forma independente.** `stnl-slice-quality-manager` decide a disposição formal dos findings. Somente um `PASS` formal e atual conclui uma slice. `NEEDS_FIX` pode levar a um handoff explícito de `APPLY_FINDINGS` e a outra validação formal.
 
-O runner também pode participar da chamada formal de validação. Sua função e o resultado são diferentes em cada etapa: checks auxiliares apoiam implementação e correções; somente a validação formal emite `PASS`, `NEEDS_FIX` ou `BLOCKED`.
+Cada etapa é uma operação separada. Um check bem-sucedido durante a implementação é evidência de apoio; não significa que a slice passou pela validação formal. Siga o handoff da operação atual em vez de presumir o próximo passo.
 
-### Exemplo ilustrativo: adicionar histórico de compras
+### Skills de workflow opcionais
 
-Imagine um pedido para permitir que clientes consultem compras anteriores. Os artefatos exatos dependem do produto e do repositório; este exemplo mostra o papel de cada etapa, sem presumir uma implementação ou resultado.
+- `stnl-spec-roadmap` decompõe requisitos amplos em SPECs candidatas e cobertura de dependências. Não substitui o ciclo de vida nem a autoridade de execução de uma SPEC.
+- `stnl-spec-test-runbook` cria um runbook offline para QA ou aceite humano quando solicitado explicitamente. A geração não é automática e não executa nem valida testes.
 
-| Etapa | Exemplo do que pode ficar definido |
+### Orientação por domínio
+
+O catálogo também inclui sete guias técnicos especializados. Planejamento, revisão, execução e validação consultam o guia principal e apenas as especializações aplicáveis ao escopo aprovado.
+
+| Skill | Aplicação |
 | --- | --- |
-| SPEC | Quem consulta o histórico, quais compras aparecem, critérios de aceitação e questões como paginação ou retenção. |
-| Plano | Slices ordenadas para persistência, consulta e apresentação, conforme a arquitetura existente. |
-| Revisão do plano | Escopo, dependências e ordem conferidos e checklist inicial antes da ativação. |
-| Tasks | Passos concretos ligados aos critérios de aceitação e à slice aprovada. |
-| Execução | Uma slice é implementada; checks aplicáveis podem ser delegados ao runner e registrados como evidência auxiliar. |
-| Validação formal | A slice é revisada de forma independente. Se houver `NEEDS_FIX`, findings podem ser corrigidos numa chamada explícita e a validação é repetida. |
+| `stnl-backend-dotnet` | Backend .NET e C# |
+| `stnl-backend-node-typescript` | Backend Node.js e TypeScript |
+| `stnl-database-persistence` | Banco de dados, cache, migrações e persistência |
+| `stnl-frontend-react-next-angular` | React, Next.js e Angular |
+| `stnl-mobile-ios-swift` | iOS e Swift |
+| `stnl-security-auth` | Autenticação, autorização, sessões, segredos e limites de confiança |
+| `stnl-testing` | Desenho de testes, execução e qualidade das evidências |
 
-## Comece aqui
+A orientação por domínio ajuda a identificar riscos e checks aplicáveis; não acrescenta requisitos nem amplia o escopo aprovado.
+
+## Instalação
 
 ### Requisitos
 
 - Node.js 18 ou mais recente.
-- Este repositório clonado localmente.
-- Codex CLI e/ou Claude Code instalados e autenticados no cliente escolhido.
+- Clone local deste repositório.
+- Codex CLI e/ou Claude Code instalado e autenticado para o cliente que você pretende usar.
 
-### Instale as skills e os agents
-
-Na raiz deste checkout, a instalação padrão prepara os componentes Sentinel para Codex e Claude Code:
+Na raiz do repositório, instale os pacotes dos dois clientes:
 
 ```sh
 npm run sentinel:install
 ```
 
-Para ver criações, substituições e remoções sem escrever:
+Confira as mudanças planejadas sem gravar arquivos:
 
 ```sh
 npm run sentinel:install -- --preview
 ```
 
-Para selecionar um único cliente, acrescente `--target codex` ou `--target claude`:
+Instale ou atualize somente um cliente:
 
 ```sh
 npm run sentinel:install -- --target codex
+npm run sentinel:install -- --target claude
 ```
 
-Abra um chat novo no cliente escolhido para descobrir as skills e os agents globais. Comece por `stnl-spec-lifecycle-manager`, fornecendo o caminho da SPEC e a fonte dos requisitos. Os [prompts por operação](templates/prompts/) mostram os nomes das operações e os campos a preencher; use um por vez. Operações de execução e validação também precisam do `SLICE` correspondente.
-
-O catálogo nativo contém sete skills de workflow e sete skills de domínio em cada cliente. Nas etapas de planejamento, revisão, execução e validação, consulte as descrições do catálogo e leia sob demanda somente a orientação de domínio primária e as especializações aplicáveis ao escopo técnico aprovado. A orientação ajuda a identificar limites, riscos e checks; não amplia os requisitos ou o escopo aprovado.
+O instalador usa módulos nativos do Node; esse comando não instala dependências npm. Depois da instalação, abra uma conversa nova para o cliente descobrir as skills e os agents. O instalador não altera o projeto onde você usa o Sentinel.
 
 ### O que a instalação altera
 
-O instalador administra somente as pastas globais Sentinel selecionadas: `~/.codex/skills`, `~/.codex/agents`, `~/.claude/skills` e `~/.claude/agents`. Uma reinstalação substitui arquivos extras ou modificados **dentro de skills Sentinel gerenciadas** e agents Sentinel existentes; entradas Sentinel obsoletas no namespace gerenciado podem ser removidas. Use `--preview` para revisar essas ações antes de aplicá-las. Skills e agents sem relação com Sentinel, projetos consumidores e arquivos fora dessas áreas permanecem preservados.
+Para cada cliente selecionado, o instalador administra estes diretórios globais:
 
-O instalador não instala dependências nem modifica o projeto em que você usa Sentinel. Uma falha de I/O durante a aplicação informa os caminhos incompletos; não há rollback automático.
+- Codex: `~/.codex/skills` e `~/.codex/agents`
+- Claude Code: `~/.claude/skills` e `~/.claude/agents`
 
-## O que este repositório contém
+Ele instala 14 skills (sete de workflow e sete de domínio) e dois agents nativos por cliente. Skills e agents Sentinel gerenciados são substituídos quando o conteúdo diverge; entradas Sentinel obsoletas que correspondam às regras de nomes gerenciados podem ser removidas. Skills, agents, projetos e arquivos alheios fora dessas entradas são preservados. Use `--preview` para inspecionar criações, substituições e remoções antes de aplicar.
 
-- `skills/workflows/` — sete skills de SPEC, planejamento, revisão, execução, validação e operações auxiliares.
-- `skills/domains/` — sete skills com orientação por domínio, distribuídas no catálogo nativo de ambos os clientes.
-- `agents/codex/` e `agents/claude-code/` — agents nativos distribuídos para cada cliente.
-- `templates/prompts/` — entradas curtas por operação; veja também o [guia dos agents](agents/README.md).
-- `scripts/sentinel-install.mjs` — prévia, comparação e instalação global.
-- `benchmarks/` — avaliação e desenvolvimento do repositório; não faz parte do pacote instalado.
+O instalador planeja e lê o pacote selecionado antes da primeira gravação. Se houver falha de I/O durante a aplicação, ele informa os caminhos aplicados e incompletos; não promete rollback transacional.
 
-## Limites atuais
+## Primeiro uso
 
-- Cada operação retorna ao usuário e requer um novo handoff; Sentinel não conduz o fluxo inteiro em segundo plano.
-- A delegação do runner depende de o cliente seguir as instruções da skill. A aderência completa ao fluxo com runner ainda não foi certificada em ambos os clientes.
-- Checks auxiliares não substituem a validação formal, revisão humana ou julgamento do mantenedor. Um resultado de implementação, por si só, não significa `PASS`.
+1. Inicie uma conversa nova no Codex ou Claude Code.
+2. Escolha a operação que corresponde ao handoff atual. Para um trabalho novo, comece com `stnl-spec-lifecycle-manager` e informe o caminho da SPEC e a fonte dos requisitos.
+3. Use uma operação por vez. Os [templates de prompt por operação](templates/prompts/) listam as entradas necessárias; execução e validação também precisam da `SLICE` selecionada.
+4. Preserve os caminhos dos artefatos, as decisões e o handoff retornado para a próxima operação explicitamente solicitada.
 
-### Leitor observacional da imagem EC-1
+Exemplo ilustrativo: para adicionar histórico de compras, primeiro defina quem pode consultar quais compras e os critérios de aceite. Conforme o repositório real, o planner pode dividir o trabalho em slices seriais, como acesso a dados e apresentação. Revise o plano completo antes de ativá-lo, execute uma slice selecionada e obtenha um resultado de validação formal separado. Esses artefatos são exemplos; nem todo produto precisa dessas slices.
 
-O checkout inclui um leitor somente de inspeção em `stnl-slice-executor` e `stnl-slice-quality-manager`:
+## Agents
 
-```sh
-node skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs SPEC_PATH
-```
+Cada pacote de cliente inclui:
 
-Ele lê a imagem oficial EC-1 e o produto atual, confere a aprovação inicial ou convertida, os carriers e a evidência retida no bundle, e devolve JSON com a validade por entrega e um handoff descritivo. Exit 0 indica que a inspeção desse perfil foi concluída; exit 1 indica imagem ou estado que o leitor não conseguiu aceitar; exit 2 indica uso inválido. As APIs `inspectCurrentExecution(specPath)` e `captureCurrentExecution(specPath)` estão nos mesmos dois módulos; a segunda devolve cópias da captura A/B verificada para composição offline.
+- **`stnl-spec-context-scout`** — faz uma busca delimitada e somente de leitura por contexto do repositório para o fluxo de SPEC.
+- **`stnl-validation-runner`** — executa checks selecionados ou faz a revisão formal independente quando uma operação o delega. É somente de leitura; a operação principal é responsável pelas mudanças de implementação e pela disposição dos findings.
 
-O perfil cobre preparação inicial de revisão 1 e preparação convertida, com tentativas concluídas e sem owner ativo. No perfil convertido, S0 é somente leitura; S1 e S2 admitem uma formal offline capturada por `createCurrentNativeValidationCapture` e composta puramente por `composePostConversionValidation`. A sessão mede a recipe real e aceita um veredito semântico offline explícito; testes dessa sessão não certificam o transporte nativo da plataforma. Uma nova formal v2 substitui integralmente a prova anterior, preservando os bytes da preparação aprovada. `NEEDS_FIX` e `BLOCKED` são legíveis, mas composição de APPLY ou recuperação permanece fora deste recorte. Um `PASS` local não fornece julgamento terminal nem autoriza `COMPLETE`, publicação, admissão operacional, CAS, recuperação, descarte ou `CLOSE`. Os comandos antigos de execução e validação ainda não integram EC-1 e recusam esse formato.
+O runner faz parte do handoff da operação. Não existe uma etapa manual separada de “rodar testes” nem um fallback silencioso que execute checks delegados no contexto principal. O [guia dos agents](agents/README.md) descreve os launchers de cada cliente, os contratos de entrada e os significados dos resultados.
 
-### Conversão explícita de candidata EC-1 (em validação)
+## Mapa do repositório
 
-Os módulos `execution-conversion-current.mjs` de `stnl-execution-planner` e `stnl-plan-reviewer` expõem `prepareCurrentConversion`, `finalizeCurrentConversion` e `validateCurrentConversion`. Eles recebem uma captura legada fechada em memória, compõem os bytes revisáveis antes da decisão e retornam uma candidata sem `activation.json`. `validateCurrentCandidate({files})` valida o conteúdo sem afirmar instalação oficial; `inspectConvertedExecution({context,requirementsAuthority,files,observedWork})` consome a candidata sem fontes históricas externas e não admite operações.
+| Caminho | Conteúdo |
+| --- | --- |
+| `skills/workflows/` | Sete skills de workflow, orientações por operação e recursos de runtime |
+| `skills/domains/` | Sete guias técnicos de qualidade por domínio |
+| `agents/` | Definições de agents nativos para Codex e Claude Code e seu guia |
+| `templates/prompts/` | Prompts curtos para operações explícitas |
+| `scripts/sentinel-install.mjs` | Instalação global, prévia e seleção de cliente |
+| `integrations/` | Helpers de descoberta dos clientes no checkout; não são instalados como etapas de workflow |
+| `benchmarks/` | Bancada separada para desenvolvimento e avaliação; não é incluída nos pacotes dos clientes |
+| `maintenance/` | Planos e registros de decisão para mantenedores; não são distribuídos |
 
-Para uma captura managed, a entrada transitória `source.managedContexts` associa cada `operationAttemptId` aos bytes UTF-8 originais de `STNL_MANAGED_CONTEXT`. A fronteira managed usa `managedContextId`; o contexto não recebe um caminho de arquivo inventado. O adapter precisa capturar também `active.json` enquanto o broker vive e o supervisor depois do fechamento. Sem esses bytes reais, uma operação antiga não pode ser reconstruída pela conversão. A candidata não transporta esse mapa externo; a proposta registra somente seus hashes para a revisão.
+O SDK do adapter Codex e os artefatos de App Server apoiam o desenvolvimento e a avaliação no repositório. Eles não fazem parte do pacote normal de skills e agents. Campanhas de benchmark e saídas temporárias também ficam fora do pacote de produto.
 
-A observação é a união dos domínios aprovados; o conversor e o consumer validam sua cobertura e projetam cada baseline por delivery, incluindo Existing Inputs compartilhados. A prova nativa/managed de S1 e S2 passa pela mesma validação dos raws v1, sem inferir modos históricos. O preflight formal acrescentado pelo serializer é conferido separadamente dos checks mecânicos. Uma reabertura managed com activation intermediária não demonstrada pelos carriers disponíveis permanece uma recusa explícita de capacidade.
+## Limites e evidências
 
-O recorte previsto separa S0 sem consumo, S1 com prova v1 integralmente representável em domínio sem arquivos e S2 com fronteira formal PASS encerrada e revalidação obrigatória quando falta o modo histórico de arquivo. Findings ou episódios pendentes, owner ativo e origem ambígua exigem recusa. Essas APIs não capturam a árvore, transferem leases, publicam ou removem a fonte legada. A validação com produtores native e managed reais e a revisão independente ainda são necessárias antes de anunciar essa capacidade como operacional.
+- O Sentinel não executa operações futuras automaticamente nem aceita um plano apenas porque ele é sintaticamente válido.
+- Descoberta nativa e checks do pacote não provam como uma sessão futura de modelo vai se comportar. O uso real de cada cliente e versão é uma observação separada.
+- O resultado do runner prova somente os checks ou a revisão que ele de fato realizou. Não garante efeitos externos arbitrários nem substitui o julgamento do mantenedor.
+- Não alegamos ganhos de desempenho, custo ou tokens sem medições completas e comparáveis.
+- A instalação grava nos diretórios globais Sentinel selecionados. Use a prévia para inspecionar uma atualização; uma falha parcial de I/O não tem rollback automático.
 
-## Verificação focada do instalador
+## Checks para mantenedores
 
-Para executar os testes automatizados específicos do instalador:
+O repositório não tem um único script `npm test`. Rode os checks pertinentes à área alterada. Exemplos:
 
 ```sh
 node --test scripts/test-sentinel-install.mjs
+node scripts/check-contracts.mjs repository --root .
+node scripts/check-contracts.mjs validation-runner --root agents
+node scripts/check-distributable-skills.mjs skills/workflows/stnl-execution-planner skills/domains/stnl-backend-node-typescript
 ```
+
+Esses comandos cobrem contratos diferentes; passar um deles não significa que toda a suíte do repositório ou o comportamento nativo dos clientes foi testado.
