@@ -3,16 +3,16 @@
 <a id="painel"></a>
 ## Painel de situação
 
-**Atualizado em 25/10/2026 · planejamento e implementação têm estados separados.**
+**Atualizado em 30/10/2026 · planejamento e implementação têm estados separados.**
 
 | Onde estamos | Situação comprovada |
 | --- | --- |
-| Unidade corrente | **U3 — Qualificação e QA. U3.17 concluída no alcance composto Case A + S2 (§26.56); U3.18 bloqueada na primeira campanha (§26.57).** Consumo200/324. Nova campanha encerrada após bloqueio deB (§26.59);nenhuma execução em andamento. |
-| Entrega corrente | **U3.18 — campanha real A+B+C,0/3FULLs aprovados (§26.59).** U3.17 conserva seu aceite focal delimitado;sem aceite FULL/U3/P1-B/Claude. |
+| Unidade corrente | **U3 — Qualificação e QA. U3.17 aceita no alcance composto Case A + S2 (§26.56); U3.18 tem aceite funcional 3/3 no escopo atual (§26.104).** A medição permanece incompleta e foi adiada para depois de P1-B. P1-B continua em andamento. |
+| Entrega corrente | **U3.18 — campanha funcional A+B+C, três FULLs PASS (§26.104).** Não há qualificação de medição: usage/cobertura de filhos e agregados estão incompletos e não foram inferidos. |
 | Última execução nativa aceita | **run-20261025154838-af69004b**,25/10,15:48:38–16:00:06UTC: seis operações PASS,COMPLETE/CLOSE,Case A/oracle,duas respostas formais reobservadas literalmente em novo processo e parecer final sem achados obrigatórios. |
 | Base aceita | U1/U2 com PASS histórico delimitado; U3.5/U3.6 com aceite EC-1 nativo/manual. Nenhuma recertificação global automática. |
-| Foco atual | **Campanha b1f5d1a encerrada no FULL1: A fechado,B bloqueado por evidência de cobertura,C interrompido apósB.** Sem FULL2/3,novo retry ou patch;diagnóstico/limpeza concluídos. |
-| Autorização atual | Nova campanha aprovada com48turnos/FULL,auxiliares8 e teto agregado324;179→200 consumidos. Três trusts exatos660bytes removidos,global140igual,709336KiB próprios naLixeira,pacote5208KiB. Uma parada operacionalSIGINT apósB registrada;nenhuma nova campanha automática. Sem push/instalação/Claude/RECONCILE;archive negado não repetido. |
+| Foco atual | **Campanha `campaign-functional-b0edcee7-68c5-4730-8ebb-6462c75c7ee4` encerrada: FULL 1/3, 2/3 e 3/3 com A/B/C PASS.** Estado automático `FUNCTIONAL_ACCEPTED`; measurement incomplete e adiada após P1-B. Relatórios automáticos preservados em `benchmark-temp/campaign-functional-b0edcee7-68c5-4730-8ebb-6462c75c7ee4`. |
+| Autorização atual | Campanha funcional autorizada e concluída no branch de trabalho; sem novo FULL, alteração de código, push, main, Site ou RECONCILE nesta atualização. Nove trusts literais dos workspaces temporários removidos após ausência dos processos; confiança do repositório preservada. |
 
 **Caminho:** produto/QA → Codex nativo → adaptação offline da bancada → prova focal autorizada → **U3.18, executar benchmark completo** → U4, equalização Claude → U5, entrega → U6, teste Claude por Aj.
 
@@ -4909,3 +4909,35 @@ Gates iniciais15/15unit,580/580transporte,exportexit0,campanha121/121,integraç�
 Fechamento: fonte congelada final mantém unit15/15exit0 e transporte580/580exit0; após guardaritmético, exportexit0, campanha121/121exit0 e integração3/3exit0(50701,493ms). Repetidos somente gates afetados; revisão independente do leitor/proveniência aprovada e guardmédia posterior verificado por RED/GREEN/local/round-trip real, sem nova chamada de revisão. Export diagnóstico final da prova executado somente por leitura na fonte congelada: measurement-diagnostic-final.json, statusincomplete, consumo conhecido emobservedInput/Output, meanunavailable, cobertura4/4main e0/1filho. ReplayAPI↔JSON idêntico, qualifyecomparação recusados, semnormalizarNaN→null. Novoexportador tem hashes próprios distintos da fontepaga; raw/run/ledger/snapshot/journal/eventos históricos preservados. Sem nova prova, trust ou promoção; saldo752/930+44reservas e aceite0/3.
 
 Próxima condição mínima: obter prova autoritativa do baseline inicial para cada tipo de filho admitido. Não inferir por total==last nem obrigar auxiliares legítimos a mudar estratégia. Para discriminar o filho histórico, uma eventual leitura oficial somente de metadados do threadpróprio, se aindaobservável e expressamente permitida, seria menor que outroturno/modelo; não foi executada neste recorteoffline e pode não recuperar dado já ausente. Antes de outra prova paga, fechar essa fonte de baseline. Depois, usar modo focal existente com um principal e um filho de baselineautenticado, cap/prazo/trust específicos; nenhuma extensão ou nova medição fica autorizada por este fechamento.
+
+## 26.104 — U3.18: campanha funcional aceita com medição adiada
+
+**Decisão de escopo atual:** a campanha funcional A+B+C em 3/3 é aceita para o escopo U3.18 autorizado. A medição continua `incomplete` e fica adiada para depois de P1-B, conforme orientação posterior de Aj. Esta aceitação funcional não qualifica medição, usage, custo ou cobertura integral de auxiliares. A exigência de medição completa e a prova focal de baseline descritas nos §§26.102–26.103 permanecem contexto histórico para a medição adiada, não gates para invalidar este aceite funcional.
+
+**Resultado automático:** campanha `campaign-functional-b0edcee7-68c5-4730-8ebb-6462c75c7ee4`, estado `FUNCTIONAL_ACCEPTED`, `functional: PASS`, três FULLs completos. Os três relatórios indicam A/B/C PASS:
+
+| FULL | Run | Turnos no ledger | Resultado |
+| --- | --- | ---: | --- |
+| 1/3 | `run-20261030014538-ff46e074` | 31/150 | A/B/C PASS |
+| 2/3 | `run-20261030021540-fa2d348b` | 34/150 | A/B/C PASS |
+| 3/3 | `run-20261030024812-589479c1` | 27/150 | A/B/C PASS |
+
+Fonte automática preservada em `benchmark-temp/campaign-functional-b0edcee7-68c5-4730-8ebb-6462c75c7ee4/`: `campaign-summary.json`, `state.json` e `run-01.json`–`run-03.json`. Hashes SHA-256 dos arquivos automáticos:
+
+| Arquivo | SHA-256 |
+| --- | --- |
+| `campaign-summary.json` | `cf3b6c8a199f3e7ed0cdd303a1eda83262bf9cbd3fe608cb7c2a2838c430bb17` |
+| `state.json` | `2ce0d1923c0bb16c6731a71e66ce9a98e6c57d7c32b4cdfb8fc66975ee5fb284` |
+| `run-01.json` | `d97608d5c77e62b21faf9a392689600ebf0f0e10d0110c0246f9aa68269638f6` |
+| `run-02.json` | `79939a58c75a05351aadb03835eff911aac51f0b5276f82965e6a7249f0ff98b` |
+| `run-03.json` | `949cfd4e198cd556f4be5343f060fa130e3d41d42afca940bb8545d49ad39f6f` |
+
+**Identidade da fonte medida:** os três relatórios apontam para base commit `aae1e461071df2f47c800b1db24cb3e7025642bf`, árvore limpa, `snapshotSha256=sha256:a158b00753200bd45068237e5e72454798aa5f65003030ddeebfedd72de5fce9` e `sourceFunctionalSha256=sha256:2059e67a5a67f3cbc4e0ad20b586e8fcd2a93f429fd2e28b664ea393c596855f`. Esse é o commit medido; esta atualização é apenas documental e recebe commit separado.
+
+**Limitação de medição, sem qualificação:** o resumo automático lista lacunas de usage dos casos A/B, contagem agregada dos turnos principais, cobertura e usage de runners A/B e agregados de input/cache/output. Campos indisponíveis permanecem ausentes; não são zero nem estimativa. O estado automático é `FUNCTIONAL_ACCEPTED` com `measurementStatus: incomplete`; não houve promoção de medição qualificada. Esta limitação é explícita e adiada para depois de P1-B.
+
+**Recuperação e testes:** o ramo limitado de PLAN permite até duas reentregas contabilizadas no ledger e bloqueia após a segunda falha. O teste `PLAN handoff allows two ledger-counted re-deliveries and blocks after the second failure` em `scripts/test-benchmark-manager.mjs` cobre a segunda recuperação e o esgotamento; a campanha real também recuperou PLAN após `NEEDS_FIX` em A/FULL 1 e C/FULL 3 sem refazer etapas anteriores aprovadas. As suítes `node --test scripts/test-benchmark-manager.mjs scripts/test-benchmark-campaign.mjs` passaram com **186 PASS, 1 skip, 0 falhas**; `git diff --check` limpo antes desta atualização documental.
+
+**Prova terminal e preservação:** C/FULL 3 terminou com `SPEC_CLOSE PASS`. A evidência oficial persistida está em `benchmark-temp/run-20261030024812-589479c1/case-c/terminal-evidence.json`, com `publication=confirmed`, `cleanup=complete`, transaction ID `860870eccd8d4d074471749677a305ba`, source hash `sha256:bb8926a467037e0d243c7b105c81203c778548cf29f1eed742fc7d18185acb1b` e snapshot fechado `sha256:50b4b5bcb72ad776deaf46f15bbbc0f260e205a1a59b66adc6ee7a374164190a`. Permanecem nove trust entries temporários próprios removidos após confirmação de ausência dos processos; modo `0600` mantido e trust do repositório preservado. Não há run ativo. O histórico `run-20261030011327-09baca4d` segue BLOCKED; seu turno 15 PLAN permanece `uncertain`, sem reserva, reclassificação ou liquidação. Evidências históricas e relatórios automáticos não foram removidos; não há Markdown/HTML automático desta campanha.
+
+**Estado final:** aceite funcional U3.18 **3/3 no escopo atual**, com medição **incompleta e adiada após P1-B**. Não implica medição qualificada, conclusão de P1-B/U3 inteiro, nem autoriza nova campanha, RECONCILE, push ou alteração da fonte medida.
