@@ -566,7 +566,9 @@ async function writeOldTerminalNativeBlockedFull(f, variant = null) {
       mainTurns: 3, runnerTurns: 0, terminal: { result: 'BLOCKED', blocker: 'NATIVE_EVIDENCE_UNPROVEN',
         diagnostic: 'PLAN has no single official AWAITING_REVIEW return' } },
   };
-  const pendingVariants = new Set(['terminal-observation', 'pending-case-mismatch', 'pending-sequence-mismatch',
+  const pendingVariants = new Set(['terminal-observation', 'terminal-interrupted', 'terminal-interrupted-history-only',
+    'terminal-interrupted-wrong-turn', 'terminal-interrupted-wrong-case', 'terminal-interrupted-extra-uncertain',
+    'pending-case-mismatch', 'pending-sequence-mismatch',
     'pending-operation-mismatch', 'pending-thread-mismatch', 'pending-turnid-mismatch', 'pending-evidence-missing',
     'pending-evidence-incomplete', 'pending-terminal-unobserved', 'pending-ledger-uncertain', 'pending-finalizer-mismatch']);
   const operationEvidence = {
@@ -574,6 +576,22 @@ async function writeOldTerminalNativeBlockedFull(f, variant = null) {
     turn: { completed: true, terminalObserved: true, threadId: cThreadId, turnId: cTurnId },
     outcome: structuredClone(caseStates.C.terminal),
   };
+  if(typeof variant==='string'&&variant.startsWith('terminal-interrupted')) {
+    const interrupted={result:'BLOCKED',blocker:'NATIVE_TRANSPORT_UNPROVEN'};
+    caseStates.C.terminal=interrupted;summary.cases.C.terminal=structuredClone(interrupted);
+    operationEvidence.outcome=structuredClone(interrupted);
+    operationEvidence.turn={completed:false,turnStarted:null,terminalObserved:true,threadId:cThreadId,turnId:cTurnId,
+      errorCode:'NATIVE_TRANSPORT_UNPROVEN',
+      error:'parent turn failed/interrupted (status=interrupted; error=absent; cause=absent)'};
+    ledger.turns[14].state='uncertain';
+    if(variant==='terminal-interrupted-history-only') {
+      operationEvidence.turn.terminalObserved=false;
+      operationEvidence.turn.error='App Server rejected thread/turns/list (RPC -32603: session_metadata; empty_rollout)';
+    }
+    if(variant==='terminal-interrupted-wrong-turn')operationEvidence.turn.turnId='foreign-turn';
+    if(variant==='terminal-interrupted-wrong-case')ledger.turns[14].caseId='B';
+    if(variant==='terminal-interrupted-extra-uncertain')ledger.turns[13].state='uncertain';
+  }
   if (pendingVariants.has(variant)) {
     const evidencePath = path.join(dir, 'case-c', '03-plan.json');
     caseStates.C.pendingObservation = { sequence: 3, operation: 'PLAN', slice: null, mainNumber: 15,
@@ -665,6 +683,17 @@ test('functional cleanup retains the historical C rejected return only when its 
   }
 });
 
+test('functional cleanup preserves a correlated App Server interruption with ledger consumption still uncertain',async t=>{
+  const f=await functionalFixture(t),old=await writeOldTerminalNativeBlockedFull(f,'terminal-interrupted');
+  assert.equal(JSON.parse(old.preserved.ledger).turns[14].state,'uncertain');
+  const result=await runFunctionalBenchmark({root:f.root,hooks:f.hooks});
+  assert.equal(result.status,'PASS');assert.equal(f.runs,1);
+  assert.deepEqual(await fs.readFile(path.join(old.dir,'run.json')),old.preserved.run);
+  assert.deepEqual(await fs.readFile(path.join(old.dir,'summary.json')),old.preserved.summary);
+  assert.deepEqual(await fs.readFile(path.join(old.dir,'.turn-ledger.json')),old.preserved.ledger,
+    'admission preserves state=uncertain and consumed turns byte-for-byte');
+});
+
 test('native terminal cleanup remains fail-closed for active processes and unsettled evidence', async t => {
   for (const variant of ['process-live', 'process-inspection-denied', 'uncertain-turn', 'reservation',
     'ledger-total', 'pending-observation', 'nonterminal-case', 'pending-case-mismatch',
@@ -702,6 +731,13 @@ test('native terminal cleanup remains fail-closed for active processes and unset
       assert.equal(await fs.stat(path.join(f.scratch, '.campaign-active.json')).then(() => true, () => false), false);
     });
   }
+  for(const variant of ['terminal-interrupted-history-only','terminal-interrupted-wrong-turn',
+    'terminal-interrupted-wrong-case','terminal-interrupted-extra-uncertain'])await t.test(variant,async child=>{
+    const f=await functionalFixture(child);await writeOldTerminalNativeBlockedFull(f,variant);
+    await assert.rejects(runFunctionalBenchmark({root:f.root,hooks:f.hooks}),error=>error.code==='BLOCKED_CLEANUP');
+    assert.equal(f.runs,0,
+      'EMPTY_ROLLOUT alone, mismatched identity, or another uncertain turn cannot admit a campaign');
+  });
 });
 
 test('process inspection recognizes a benchmark-owned App Server but ignores the desktop server', () => {

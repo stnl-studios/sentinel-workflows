@@ -698,21 +698,56 @@ function terminalObservationSettled(state, ledger, runId, evidence) {
     && evidence.finalizer?.caseId === state.caseId && evidence.finalizer.status === 'BLOCKED';
 }
 
+// A transport-blocked operation may still have an authoritative terminal
+// App Server status. Admit only this persisted interrupted diagnostic, fully
+// bound to the last PLAN dispatch. The uncertain ledger row remains uncertain.
+function terminalInterruptedObservationSettled(state, ledger, runId, evidence) {
+  const pending=state?.pendingObservation,dispatch=pending?.dispatch;
+  const record=Number.isSafeInteger(pending?.sequence)&&pending.sequence>0
+    ? state.operations?.[pending.sequence-1] : null;
+  const operation=evidence?.operation,turn=operation?.turn;
+  const ledgerTurn=ledger.turns.find(item=>item.number===pending?.mainNumber);
+  const uncertain=ledger.turns.filter(item=>item.state==='uncertain');
+  const unclean=ledger.turns.filter(item=>!['completed','not_dispatched'].includes(item.state));
+  const interruptedDiagnostic='parent turn failed/interrupted (status=interrupted; error=absent; cause=absent)';
+  return state.status==='BLOCKED'&&state.terminal?.result==='BLOCKED'
+    &&state.terminal.blocker==='NATIVE_TRANSPORT_UNPROVEN'
+    &&pending?.operation==='PLAN'&&pending.slice===null&&Number.isSafeInteger(pending.sequence)
+    &&pending.sequence===state.operations?.length&&Number.isSafeInteger(pending.mainNumber)
+    &&pending.reserved?.length===0&&pending.startedChildren?.length===0
+    &&typeof dispatch?.threadId==='string'&&dispatch.threadId.length>0
+    &&typeof dispatch?.turnId==='string'&&dispatch.turnId.length>0
+    &&record?.operation==='PLAN'&&record.slice===null&&record.threadId===dispatch.threadId
+    &&isDeepStrictEqual(record.outcome,state.terminal)
+    &&operation?.sequence===pending.sequence&&operation.operation==='PLAN'&&operation.slice===null
+    &&isDeepStrictEqual(operation.outcome,state.terminal)
+    &&turn?.completed===false&&turn.terminalObserved===true
+    &&turn.errorCode==='NATIVE_TRANSPORT_UNPROVEN'&&turn.error===interruptedDiagnostic
+    &&turn.threadId===dispatch.threadId&&turn.turnId===dispatch.turnId
+    &&ledger.reservations.length===0&&uncertain.length===1&&unclean.length===1
+    &&ledgerTurn?.runId===runId&&ledgerTurn.caseId===state.caseId&&ledgerTurn.role==='main'
+    &&ledgerTurn.operation==='PLAN'&&ledgerTurn.slice===null&&ledgerTurn.sequence===pending.sequence
+    &&ledgerTurn.threadId===dispatch.threadId&&ledgerTurn.state==='uncertain'
+    &&Number.isSafeInteger(state.finalizer?.exitCode)&&state.finalizer.exitCode>0
+    &&evidence?.finalizer?.caseId===state.caseId&&evidence.finalizer.status==='BLOCKED';
+}
+
 export function settledNativeCleanupCase(state, ledger, runId, evidence = null) {
   const terminal = new Set(['PASS', 'BLOCKED', 'FAIL', 'ABORTED', 'CANCELLED',
     'PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP', 'RECOVERY_STOP']);
   if (state?.protocol !== 'native-app-server-v1' || !terminal.has(state.status)
     || ledger?.version !== 1
     || !Array.isArray(ledger.turns) || !Array.isArray(ledger.reservations)
-    || ledger.reservations.length !== 0
-    || ledger.turns.some(turn => !['completed', 'not_dispatched'].includes(turn.state)
-      || turn.childKind === 'pending')) return false;
+    || ledger.reservations.length !== 0) return false;
   try {
-    validateNativeLedger(ledger, state, runId, { settled: true });
+    validateNativeLedger(ledger, state, runId);
   } catch {
     return false;
   }
-  return terminalObservationSettled(state, ledger, runId, evidence);
+  const unclean=ledger.turns.filter(turn=>turn.caseId===state.caseId
+    &&(!['completed','not_dispatched'].includes(turn.state)||turn.childKind==='pending'));
+  if(unclean.length===0)return terminalObservationSettled(state, ledger, runId, evidence);
+  return terminalInterruptedObservationSettled(state,ledger,runId,evidence);
 }
 
 export async function runCase({ runRoot, caseId, configuration, snapshotMetadata, maxOperations, mode, product, signal,
