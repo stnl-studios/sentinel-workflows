@@ -64,7 +64,7 @@ Não há declaração de suíte completa verde para esse fix: base `b4517fb` com
 
 ## P1-B — Workflow redesign — situação corrente (2026-10-30)
 
-**Foco vigente —30/10, §26.104:** U3.18 teve aceite funcional A/B/C em 3/3 FULLs PASS na campanha automática indicada abaixo; a medição continua `incomplete` e foi adiada para depois de P1-B. P1-B e U3 permanecem em andamento; isso não conclui a unidade inteira. O próximo passo é U4.1: comparar e delimitar a equalização Claude. Não iniciar nova campanha nem inferir métricas ausentes. [Aceite, evidências e limites](maintenance/P1-B-PLANO.md#u318-campanha-funcional-aceita-com-medicao-adiada).
+**Foco vigente —30/10, §26.104:** U3 está concluída no escopo funcional aceito: U3.18 teve A/B/C PASS em 3/3 FULLs. A medição segue `incomplete` e foi adiada para depois de P1-B; isso não é gate pendente para U4. U4 é a unidade corrente, com U4.1 como próximo passo: comparar e delimitar a equalização Claude. P1-B permanece em andamento. Não iniciar nova campanha nem inferir métricas ausentes. [Aceite, evidências e limites](maintenance/P1-B-PLANO.md#u318-campanha-funcional-aceita-com-medicao-adiada).
 
 **Planejamento U4.1 registrado:** mapa de paridade, escopo candidato, riscos e prova mínima constam em [U4.1 — Delimitação da equalização Claude](maintenance/P1-B-PLANO.md#u41-delimitacao-da-equalizacao-claude). Estado: planejamento documental preparado; aceite do plano/escopo por Aj pendente. U4.2 (alterações e checks) não iniciada.
 
@@ -74,7 +74,7 @@ Há planejamento revisado **e implementação local já realizada**, com aceites
 | --- | --- | --- |
 | U1 | Preparação conjunta | Entregue com PASS histórico no recorte; sem recertificação global automática. |
 | U2 | Continuidade e recuperação | Entregue com PASS histórico no recorte; preservar garantias e histórico. |
-| U3 | Qualificação e QA | Em andamento. U3.5/U3.6 preservam o aceite EC-1 nativo/manual delimitado; U3.14 concluída no alcance local/mecânico; U3.15 aceita no recorte nativo da candidata D. U3.16 concluída no alcance offline (§25.14): bloqueio convertido corrigido, discriminantes e regressões/revisão final concluídos. Runtime S2 não provado; futura prova requer nova candidata. U3.18 funcional aceita em 3/3 no escopo atual (§26.104), com medição incompleta adiada para depois de P1-B. U3/P1-B seguem abertos. |
+| U3 | Qualificação e QA | Concluída no escopo funcional aceito. U3.5/U3.6 preservam o aceite EC-1 nativo/manual delimitado; U3.14 aceita no alcance local/mecânico; U3.15 aceita no recorte nativo da candidata D; U3.16 aceita no alcance offline (§25.14); U3.17 aceita no alcance composto Case A + S2 (§26.56); U3.18 funcional aceita em 3/3 (§26.104). Medição incompleta adiada para depois de P1-B; não qualificada. |
 | U4 | Equalização Claude | Pendente. Próximo passo: U4.1 comparar e delimitar a equalização; checks pertinentes antes de main. |
 | U5 | Entrega revisada | Pendente; publicação/PR/merge exigem os gates e autorizações próprios. |
 | U6 | Teste Claude por Aj | Pendente, depois de main. |
