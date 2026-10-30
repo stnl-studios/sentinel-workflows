@@ -151,7 +151,7 @@ test("inspection configuration is the effective manifest configuration", async (
   assert.throws(() => validateManifest(incompatible, defaultInspection), /helper_artifacts require RUNBOOK_OPTIONS.helpers=true/u);
 });
 
-test("runtime defaults, real manifest example, skill, and launcher remain aligned", async (t) => {
+test("runtime defaults and manifest stay aligned with the skill while the launcher passes options through", async (t) => {
   const [reference, skill, launcher] = await Promise.all([
     fs.readFile(path.join(SKILL_ROOT, "references", "runbook-manifest.md"), "utf8"),
     fs.readFile(path.join(SKILL_ROOT, "SKILL.md"), "utf8"),
@@ -176,13 +176,12 @@ test("runtime defaults, real manifest example, skill, and launcher remain aligne
 
   for (const key of Object.keys(DEFAULT_CONFIGURATION)) {
     assert.ok(skill.includes(`\`${key}\``), `SKILL.md omits ${key}`);
-    assert.ok(launcher.includes(`\`${key}`), `launcher omits ${key}`);
   }
   for (const locale of ["en-US", "pt-BR"]) {
     assert.ok(skill.includes(locale), `SKILL.md omits ${locale}`);
     assert.ok(reference.includes(locale), `manifest reference omits ${locale}`);
-    assert.ok(launcher.includes(locale), `launcher omits ${locale}`);
   }
+  assert.match(launcher, /^RUNBOOK_OPTIONS=\{\{RUNBOOK_OPTIONS\}\}$/mu);
   assert.match(skill, /<RUNBOOK_SELECTION> \[RUNBOOK_OPTIONS\]/u);
   assert.match(skill, /<MANIFEST_PATH> \[RUNBOOK_OPTIONS\]/u);
 });
