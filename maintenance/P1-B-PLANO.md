@@ -545,7 +545,7 @@ Essa hipótese fica explícita no plano futuro e pode ser delimitada documentalm
 
 **Situação:** pendente; numeração macro proposta nesta versão.
 
-- [ ] **U4.1 — Delimitar/aprovar:** próximo passo; comparar o contrato Claude com a corrente, variantes/metadados/commands/findings/budgets/terminal request e capacidade nativa declarada; delimitar impacto e obter aprovação de Aj.
+- [ ] **U4.1 — Delimitar/aprovar:** mapa e proposta documental preparados na [delimitação detalhada](#u41-delimitacao-da-equalizacao-claude); aceite do escopo por Aj pendente. A etapa não altera produto e U4.2 permanece não iniciada.
 - [ ] **U4.2 — Equalizar e verificar:** runner/guia/seleção/templates pertinentes, positivos/negativos e checks estáticos/mecânicos/contratuais; preservar identidade/modelos próprios, sem managed. Revisão pertinente.
 - [ ] **U4.3 — Dispor impacto/requalificação:** registrar H1 medido versus H2 com delta Claude, comparar core/bundle/harness/oracle/config; revalidar comportamento Codex afetado. Nova campanha só com decisão/autorização. **Não impor nem alegar prova nativa Claude pré-main:** testes nativos por Aj ficam em U6. Bug shared conhecido não é ignorado.
 
@@ -569,6 +569,40 @@ Essa hipótese fica explícita no plano futuro e pode ser delimitada documentalm
 
 - [ ] **U6.1 — Handoff:** SHA, instalação/instruções e cenários pertinentes, combinar janela com Aj; sem instalar ou gerar runbook automaticamente.
 - [ ] **U6.2 — Uso/retorno:** Aj testa Claude nativamente após main; registrar resultado/limites e eventual proposta focal. Não substitui checks/equalização U4 nem reabre todo P1-B automaticamente.
+
+<a id="u41-delimitacao-da-equalizacao-claude"></a>
+### U4.1 — Delimitação da equalização Claude
+
+**Estado:** planejamento documental preparado; decisão de Aj sobre escopo/autorização da etapa seguinte pendente. Sem implementação ou checks executados. U4.1 produz um mapa de paridade e uma proposta de escopo; não executa U4.2.
+
+**Base observada (leitura limitada ao fluxo de runner):**
+
+- A skill de slice e seu guia definem o contrato semântico comum, a evidência, os limites de operações e o pedido terminal. Os prompts têm versões específicas por provider (`templates/prompts/slice-validate-claude.md` e `slice-validate-codex.md`).
+- O runner Claude é um agent nativo Markdown com contrato `stnl-validation-runner/v11`, modelo/esforço próprios e teto declarado `1/3` a `3/3` para EXECUTE/APPLY (`agents/claude-code/.claude/agents/stnl-validation-runner.md`). Nesta árvore não foi encontrado adaptador de transporte Claude correspondente ao runtime Codex; isso descreve apenas o recorte lido, não uma afirmação sobre capacidades externas do Claude Code.
+- O runner Codex é um agent TOML (`stnl_validation_runner`) com contrato `v15`, modelo/esforço próprios e teto `1/5` a `5/5`. Para execução nativa atual, o guia de runner manda selecionar o TOML da distribuição candidata e verificar o mesmo hash antes de dispatch/restart (`agents/codex/.codex/agents/stnl_validation_runner.toml`; `skills/workflows/stnl-slice-executor/references/runner-invocation.md`). O runtime `agents/codex/runtime/native-provider.mjs` e `app-server-transport.mjs` implementa esse transporte; não deve ser copiado como harness no Claude.
+- A descoberta canônica de skills compartilha `scripts/lib/skill-discovery.mjs` nos adaptadores de `integrations/claude-code/skill-discovery.mjs` e `integrations/codex/skill-discovery.mjs`. A distribuição de ambos segue o installer Sentinel; não há evidência lida aqui de uma diferença de seleção canônica a justificar mudança.
+
+Essas diferenças confirmam divergência de versões/contratos, modelos e limites operacionais, e uma assimetria de transporte. Ainda não provam qual diferença é defeito, qual é intencional, nem que Claude possa oferecer a mesma vinculação mecânica do Codex. A U4.1 deve distinguir paridade semântica exigida de mecanismos específicos de cada cliente.
+
+**Checklist proposto para U4.1** (subpassos de planejamento, sem renumerar U4/U5/U6):
+
+1. **U4.1.1 — Inventariar contratos e seleção:** registrar agent/runner, versão do contrato, prompts por operação, origem/seleção do contexto, contexto entregue e distribuição/instalação. Entregável: matriz com fonte e estado observado por provider. Conclusão: cada afirmação da matriz aponta para fonte atual e fica marcada como compartilhada, específica ou ainda não comprovada.
+2. **U4.1.2 — Comparar a superfície semântica:** para EXECUTE, APPLY e VALIDATE, comparar variantes/resposta, metadados, identity/HEAD, comandos/receipts, findings, budgets/rodadas, independência, escopo de contexto e pedido terminal. Entregável: tabela de paridade com gaps e variantes. Conclusão: todo gap tem impacto descrito e classificação proposta (requisito comum, detalhe nativo legítimo ou pendência), sem assumir equivalência por nomes iguais.
+3. **U4.1.3 — Separar invariantes e comportamento provider-specific:** explicitar o contrato semântico que skills/runtime compartilhados precisam garantir e preservar modelos, esforço, transporte, seleção nativa e limites que pertençam ao provider. Entregável: fronteira de equalização. Conclusão: nenhuma proposta exige que skills conheçam benchmark ou que Claude replique SDK/App Server Codex.
+4. **U4.1.4 — Fechar proposta de delta e prova:** listar arquivos candidatos por responsabilidade, checks mecânicos/contratuais positivos e negativos, impacto Codex e gates antes de main. Entregável: escopo mínimo de U4.2/U4.3 e critérios de aceite revisáveis. Conclusão: cada delta tem evidência esperada, e alterações sem necessidade demonstrada são excluídas.
+5. **U4.1.5 — Registrar decisão de Aj:** apresentar mapa, hipóteses, risco maior, escopo/exclusões e dependências para aceite. Entregável: decisão explícita no plano antes de iniciar U4.2. Conclusão: aprovado, revisado ou rejeitado com status preservado; ausência de decisão não autoriza implementação.
+
+**Prova mínima proposta para U4.2/U4.3, após aceite:** cobertura estática/mecânica/contratual das linhas da matriz afetadas, incluindo negativos para resposta/variante, identidade, budget, findings, terminal e seleção/hash quando aplicável; revisão independente do delta; readback do impacto Codex contra H1 medido e H2 posterior conforme o gate já definido em U4.3. Não é prova nativa Claude. U6 mantém o teste de Claude por Aj depois de main. Não executar nova campanha benchmark como parte automática deste plano.
+
+**Dependências:** U3.18 funcional aceita 3/3 no escopo registrado (§26.104); conclusão de U3/P1-B ainda não é declarada. Para U4.2, depende do aceite de Aj ao mapa/escopo U4.1 e dos gates pertinentes anteriores a main. U5 exige autorizações de publicação/PR/merge; U6 depende da versão integrada e da janela de Aj.
+
+**Risco principal:** divergência semântica real pode estar escondida por contratos com versões diferentes, enquanto os mecanismos de transporte são estruturalmente distintos. O mapa não deve nem apagar exigências comuns nem fabricar paridade runtime Claude. Qualquer lacuna de prova de capacidade nativa fica como não verificada e, se necessária, reservada a U6.
+
+**Fora de U4.1:** alterar código, skills, prompts ou instalação; rodar testes/benchmark/modelos Claude; mudar SDK/harness Codex; reabrir U3.18 funcional ou qualificação de medição; telemetria/OTel; campanha ou RECONCILE. Permanecem as decisões do backlog: execução uma unidade por vez, bancada fora das skills, conversa curta por etapa, `tmp` apenas para desenvolvimento e limpeza própria, e campanha oficial `npm run benchmark` na raiz/`benchmark-temp`, 150 por FULL, somente quando autorizada. A medição adiada de U3.18 não integra U4.1.
+
+**Itens confirmados:** U3.18 funcional aceita 3/3; U4 é macro pendente; checks U4 pertinentes ocorrem antes de main; U5 é entrega revisada; U6 é teste Claude por Aj após main; limites de bancada/benchmark acima vêm das decisões de escopo vigentes.
+
+**Hipóteses/decisões pendentes:** se diferenças entre v11/v15 e budgets 3/5 refletem mudança de requisito, evolução deliberada ou drift; qual conjunto comum deve ser igualado; quais arquivos serão efetivamente alterados; e se há capacidade Claude nativa suficiente para qualquer alegação adicional. U4.1 deve resolver/documentar o escopo, não declarar essas hipóteses como defeitos ou prometer compatibilidade.
 
 ## 11. Confiança, orçamento e condução
 

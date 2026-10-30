@@ -66,6 +66,8 @@ Não há declaração de suíte completa verde para esse fix: base `b4517fb` com
 
 **Foco vigente —30/10, §26.104:** U3.18 teve aceite funcional A/B/C em 3/3 FULLs PASS na campanha automática indicada abaixo; a medição continua `incomplete` e foi adiada para depois de P1-B. P1-B e U3 permanecem em andamento; isso não conclui a unidade inteira. O próximo passo é U4.1: comparar e delimitar a equalização Claude. Não iniciar nova campanha nem inferir métricas ausentes. [Aceite, evidências e limites](maintenance/P1-B-PLANO.md#u318-campanha-funcional-aceita-com-medicao-adiada).
 
+**Planejamento U4.1 registrado:** mapa de paridade, escopo candidato, riscos e prova mínima constam em [U4.1 — Delimitação da equalização Claude](maintenance/P1-B-PLANO.md#u41-delimitacao-da-equalizacao-claude). Estado: planejamento documental preparado; aceite do plano/escopo por Aj pendente. U4.2 (alterações e checks) não iniciada.
+
 Há planejamento revisado **e implementação local já realizada**, com aceites delimitados; P1-B não está apenas aguardando contexto. O plano único corrente é [P1-B — Plano de entrega](maintenance/P1-B-PLANO.md), com macro, micro e resultados dos cortes. Os nove resultados e seus critérios aprovados, decisões vigentes, macro/micro com checkboxes e resumos de aceite estão consolidados nesse documento; a proposta antiga de Tasks abaixo fica como histórico.
 
 | Unidade | Nome | Estado sustentado |
