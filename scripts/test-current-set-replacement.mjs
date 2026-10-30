@@ -236,7 +236,9 @@ test('Q18 preserves noninitial local revision and consumed counters from a revie
   assert.equal(after.nextSliceOrdinal,before.nextSliceOrdinal);
   const id=fixture.delivery.deliveryId;
   for(const [name,edit,code,message] of [
-    ['predecessor digest',capsule=>{const request=JSON.parse(capsule.validationRequestUtf8);
+    // Only the current formal's claimed predecessor digest changes here; the
+    // retained historical validation witness remains intact for this check.
+    ['predecessor digest with valid historical witness',capsule=>{const request=JSON.parse(capsule.validationRequestUtf8);
       request.base.evidenceSha256='sha256:'+'0'.repeat(64);capsule.validationRequestUtf8=canonical(request)+'\n';},
       'EVIDENCE_STALE',/retained historical predecessor bytes differ/u],
     ['captured reviewed authority',capsule=>{const request=JSON.parse(capsule.validationRequestUtf8);
@@ -276,7 +278,7 @@ test('Q18 preserves noninitial local revision and consumed counters from a revie
       observedWork:current.baseline,lastAttempt:null}),
       error=>error?.code==='INVALID_CURRENT_IMAGE'&&/historical formal binding differs/u.test(error.message));
   });
-  await t.test('Q18 refuses adulterated older admission in the exact predecessor chain',async()=>{
+  await t.test('Q18 rejects an altered older admission witness before predecessor comparison',async()=>{
     const files=cloneFiles(result.files),bundle=decode(files.get(`evidence/${id}.json`));
     const old=bundle.support.find(item=>item.kind==='validation'&&item.origin.localRevision<2);
     assert.ok(old);
@@ -285,7 +287,8 @@ test('Q18 preserves noninitial local revision and consumed counters from a revie
       capsule.originUtf8=canonical(origin)+'\n';});
     replaceCandidateBundle(files,id,bundle);
     await assert.rejects(()=>validateCurrentReviewCandidate({specPath:fixture.specPath,files}),
-      error=>error?.code==='EVIDENCE_STALE'&&/retained historical predecessor bytes differ/u.test(error.message));
+      error=>error?.code==='OWNER_MISMATCH'
+        &&error.message==='native admission witness does not bind A0/A1, owner and approved snapshot');
   });
   await t.test('valid literal source does not authorize an incompatible current owner',async()=>{
     const files=cloneFiles(result.files),snapshot=decode(files.get('approved-preparation.json'));
