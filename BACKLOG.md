@@ -9,7 +9,7 @@ Este arquivo é o índice de prioridades e do estado macro. Ler o backlog não i
 | BL-01 | P0 concluída | Manutenção pragmática; não reabrir automaticamente. Aceite em [maintenance/p0-summary.md](maintenance/p0-summary.md). |
 | BL-02 | P0 concluída | Clareza e eficiência do workflow; evoluções posteriores não desfazem esse aceite. |
 | BL-03 | P1-A concluída no recorte acordado | Installer global e README integrados pela PR #2. Limites da certificação dos clientes ficam separados do aceite da fase. |
-| BL-08 (ID documental proposto) | P1-B em andamento; U5.0 em revisão local | U3 aceita no escopo funcional; U4 concluída nos recortes descritos no plano; concluir U5 com entrega revisada, gates do PR e merge/readback em `main`. |
+| BL-08 (ID documental proposto) | P1-B em andamento; U5.0 congelada; U5.1 PR #7 aberta em draft | U3 aceita no escopo funcional; U4 concluída nos recortes descritos no plano; observar checks/revisões em U5.2 e concluir U5 após merge/readback autorizado em `main`. |
 | BL-04 | Adiada / sob demanda | Roadmap, principalmente melhoria de layout. |
 | BL-05 | Adiada / sob demanda | Refinar user stories e preparar tasks para boards; são diferentes das Tasks internas do workflow. |
 | Sem ID novo | Sob demanda | Melhorias no runbook quando selecionadas. A validação formal do workflow continua separada. |
@@ -30,7 +30,7 @@ P1-A e P1-B foram priorizadas em sequência, sem dependência técnica obrigató
 | U2 — Continuidade e recuperação | Entregue, com PASS histórico no recorte | Evidências posteriores complementam, sem apagar limites históricos. |
 | U3 — Qualificação e QA | Concluída no escopo funcional aceito | Medição incompleta permanece adiada; não iniciar nova campanha por inferência. |
 | U4 — Equalização Claude | Concluída nos recortes U4.1–U4.3 | Igualdade offline e prova focal Codex não equivalem a teste nativo Claude. |
-| U5 — Entrega revisada | U5.0 autorizado; helper/teste legado sem consumidores removidos, smoke atual passou e revisão independente do diff não encontrou finding impeditivo; freeze pendente da identificação final do candidato | Depois: freeze local quando a árvore puder ser fixada; U5.1 push/PR draft com autorização própria; U5.2 CI e findings; U5.3 merge com aprovação expressa e readback. |
+| U5 — Entrega revisada | U5.0 concluída em `1f5ba761`; U5.1 publicada como PR #7 draft, mergeable e sem checks remotos reportados | U5.2: observar checks/revisões e dispor findings concretos; U5.3: merge somente com autorização expressa e readback. |
 | U6 — Teste Claude por Aj | Pendente, pós-entrega | Acompanhamento separado; registrar observações e propor ajuste focal se necessário. Não é gate para fechar P1-B. |
 
 ### Limites e referências
