@@ -5,7 +5,20 @@
   "type": "object",
   "additionalProperties": true,
   "required": ["schemaVersion", "benchmarkVersion", "benchmarkId", "caseId", "runMode", "sentinelSha", "productionProfileId", "status", "operations"],
+  "allOf": [
+    { "if": { "required": ["nativeTerminal"] }, "then": { "required": ["contextPolicy"], "properties": { "finalExecutionState": { "const": "SPEC_CLOSED" }, "specClosed": { "const": true } } } },
+    { "if": { "properties": { "finalExecutionState": { "const": "SPEC_CLOSED" }, "status": { "const": "PASS" } }, "required": ["finalExecutionState", "status"] }, "then": { "required": ["nativeTerminal", "contextPolicy"] } },
+    {"if": {"properties": {"status": {"const": "PASS"}, "runMode": {"enum": ["case", "full"]}}, "required": ["status", "runMode"]}, "then": {"required": ["productAcceptance"], "properties": {"productAcceptance": {"type": "object", "required": ["instrumentSha256", "product"], "properties": {"passed": {"const": true}, "checks": {"minItems": 1}, "commands": {"minimum": 1}, "contract": {"const": "sentinel-todo-product-v2"}, "product": {"type": "object"}}}, "workspace": {"type": "object", "required": ["productRoot", "productSha256"]}}}},
+    {"if": {"properties": {"caseId": {"const": "A"}}}, "then": {"properties": {"productAcceptance": {"properties": {"caseId": {"const": "A"}}}}}},
+    {"if": {"properties": {"caseId": {"const": "B"}}}, "then": {"properties": {"productAcceptance": {"properties": {"caseId": {"const": "B"}}}}}},
+    {"if": {"properties": {"caseId": {"const": "C"}}}, "then": {"properties": {"productAcceptance": {"properties": {"caseId": {"const": "C"}}}}}},
+    {"if": {"properties": {"caseId": {"const": "A"}, "status": {"const": "PASS"}, "runMode": {"enum": ["case", "full"]}}, "required": ["caseId", "status", "runMode"]}, "then": {"properties": {"productAcceptance": {"properties": {"checks": {"items": {"enum": ["list-storage", "list-filters", "list-empty", "list-usage", "add-complete", "existing-errors"]}, "minItems": 6, "maxItems": 6}}}}}},
+    {"if": {"properties": {"caseId": {"const": "B"}, "status": {"const": "PASS"}, "runMode": {"enum": ["case", "full"]}}, "required": ["caseId", "status", "runMode"]}, "then": {"properties": {"productAcceptance": {"properties": {"checks": {"items": {"enum": ["list-storage", "add-complete", "existing-errors", "priority-persist", "priority-errors", "priority-legacy", "priority-literal", "dependencies"]}, "minItems": 8, "maxItems": 8}}}}}},
+    {"if": {"properties": {"caseId": {"const": "C"}, "status": {"const": "PASS"}, "runMode": {"enum": ["case", "full"]}}, "required": ["caseId", "status", "runMode"]}, "then": {"properties": {"productAcceptance": {"properties": {"checks": {"items": {"enum": ["list-storage", "add-complete", "existing-errors", "archive-list", "archive-state", "archive-errors", "archive-usage", "archive-compat", "dependencies"]}, "minItems": 9, "maxItems": 9}}}}}}
+  ],
   "properties": {
+    "nativeTerminal": { "$ref": "result.schema.json#/$defs/nativeTerminal" },
+    "contextPolicy": { "$ref": "result.schema.json#/$defs/contextPolicy" },
     "productAcceptance": { "$ref": "result.schema.json#/$defs/productAcceptance" },
     "schemaVersion": { "const": 2 }, "benchmarkVersion": { "const": 1 }, "benchmarkId": { "const": "sentinel-todo" }, "caseId": { "enum": ["A", "B", "C"] }, "runMode": { "enum": ["focal", "case", "full"] }, "sentinelSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }, "productionProfileId": { "enum": ["production-v1", "production-v2", "production-v3"] }, "status": { "enum": ["PASS", "FAIL", "BLOCKED", "ABORTED_BUDGET"] }, "operations": { "type": "object", "required": ["maturationCycles"], "properties": { "maturationCycles": { "type": "integer", "minimum": 0 } } }
   }

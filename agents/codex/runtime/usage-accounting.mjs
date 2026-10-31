@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util';
+
 // Normalize cumulative SDK completion usage without guessing across threads,
 // segments, resets, or incomplete observations.
 
@@ -145,3 +147,140 @@ export function createUsageNormalizer({ baseline = null, source = "sdk" } = {}) 
 }
 
 export { USAGE_FIELDS, ZERO_USAGE };
+
+const APP_FIELDS = ['totalTokens', 'inputTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'outputTokens', 'reasoningOutputTokens'];
+const measurementId = value => typeof value === 'string' && /^[A-Za-z0-9._:-]{1,160}$/u.test(value);
+const counter = value => value && typeof value === 'object' && !Array.isArray(value)
+  && APP_FIELDS.every(field => Number.isSafeInteger(value[field]) && value[field] >= 0)
+  ? Object.fromEntries(APP_FIELDS.map(field => [field, value[field]])) : null;
+const sameCounter = (a, b) => a && b && APP_FIELDS.every(field => a[field] === b[field]);
+const coherentCounter = value => value.totalTokens === value.inputTokens + value.outputTokens
+  && value.cachedInputTokens <= value.inputTokens && value.reasoningOutputTokens <= value.outputTokens;
+
+// Only allowlisted numeric counters and lifecycle identity leave the RPC codec.
+// No items, prompts, error text, credentials, outputs or paths are retained.
+export function projectAppServerMeasurement(message) {
+  if (!['thread/tokenUsage/updated', 'turn/started', 'turn/completed'].includes(message?.method)) return null;
+  const p = message.params, turnId = message.method === 'thread/tokenUsage/updated' ? p?.turnId : p?.turn?.id;
+  if (!measurementId(p?.threadId) || !measurementId(turnId)) return { method: 'invalid', reason: 'measurement identity' };
+  const value = { method: message.method, threadId: p.threadId, turnId };
+  if (message.method === 'thread/tokenUsage/updated') {
+    const total = counter(p.tokenUsage?.total), last = counter(p.tokenUsage?.last);
+    if (!total || !last) return { ...value, method: 'invalid', reason: 'measurement counters' };
+    return { ...value, tokenUsage: { total, last,
+      modelContextWindow: Number.isSafeInteger(p.tokenUsage.modelContextWindow) && p.tokenUsage.modelContextWindow >= 0
+        ? p.tokenUsage.modelContextWindow : null } };
+  }
+  return { ...value, status: ['inProgress', 'completed', 'failed', 'interrupted'].includes(p.turn.status) ? p.turn.status : 'unknown',
+    ...Object.fromEntries(['startedAt', 'completedAt', 'durationMs'].map(field => [field,
+      Number.isSafeInteger(p.turn[field]) && p.turn[field] >= 0 ? p.turn[field] : null])) };
+}
+
+// 0.163.0 runtime counters, NOT invoice usage. `last` may be a context estimate;
+// use only differences of coherent thread-local `total` with a proven baseline.
+// Replay the existing event journal; there is no second persistent registry.
+export function appServerUsageObservations(events) {
+  if (!Array.isArray(events) || events.length > 16384) return { observations: [], issues: ['measurement event bound exceeded'] };
+  const scopes = new Map(), threads = new Map(), records = new Map(), notifications = new Map(), issues = new Set();
+  const key = (threadId, turnId) => JSON.stringify([threadId, turnId]);
+  const validEvent = event => event && typeof event === 'object' && !Array.isArray(event);
+  const forkConflict = scope => scope.forkState !== undefined && (!['none','present','absent','invalid'].includes(scope.forkState)
+    || (scope.forkState === 'none') !== (scope.forkedFromId === null)
+    || (scope.forkState === 'present' ? typeof scope.forkSourceMatchesParent !== 'boolean' : scope.forkSourceMatchesParent !== null));
+  for (const event of events) if (!validEvent(event)) issues.add('invalid measurement event');
+  else if (event.type === 'native.usage.scope') {
+    const s = event.scope;
+    if (!s || !measurementId(s.threadId) || !measurementId(s.turnId) || !['main', 'runner'].includes(s.source)
+      || typeof s.fresh !== 'boolean') { issues.add('invalid usage scope'); continue; }
+    const id = key(s.threadId, s.turnId), previous = scopes.get(id);
+    if (forkConflict(s)) issues.add('conflicting fork provenance');
+    if (previous && !isDeepStrictEqual(previous, s)) issues.add('conflicting usage scope');
+    else scopes.set(id, s);
+  }
+  function select(threadId, turnId) {
+    const id = key(threadId, turnId), scope = scopes.get(id);
+    if (!scope) {
+      issues.add([...scopes.values()].some(s => s.threadId === threadId) ? 'unbound turn usage' : 'unbound thread usage');
+      return null;
+    }
+    if (records.has(id)) return records.get(id);
+    const prior = threads.get(threadId);
+    const fresh = scope.fresh && !forkConflict(scope) && (scope.source === 'main' && scope.proof === 'thread/start'
+      || scope.source === 'runner' && scope.proof === 'public-child-no-fork' && scope.forkedFromId === null
+        && (scope.forkState === undefined || scope.forkState === 'none'));
+    let baseline = prior?.usable ? prior.final : fresh && !prior
+      ? Object.fromEntries(APP_FIELDS.map(field => [field, 0])) : null;
+    const problems = new Set();
+    if (forkConflict(scope)) problems.add('conflicting fork provenance');
+    if (prior && !prior.terminal) { prior.problems.add('overlapping turn boundary'); problems.add('overlapping turn boundary'); baseline = null; }
+    if (fresh && prior) { problems.add('unexpected baseline reset'); baseline = null; }
+    const record = { scope, baseline, final: null, terminal: false, status: null, usable: false, problems, ordinal: records.size };
+    threads.set(threadId, record); records.set(id, record); return record;
+  }
+  for (const event of events) {
+    if (!validEvent(event)) continue;
+    if (event.type === 'native.usage.unavailable') { issues.add('usage persistence incomplete'); continue; }
+    if (event.type !== 'native.usage.notification') continue;
+    const n = event.notification;
+    // This identifies our persisted observation, not an invoice/response ID.
+    // Equal counters in a newly received event are not proof of old replay.
+    if (!measurementId(event.observationId)) { issues.add('missing observation identity'); continue; }
+    if (notifications.has(event.observationId)) {
+      if (!isDeepStrictEqual(notifications.get(event.observationId), n)) issues.add('conflicting observation identity');
+      continue;
+    }
+    notifications.set(event.observationId, n);
+    if (!n || n.method === 'invalid') { issues.add('invalid usage notification'); continue; }
+    const record = select(n.threadId, n.turnId); if (!record) continue;
+    if (n.method === 'thread/tokenUsage/updated') {
+      const total = counter(n.tokenUsage?.total);
+      if (!total) { record.problems.add('invalid total'); continue; }
+      if (sameCounter(record.final, total)) continue; // Repeated current snapshot, no additional usage.
+      if (record.terminal) {
+        if (!sameCounter(record.final, total)) for (const later of records.values())
+          if (later.scope.threadId === record.scope.threadId && later.ordinal >= record.ordinal) {
+            later.problems.add('late changed total'); later.usable = false;
+          }
+        continue;
+      }
+      if (!coherentCounter(total)) record.problems.add('synthetic or incoherent total');
+      const previous = record.final ?? record.baseline;
+      if (previous && APP_FIELDS.some(field => total[field] < previous[field])) record.problems.add('counter decrease/reset');
+      record.final = total;
+    } else if (n.method === 'turn/completed') {
+      if (!['completed', 'failed', 'interrupted'].includes(n.status)) record.problems.add('unknown terminal status');
+      if (record.terminal && record.status !== n.status) record.problems.add('conflicting terminal status');
+      record.terminal = true; record.status = n.status;
+      record.usable = record.final !== null && coherentCounter(record.final) && record.problems.size === 0;
+    } else if (n.method !== 'turn/started') record.problems.add('unknown measurement event');
+  }
+  const observations = [];
+  for (const [id, scope] of scopes) {
+    const r = records.get(id), reasons = new Set(r?.problems ?? []);
+    if (!r?.baseline) {
+      reasons.add('unknown inherited baseline');
+      if (scope.source === 'runner') reasons.add({present:'fork source present; initial counters unproven',
+        absent:'fork provenance field absent',invalid:'fork provenance field invalid',none:'prior turn baseline missing'}[scope.forkState]
+        ?? 'fork provenance not retained');
+    }
+    if (!r?.final) reasons.add('usage snapshot missing');
+    if (!r?.terminal) reasons.add('terminal notification missing');
+    const difference = r?.baseline && r.final ? Object.fromEntries(APP_FIELDS.map(field => [field, r.final[field] - r.baseline[field]])) : null;
+    if (difference && (!coherentCounter(difference) || APP_FIELDS.some(field => difference[field] < 0))) reasons.add('invalid cumulative delta');
+    if (difference?.totalTokens === 0) reasons.add('unchanged counters do not prove zero spending');
+    observations.push({ source: scope.source, threadId: scope.threadId, turnId: scope.turnId,
+      segment: scope.turnId, eventId: `app-server:${scope.threadId}:${scope.turnId}`, operationId: scope.operationId,
+      status: reasons.size ? 'partial' : 'attributable', reason: reasons.size ? [...reasons].join('; ') : null,
+      semantics: 'app-server-0.163.0-thread-runtime-delta', billing: false, turnStatus: r?.status ?? null,
+      ...(scope.source === 'runner' ? { configuration: {
+        model: typeof scope.model === 'string' && /^[A-Za-z0-9._-]{1,80}$/u.test(scope.model) ? scope.model : null,
+        effort: ['none','minimal','low','medium','high','xhigh','max'].includes(scope.effort) ? scope.effort : null,
+      }, provenance: { forkState: ['none','present','absent','invalid'].includes(scope.forkState) ? scope.forkState : 'unrecorded',
+        forkSourceMatchesParent: typeof scope.forkSourceMatchesParent === 'boolean' ? scope.forkSourceMatchesParent : null } } : {}),
+      baseline: r?.baseline ?? null, final: r?.final ?? null,
+      delta: reasons.size ? null : { input: difference.inputTokens, cachedInput: difference.cachedInputTokens,
+        cacheWrite: difference.cacheWriteInputTokens, output: difference.outputTokens,
+        reasoningOutput: difference.reasoningOutputTokens, total: difference.totalTokens } });
+  }
+  return { observations, issues: [...issues] };
+}

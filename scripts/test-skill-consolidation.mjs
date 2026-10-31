@@ -26,7 +26,7 @@ const OBSOLETE_NAMES = [
   "stnl-frontend-quality",
   "stnl-database-migrations",
 ];
-const IGNORED_DIRECTORIES = new Set(["__MACOSX", "node_modules", ".git", "tmp", "dist", "coverage"]);
+const IGNORED_DIRECTORIES = new Set(["__MACOSX", "node_modules", ".git", "tmp", "dist", "coverage", "benchmark-temp"]);
 const TEXT_EXTENSIONS = new Set([".md", ".mjs", ".sh", ".json", ".toml", ".yaml", ".yml"]);
 
 async function directNames(directory) {
@@ -152,6 +152,20 @@ test("semantic routing selects a primary and only applicable specialized domains
   assert.throws(() => routeSkills({ workflowSkill: "stnl-database-persistence", scope: "SQL" }), /unknown workflow skill/u);
 });
 
+test("planning, review, execution and quality workflows define focused native domain lookup", async () => {
+  for (const [name, expected] of [
+    ["stnl-execution-planner", /For a technical change, inspect the native skill catalog descriptions and consult only the primary domain guidance and applicable specializations/u],
+    ["stnl-plan-reviewer", /When reviewing a technical change, inspect the native skill catalog descriptions and read only the primary domain guidance and specializations that apply/u],
+    ["stnl-slice-executor", /For a technical approved slice, inspect the native skill catalog descriptions and consult only the primary domain guidance and applicable specializations/u],
+    ["stnl-slice-quality-manager", /When validating a technical change, inspect the native skill catalog descriptions and consult only the primary domain guidance and applicable specializations/u],
+  ]) {
+    const instruction = await fs.readFile(path.join(ROOT, "skills/workflows", name, "SKILL.md"), "utf8");
+    assert.match(instruction, expected, name);
+    assert.match(instruction, /do not load domain guidance by default/u, name);
+    assert.match(instruction, /authority/u, name);
+  }
+});
+
 test("Codex discovers canonical workflow and domain skills without copies", () => {
   const discovered = discoverCodexSkills(ROOT);
   assert.equal(discovered.consumer, "codex");
@@ -192,6 +206,56 @@ test("operational sources contain no obsolete taxonomy or flat skill paths", asy
       }
       continue;
     }
-    assert.equal(/skills\/stnl-[A-Za-z0-9-]+(?:\/|$)/u.test(source), false, `${path.relative(ROOT, file)} contains a flat skill path`);
+    // Installed platform skill roots are flat by contract; repository source is not.
+    assert.equal(/(?<!\.(?:agents|codex|claude)\/)skills\/stnl-[A-Za-z0-9-]+(?:\/|$)/u.test(source), false, `${path.relative(ROOT, file)} contains a flat source skill path`);
   }
+});
+
+test('copied consumers require a complete installed invocation guide and neutral generic body', async t => {
+  assert.equal(runRepositoryContract(ROOT).status, 0, runRepositoryContract(ROOT).stderr);
+  await t.test('immutable ID wording allows harmless physical and conjunction variants', async child => {
+    const root = await contractFixture(child, async fixtureRoot => {
+      const file = path.join(fixtureRoot, 'skills/workflows/stnl-spec-lifecycle-manager/references/canonical-ids.md');
+      const source = await fs.readFile(file, 'utf8');
+      assert.ok(source.includes('never physically remove, renumber, reuse, fill gaps'));
+      await fs.writeFile(file, source.replace('never physically remove, renumber, reuse, fill gaps', 'never remove, renumber, reuse, or fill gaps'));
+    });
+    const result = runRepositoryContract(root);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
+  for (const [name, mutate, category] of [
+    ['missing guide', async root => fs.rm(path.join(root, 'skills/workflows/stnl-slice-executor/references/runner-invocation.md')), 'C006_DISTRIBUTION'],
+    ['missing independence guarantee', async root => {
+      const file = path.join(root, 'skills/workflows/stnl-slice-executor/references/runner-invocation.md');
+      await fs.writeFile(file, (await fs.readFile(file, 'utf8')).replace('without that contract is not the runner', 'without that contract is permitted'));
+    }, 'C006_DISTRIBUTION'],
+    ['physical removal prohibition', async root => {
+      const file = path.join(root, 'skills/workflows/stnl-spec-lifecycle-manager/references/canonical-ids.md');
+      const text = await fs.readFile(file, 'utf8');
+      await fs.writeFile(file, text.replace('never physically remove, renumber, reuse, fill gaps', 'allow physical removal, renumber, reuse, fill gaps'));
+    }, 'C015_LIFECYCLE_AUTHORITY'],
+    ['renumbering prohibition', async root => {
+      const file = path.join(root, 'skills/workflows/stnl-spec-lifecycle-manager/references/canonical-ids.md');
+      const text = await fs.readFile(file, 'utf8');
+      await fs.writeFile(file, text.replace('renumber', 'relabel'));
+    }, 'C015_LIFECYCLE_AUTHORITY'],
+    ['reuse prohibition', async root => {
+      const file = path.join(root, 'skills/workflows/stnl-spec-lifecycle-manager/references/canonical-ids.md');
+      const text = await fs.readFile(file, 'utf8');
+      await fs.writeFile(file, text.replace('reuse', 'assign a new ID'));
+    }, 'C015_LIFECYCLE_AUTHORITY'],
+    ['gap-filling prohibition', async root => {
+      const file = path.join(root, 'skills/workflows/stnl-spec-lifecycle-manager/references/canonical-ids.md');
+      const text = await fs.readFile(file, 'utf8');
+      await fs.writeFile(file, text.replace('fill gaps', 'fill reserved gaps'));
+    }, 'C015_LIFECYCLE_AUTHORITY'],
+    ['legacy external CLOSE candidate',async root=>fs.appendFile(path.join(root,'skills/workflows/stnl-spec-lifecycle-manager/references/close-policy.md'),'\nCLOSE <TARGET> <CANDIDATE>\n'),'C015_LIFECYCLE_AUTHORITY'],
+    ['missing coordinated locator contract',async root=>{const file=path.join(root,'skills/workflows/stnl-spec-lifecycle-manager/README.md');await fs.writeFile(file,(await fs.readFile(file,'utf8')).replaceAll('materialRoot/lifecycle.lock','unbound sibling lock'));},'C015_LIFECYCLE_AUTHORITY'],
+    ['vendor syntax in generic core', async root => fs.appendFile(path.join(root, 'skills/workflows/stnl-slice-executor/SKILL.md'), '\nSelect Codex directly.\n'), 'C004_VENDOR_NEUTRALITY'],
+  ]) await t.test(name, async child => {
+    const root = await contractFixture(child, mutate);
+    const result = runRepositoryContract(root);
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.ok(result.stderr.includes(`CONTRACT_ERROR[${category}]`), result.stderr);
+  });
 });

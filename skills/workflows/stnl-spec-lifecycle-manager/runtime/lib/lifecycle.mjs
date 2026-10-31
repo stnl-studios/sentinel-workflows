@@ -1131,7 +1131,7 @@ export function validateReadinessTransition(beforeRoot, afterRoot, scope) {
   return [before, after];
 }
 
-export function validateCloseTransition(beforeRoot, afterRoot) {
+export function compareCloseDocuments(beforeRoot, afterRoot) {
   const before = validateWorkspace(beforeRoot);
   if (before.closed || before.status !== 'ready') fail('CLOSE source must be an active ready SPEC', path.join(before.root, 'feature_spec.md'));
   if (before.openQuestions.length || before.brokenReferences.length || before.documentaryGaps.length) fail('CLOSE source still has documentary blockers', path.join(before.root, 'feature_spec.md'));
@@ -1146,6 +1146,40 @@ export function validateCloseTransition(beforeRoot, afterRoot) {
   if (missing.length) fail(`CLOSE discarded canonical items: [${missing.map((value) => `'${value}'`).join(', ')}]`, feature);
   if (extra.length) fail(`CLOSE invented canonical items: [${extra.map((value) => `'${value}'`).join(', ')}]`, feature);
   for (const [identifier, source] of before.items) if (itemPreservationSignature(source) !== itemPreservationSignature(after.items.get(identifier))) fail(`CLOSE changed canonical content for ${identifier}`, feature);
-  if (!same(externalSnapshot(before.root), externalSnapshot(after.root))) fail('CLOSE changed an external directory, including execution/', after.root);
+  const durableExternal=directory=>externalSnapshot(directory).filter(item=>item[1]!=='execution'&&!item[1].startsWith('execution/'));
+  if (!same(durableExternal(before.root), durableExternal(after.root))) fail('CLOSE changed an external directory', after.root);
   return [before, after];
+}
+
+// The normal reader is the only authority for discarding an existing execution.
+// Documentary closure without execution is legal and confers no implementation PASS.
+export async function deriveCloseExecutionDisposition(source) {
+  const before=validateWorkspace(source);
+  if(before.closed||before.status!=='ready')fail('CLOSE requires an active ready workspace',before.root);
+  if(before.openQuestions.length||before.brokenReferences.length||before.documentaryGaps.length)fail('CLOSE source still has documentary blockers',before.root);
+  const execution=path.join(before.root,'execution');
+  if(!lexists(execution))return {kind:'absent'};
+  const initialExecution=fs.lstatSync(execution,{bigint:true});
+  const {captureCurrentExecution}=await import('./execution-current-reader.mjs');
+  let image;
+  try{image=await captureCurrentExecution(before.root);}
+  catch(error){fail(`CLOSE cannot discard execution: ${error.code??'UNKNOWN'}: ${error.message}`,execution);}
+  if(image.inspection.state!=='COMPLETE')fail(`CLOSE requires current integral COMPLETE before discarding execution: ${image.inspection.state}`,execution);
+  const activation=JSON.parse(Buffer.from(image.activationBytes).toString('utf8'));
+  if(activation.activeAttempt!==null)fail('CLOSE execution has unresolved ownership',execution);
+  const finalExecution=fs.lstatSync(execution,{bigint:true});
+  if(initialExecution.dev!==finalExecution.dev||initialExecution.ino!==finalExecution.ino)fail('CLOSE execution identity changed during inspection',execution);
+  return {kind:'discard-current-complete',requirementsAuthority:image.requirementsAuthority,
+    executionIdentity:{dev:String(finalExecution.dev),ino:String(finalExecution.ino)},
+    activationId:activation.activationId,
+    artifactManifestSha256:'sha256:'+createHash('sha256').update(JSON.stringify(activation.artifacts)).digest('hex')};
+}
+
+export async function validateCloseTransition(beforeRoot,afterRoot) {
+  const disposition=await deriveCloseExecutionDisposition(beforeRoot);
+  const transition=compareCloseDocuments(beforeRoot,afterRoot);
+  if(lexists(path.join(transition[1].root,'execution')))fail('CLOSE result must not retain execution',transition[1].root);
+  if(!same(disposition,await deriveCloseExecutionDisposition(beforeRoot)))fail('CLOSE execution disposition changed during validation',beforeRoot);
+  Object.defineProperty(transition,'sourceExecutionDisposition',{value:disposition,enumerable:false});
+  return transition;
 }

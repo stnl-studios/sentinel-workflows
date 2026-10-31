@@ -3,7 +3,8 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { OFFLINE_AUTH, OFFLINE_MARKER, OFFLINE_PROVIDER } from '../../agents/codex/runtime/offline-provider-context.mjs';
+import os from 'node:os';
+import { OFFLINE_MARKER } from '../../agents/codex/runtime/offline-provider-context.mjs';
 
 const owned = new WeakMap();
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -15,48 +16,28 @@ const alive = pid => {
   if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('invalid fixture process identity');
   try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; }
 };
-export const offlineSourceFilter = file => !file.split(path.sep).some(part => ['node_modules', '.DS_Store', 'measurements'].includes(part));
+export const offlineSourceFilter = file => !file.split(path.sep).some(part => ['.git', 'node_modules', '.DS_Store', 'measurements'].includes(part));
 
 // Only allocations made in this process are eligible; no adoption or backlog scan.
 export async function allocateOfflineFixture(repository = null) {
-  const root = await fs.realpath(await fs.mkdtemp('/tmp/stnl-offline-checkout-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'stnl-offline-checkout-')));
   const fixture = { root };
   const owner = { root, id: randomUUID(), pid: process.pid, inode: (await fs.lstat(root)).ino };
   if (repository !== null) {
-    const clone = spawnSync('git', ['clone', '--no-hardlinks', '--local', repository, root], { encoding: 'utf8', timeout: 30_000 });
-    if (clone.status !== 0) {
-      if (await fs.realpath(root) === root && (await fs.lstat(root)).ino === owner.inode) await fs.rm(root, { recursive: true });
-      assert.equal(clone.status, 0, clone.stderr);
+    // Only the current source closure, never repository history/dependencies.
+    for (const name of ['agents', 'skills', 'scripts', 'templates', 'benchmarks']) await fs.cp(path.join(repository, name), path.join(root, name), {
+      recursive: true, filter: offlineSourceFilter,
+    });
+    for (const name of ['package.json', '.gitignore']) await fs.copyFile(path.join(repository, name), path.join(root, name));
+    for (const args of [['init', '--quiet'], ['add', '.'], ['-c', 'user.name=Offline Fixture', '-c', 'user.email=offline@example.invalid', 'commit', '--quiet', '-m', 'Owned offline source fixture']]) {
+      const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', timeout: 30_000,
+        env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
+      assert.equal(result.status, 0, result.stderr);
     }
   }
   await fs.writeFile(path.join(root, '.offline-owned'), OFFLINE_MARKER, { flag: 'wx' });
   await fs.writeFile(path.join(root, '.offline-fixture-owner.json'), JSON.stringify(owner), { flag: 'wx' });
   owned.set(fixture, owner);
-  return fixture;
-}
-
-export async function createOfflineCheckout(t, repository, scenario, { shared = false, config = '# fictitious GLOBAL sentinel\n' } = {}) {
-  const fixture = await allocateOfflineFixture(repository);
-  t.after(() => finishOfflineFixture(fixture, { remove: !shared }));
-  const root = fixture.root;
-  for (const name of ['agents', 'skills', 'scripts', 'templates', 'benchmarks']) await fs.cp(path.join(repository, name), path.join(root, name), {
-    recursive: true, filter: offlineSourceFilter,
-  });
-  const home = path.join(root, '.offline-home');
-  await fs.mkdir(path.join(home, '.codex'), { recursive: true });
-  await fs.mkdir(path.join(home, 'Library/Application Support'), { recursive: true });
-  await fs.mkdir(path.join(home, '.claude'), { recursive: true });
-  await fs.writeFile(path.join(home, '.codex/auth.json'), OFFLINE_AUTH);
-  await fs.writeFile(path.join(home, '.codex/config.toml'), config);
-  await fs.writeFile(path.join(home, '.claude/settings.json'), '{"fictitious":"unchanged"}\n');
-  await fs.writeFile(path.join(root, '.offline-context.json'), JSON.stringify({ mode: 'OFFLINE_TEST_ONLY', root, home, scenario,
-    dependencySource: await fs.realpath(path.join(repository, 'agents/codex/node_modules')),
-    providerSha256: 'sha256:' + hash(await fs.readFile(path.join(root, OFFLINE_PROVIDER))) }));
-  const env = { ...process.env, HOME: home, STNL_OFFLINE_PROVIDER_CONTEXT: path.join(root, '.offline-context.json'),
-    GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', NO_COLOR: '1',
-    npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false' };
-  delete env.OPENAI_API_KEY; delete env.CODEX_API_KEY;
-  Object.assign(fixture, { home, env });
   return fixture;
 }
 
@@ -72,6 +53,9 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
   }
   await assertOwnership();
   const root = owner.root;
+  if(process.env.STNL_OFFLINE_KEEP_FIXTURES==='1') remove=false;
+  const retainedBrokers = [];
+  const checkpointStates = new Set(['PAUSED_BUDGET_OR_QUOTA', 'FOCAL_STOP']);
   if (await optional(path.join(root, 'benchmark-temp/.active-run.json')) !== null) throw new Error('OFFLINE_FIXTURE_RETAINED: active or interrupted manager');
   const runNames = await fs.readdir(path.join(root, 'benchmark-temp')).catch(error => {
     if (error.code === 'ENOENT') return []; throw error;
@@ -80,14 +64,17 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
     const runRoot = path.join(root, 'benchmark-temp', name);
     const info = await optional(path.join(runRoot, 'run.json'));
     const summary = await optional(path.join(runRoot, 'summary.json'));
-    if (!info || !summary || !['PASS', 'BLOCKED', 'CANCELLED'].includes(info.status) || info.status !== summary.status) {
+    if (!info || !summary || !['PASS', 'BLOCKED', 'CANCELLED', ...checkpointStates].includes(info.status) || info.status !== summary.status) {
       throw new Error('OFFLINE_FIXTURE_RETAINED: run is not demonstrably terminal');
     }
+    if (checkpointStates.has(info.status)) remove = false;
     for (const entry of await fs.readdir(runRoot, { withFileTypes: true })) if (entry.isDirectory() && /^case-[abc]$/u.test(entry.name)) {
       const state = await optional(path.join(runRoot, entry.name, 'case-state.json'));
-      if (!state || !['PASS', 'BLOCKED', 'CANCELLED'].includes(state.status)
+      if (!state || !['PASS', 'FAIL', 'BLOCKED', 'CANCELLED', ...checkpointStates].includes(state.status)
         || state.privateHomeSuspended || state.privateHomeCleanupError) throw new Error('OFFLINE_FIXTURE_RETAINED: case is not settled');
-      if (await optional(path.join(runRoot, entry.name, 'tmp/stnl-runner-broker/active.json')) !== null) throw new Error('OFFLINE_FIXTURE_RETAINED: broker still active');
+      const activeFile = path.join(runRoot, entry.name, 'tmp/stnl-runner-broker/active.json');
+      const active = await optional(activeFile);
+      if (active !== null)throw new Error('OFFLINE_FIXTURE_RETAINED: broker still active');
     }
   }
   const calls = await fs.readFile(path.join(root, '.offline-calls.jsonl'), 'utf8').catch(error => {
@@ -101,10 +88,20 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
   }
   if ([...pids].some(alive)) throw new Error('OFFLINE_FIXTURE_RETAINED: recorded fixture process is still alive');
 
-  const archive = await fs.realpath(await fs.mkdtemp('/tmp/stnl-offline-evidence-'));
-  const manifest = { originalRoot: root, ownerId: owner.id, dependenciesOmitted: true, files: [] };
+  // The current native path has no managed broker. Preserve uncertain/live
+  // turns rather than treating an absent legacy broker as permission to erase.
+  const retainedNative = [];
+  const runsRoot = path.join(root, 'benchmark-temp');
+  for (const name of await fs.readdir(runsRoot).catch(error => { if (error.code === 'ENOENT') return []; throw error; })) {
+    const ledger = await optional(path.join(runsRoot, name, '.turn-ledger.json'));
+    if (ledger?.turns?.some(turn => ['dispatched', 'uncertain'].includes(turn.state))) retainedNative.push(name);
+  }
+  if (retainedNative.length) remove = false;
+  const archive = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'stnl-offline-evidence-')));
+  const manifest = { originalRoot: root, ownerId: owner.id, dependenciesOmitted: true, regenerableSnapshotOmitted: true,
+    retainedBrokers, retainedNative, processesSettled: [...pids].sort((a,b) => a-b), files: [] };
   async function copy(relative) {
-    if (['node_modules', '.git', '.offline-home'].includes(path.basename(relative))) return;
+    if (['node_modules', '.git', '.offline-home', 'snapshot'].includes(path.basename(relative))) return;
     const source = path.join(root, relative), target = path.join(archive, relative);
     const metadata = await fs.lstat(source);
     if (metadata.isDirectory() && !metadata.isSymbolicLink()) {
@@ -128,6 +125,8 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
   }
   await fs.writeFile(path.join(archive, 'evidence-manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
   console.log(`TEST-ONLY archived fixture evidence: ${archive}`);
+  if (retainedBrokers.length) console.log(`TEST-ONLY preserved pending operation and diagnostic state: ${root}`);
+  if (retainedNative.length) console.log(`TEST-ONLY preserved uncertain native case and source: ${root}`);
   if (remove) {
     await assertOwnership();
     // Thaw only directories of this closed owned fixture, never the shared SDK.

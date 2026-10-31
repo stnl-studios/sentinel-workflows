@@ -20,6 +20,14 @@ test('UI01 — non-TTY is append-only and puts case, operation, counts, state, a
   assert.equal(err.value, '');
 });
 
+test('UI shows explicit unlimited turn budget while keeping consumed-turn accounting visible', () => {
+  const out = stream(false);
+  const reporter = createReporter({ stdout: out, stderr: stream(false), isTTY: false });
+  reporter.emit({ kind: 'start', caseId: 'A', operation: 'PLAN', mainTurns: 101, runnerTurns: 0,
+    turnBudget: { limit: null, consumed: 101, remaining: null, mainTurns: 101, runnerTurns: 0 } });
+  assert.match(out.value, /budget 101 \/ unlimited/u);
+});
+
 test('UI02 — TTY renders a compact panel, with ANSI disabled by NO_COLOR', () => {
   const out = stream(true);
   const reporter = createReporter({ stdout: out, stderr: stream(true), isTTY: true, width: 120, noColor: false });

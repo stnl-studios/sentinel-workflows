@@ -21,22 +21,14 @@ update_policy: PLAN creates revision 1; REPLAN drafts a replacement or extension
 - Strategy: <compact strategy>
 - Review state: pending
 
-Assign IDs using the coverage contract in the planner skill's `templates/slice-plan.template.md`, section `Requirements`; keep each global row and its detailed plan consistent.
-
-For revision 1, including a planning-only replacement before tasks exist, omit the following historical recovery fields. Only a later revision recovering from materialized tasks records the deterministic reason and whether it is a pristine replacement or append-only extension:
-
-- Replan reason: <REPLAN_REASON>
-- Revision mode: pristine-replacement | append-only-extension
-- Supersedes open slices: <slice-NN -> slice-NN mappings or none>
-
 ## Serial Slice Order
 
-| Slice | Observable delivery | Dependencies | Requirements | Expected areas | Detailed plan |
+| Slice | Observable delivery | Dependencies | Requirements | Authorized areas | Detailed plan |
 |---|---|---|---|---|---|
-| 01 - <name> | <result> | - | AC-001 | Model-selected physical target (repository-relative before serialization): `<repository-relative physical target>`; <optional conceptual area> (plain-text description) | plans/slice-01.md |
+| 01 - <name> | <observable delivery> | - | AC-001 | directory: `<artifact-relative physical target>` | plans/slice-01.md |
 
 ## Global Risks and Integration
 
 - <risk, boundary, or explicit final integration slice>
 
-`tasks.md` is the only global progress authority and does not exist until approved plans are materialized.
+`tasks.md` is the sole global progress authority. PLAN produces Plan and Tasks together; only joint independent REVIEW_PLAN activates execution.

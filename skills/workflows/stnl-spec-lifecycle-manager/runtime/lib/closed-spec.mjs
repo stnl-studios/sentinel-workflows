@@ -1,11 +1,12 @@
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
 import {
   ACTIVE_SECTIONS,
   ValidationError,
   canonicalPathWithoutSymlinks,
-  validateCloseTransition,
+  compareCloseDocuments,
   validateWorkspace,
 } from './lifecycle.mjs';
 import {
@@ -52,18 +53,6 @@ function requireIdentity(directory, expected, label) {
   if (identity(directory, label) !== expected) throw new ValidationError(`${label} ownership/inode changed: ${directory}`);
 }
 
-function removeOwnedDirectory(directory, expected, label) {
-  requireIdentity(directory, expected, label);
-  fs.rmSync(directory, { recursive: true, force: false });
-}
-
-function rollbackPromotedCandidate(candidate, stage, expected) {
-  if (lexists(stage)) throw new ValidationError(`CLOSE rollback stage path unexpectedly exists: ${stage}`);
-  requireIdentity(candidate, expected, 'promoted CLOSE candidate');
-  fs.renameSync(candidate, stage);
-  requireIdentity(stage, expected, 'rolled-back CLOSE stage');
-}
-
 function preserveMetadata(destination, metadata) {
   try { fs.chmodSync(destination, metadata.mode & 0o7777); } catch (error) {
     if (process.platform !== 'win32') throw error;
@@ -73,7 +62,85 @@ function preserveMetadata(destination, metadata) {
   }
 }
 
-function copyExternal(source, destination, relative, linkGroups) {
+// One fixed Darwin producer capability. Paths and physical identity belong to
+// the publisher's existing stage; neither a caller nor a model selects a command.
+export function linkOwnedStageSymlink(stageRoot, stageIdentity, source, destination, expectedSource) {
+  if (process.platform !== 'darwin') throw new ValidationError('Darwin symlink hardlink capability is unavailable on this platform');
+  if (!stageIdentity || typeof stageIdentity.dev !== 'string' || typeof stageIdentity.ino !== 'string'
+    || !expectedSource || typeof expectedSource.dev !== 'string' || typeof expectedSource.ino !== 'string'
+    || typeof expectedSource.nlink !== 'string' || !/^[1-9][0-9]*$/u.test(expectedSource.nlink)
+    || typeof expectedSource.payload !== 'string') throw new ValidationError('owned symlink link requires sealed physical identities');
+  for (const value of [stageRoot, source, destination]) {
+    if (typeof value !== 'string' || !path.isAbsolute(value) || requestedPartsContainTraversal(value))
+      throw new ValidationError('owned symlink paths must be absolute without traversal');
+  }
+  const root=canonicalPathWithoutSymlinks(stageRoot,'owned symlink stage');
+  requireIdentity(root,`${stageIdentity.dev}:${stageIdentity.ino}`,'owned symlink stage');
+  const entry=value=>{
+    const parent=canonicalPathWithoutSymlinks(path.dirname(value),'owned symlink parent');
+    const file=path.join(parent,path.basename(value)),relative=path.relative(root,file);
+    if (!relative || relative==='..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
+      throw new ValidationError('symlink link path escapes its owned stage');
+    return file;
+  };
+  const first=entry(source),second=entry(destination);
+  if(first===second)throw new ValidationError('symlink link destination must be distinct');
+  const parents=new Map();
+  for(const file of [first,second]){
+    let parent=path.dirname(file);
+    for(;;){
+      const meta=fs.lstatSync(parent,{bigint:true});
+      if(!meta.isDirectory()||meta.isSymbolicLink())throw new ValidationError('owned symlink ancestor must remain a real directory');
+      const relative=path.relative(root,parent);
+      if((relative===''||(!relative.startsWith(`..${path.sep}`)&&relative!=='..'&&!path.isAbsolute(relative)))&&String(meta.dev)!==stageIdentity.dev)
+        throw new ValidationError('owned symlink parent differs from the stage filesystem');
+      if(!parents.has(parent))parents.set(parent,{dev:meta.dev,ino:meta.ino,mode:meta.mode});
+      if(parent===path.parse(parent).root)break;
+      parent=path.dirname(parent);
+    }
+  }
+  const checkParents=()=>{
+    requireIdentity(root,`${stageIdentity.dev}:${stageIdentity.ino}`,'owned symlink stage');
+    for(const [parent,expected] of parents){
+      const current=fs.lstatSync(parent,{bigint:true});
+      if(!current.isDirectory()||current.isSymbolicLink()||current.dev!==expected.dev||current.ino!==expected.ino||current.mode!==expected.mode)
+        throw new ValidationError('owned symlink ancestor changed');
+    }
+  };
+  const checkFirst=()=>{
+    const meta=fs.lstatSync(first,{bigint:true});
+    if(!meta.isSymbolicLink()||String(meta.dev)!==expectedSource.dev||String(meta.ino)!==expectedSource.ino
+      ||String(meta.dev)!==stageIdentity.dev||fs.readlinkSync(first)!==expectedSource.payload)
+      throw new ValidationError('owned symlink source identity or payload changed');
+    return meta;
+  };
+  checkParents();
+  const before=checkFirst();
+  if(String(before.nlink)!==expectedSource.nlink)throw new ValidationError('owned symlink source link count changed');
+  if(lstatOrNull(second)!==null)throw new ValidationError('owned symlink destination is occupied');
+  checkParents();
+  const sealed=checkFirst();
+  if(sealed.nlink!==before.nlink||sealed.mode!==before.mode)throw new ValidationError('owned symlink source changed before linking');
+  if(lstatOrNull(second)!==null)throw new ValidationError('owned symlink destination is occupied');
+  let commandError=null;
+  try {
+    execFileSync('/bin/ln', ['-P', '-h', '--', first, second], {
+      shell: false, timeout: 2000, maxBuffer: 4096, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch(error) { commandError=error; }
+  checkParents();
+  const after=checkFirst();
+  if(after.mode!==before.mode)throw new ValidationError('owned symlink source mode changed');
+  if(commandError)throw commandError;
+  const linked=fs.lstatSync(second,{bigint:true});
+  if(!linked.isSymbolicLink()||linked.dev!==after.dev||linked.ino!==after.ino
+    ||after.nlink!==before.nlink+1n||linked.nlink!==after.nlink||linked.mode!==after.mode
+    ||fs.readlinkSync(second)!==expectedSource.payload)
+    throw new ValidationError('owned symlink link did not preserve exact physical topology');
+  checkParents();
+}
+
+function copyExternal(source, destination, relative, linkGroups, stage) {
   const relativeName = relative.split(path.sep).join('/');
   if (isOsMetadata(relativeName)) return;
   const metadata = fs.lstatSync(source);
@@ -86,7 +153,9 @@ function copyExternal(source, destination, relative, linkGroups) {
     const group = metadata.nlink > 1 ? linkGroups.get(linkKey) : null;
     if (group) {
       if (group.sourceLinkCount !== metadata.nlink || group.kind !== kind) throw new ValidationError(`external hardlink group changed while rendering: ${source}`);
-      fs.linkSync(group.firstStagePath, destination);
+      if(kind==='symlink'&&process.platform==='darwin')linkOwnedStageSymlink(stage.root,stage.identity,group.firstStagePath,destination,
+        {...group.firstStageIdentity,nlink:String(group.seen),payload:group.payload});
+      else fs.linkSync(group.firstStagePath, destination);
       group.seen += 1;
       return;
     }
@@ -95,12 +164,16 @@ function copyExternal(source, destination, relative, linkGroups) {
       fs.copyFileSync(source, destination);
       preserveMetadata(destination, metadata);
     }
-    if (metadata.nlink > 1) linkGroups.set(linkKey, { firstStagePath: destination, sourceLinkCount: metadata.nlink, seen: 1, kind });
+    if (metadata.nlink > 1) {
+      const staged=fs.lstatSync(destination,{bigint:true});
+      linkGroups.set(linkKey, { firstStagePath: destination, sourceLinkCount: metadata.nlink, seen: 1, kind,
+        firstStageIdentity:{dev:String(staged.dev),ino:String(staged.ino)},payload:isLink?fs.readlinkSync(destination):null });
+    }
     return;
   }
   if (metadata.isDirectory()) {
     fs.mkdirSync(destination);
-    for (const name of sorted(fs.readdirSync(source))) copyExternal(path.join(source, name), path.join(destination, name), path.join(relative, name), linkGroups);
+    for (const name of sorted(fs.readdirSync(source))) copyExternal(path.join(source, name), path.join(destination, name), path.join(relative, name), linkGroups,stage);
     preserveMetadata(destination, metadata);
     return;
   }
@@ -192,49 +265,27 @@ function requireStableAuthoritySnapshot(source, expected) {
   if (workspaceAuthoritySnapshotSha256(current) !== expected) throw new ValidationError('CLOSE source changed during rendering; rebuild from the current active source');
 }
 
-export function buildClosedCandidate(source, candidate, { readinessAttestation } = {}) {
-  const requestedSource = expandUser(source);
-  const requestedCandidate = expandUser(candidate);
-  if (requestedPartsContainTraversal(requestedSource) || requestedPartsContainTraversal(requestedCandidate)) throw new ValidationError('source and candidate must not contain path traversal');
-  const sourcePath = canonicalPathWithoutSymlinks(requestedSource, 'CLOSE source');
-  const candidatePath = canonicalPathWithoutSymlinks(requestedCandidate, 'CLOSE candidate');
-  const sourceMetadata = lstatOrNull(sourcePath);
-  if (sourceMetadata === null || !sourceMetadata.isDirectory() || sourceMetadata.isSymbolicLink()) throw new ValidationError(`source must be a real workspace directory: ${sourcePath}`);
-  if (lexists(candidatePath)) throw new ValidationError(`candidate must not exist: ${candidatePath}`);
-  const parentMetadata = lstatOrNull(path.dirname(candidatePath));
-  if (parentMetadata === null || !parentMetadata.isDirectory() || parentMetadata.isSymbolicLink()) throw new ValidationError(`candidate parent must be a real directory: ${path.dirname(candidatePath)}`);
-  const relativeCandidate = path.relative(sourcePath, candidatePath);
-  const relativeSource = path.relative(candidatePath, sourcePath);
-  const inside = (relative) => relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
-  if (inside(relativeCandidate) || inside(relativeSource)) throw new ValidationError('source and candidate must be disjoint directories');
-  const sourceWorkspace = validateWorkspace(sourcePath);
-  const sourceSnapshot = workspaceAuthoritySnapshotSha256(sourceWorkspace);
-  const rendered = renderClosedFeature(sourcePath);
-  requireStableAuthoritySnapshot(sourcePath, sourceSnapshot);
-  const stage = fs.mkdtempSync(path.join(path.dirname(candidatePath), `.${path.basename(candidatePath)}.close-stage-`));
-  const stageIdentity = identity(stage, 'CLOSE stage');
-  try {
-    fs.writeFileSync(path.join(stage, 'feature_spec.md'), rendered);
-    const linkGroups = new Map();
-    for (const name of sorted(fs.readdirSync(sourcePath))) {
-      if (name === 'feature_spec.md' || name === 'shared' || isOsMetadata(name)) continue;
-      copyExternal(path.join(sourcePath, name), path.join(stage, name), name, linkGroups);
-    }
-    validateExternalLinkGroups(linkGroups);
-    validateWorkspace(stage);
-    validateCloseTransition(sourcePath, stage);
-    requireStableAuthoritySnapshot(sourcePath, sourceSnapshot);
-    if (lexists(candidatePath)) throw new ValidationError(`candidate appeared before publication: ${candidatePath}`);
-    fs.renameSync(stage, candidatePath);
-    requireIdentity(candidatePath, stageIdentity, 'promoted CLOSE candidate');
-    try {
-      requireStableAuthoritySnapshot(sourcePath, sourceSnapshot);
-    } catch (error) {
-      rollbackPromotedCandidate(candidatePath, stage, stageIdentity);
-      throw error;
-    }
-    return candidatePath;
-  } finally {
-    if (lexists(stage)) removeOwnedDirectory(stage, stageIdentity, 'owned CLOSE stage');
+// Internal publisher renderer: it neither allocates nor promotes a directory.
+// The publisher has already bound this stage inode in its existing ownership record.
+export function populateOwnedClosedStage(source,stage,expectedIdentity) {
+  const sourcePath=canonicalPathWithoutSymlinks(expandUser(source),'CLOSE source');
+  const stagePath=canonicalPathWithoutSymlinks(expandUser(stage),'owned CLOSE stage');
+  if(requestedPartsContainTraversal(source)||requestedPartsContainTraversal(stage))throw new ValidationError('CLOSE source/stage must not contain path traversal');
+  const expected=`${expectedIdentity?.dev}:${expectedIdentity?.ino}`;
+  requireIdentity(stagePath,expected,'owned CLOSE stage');
+  if(fs.readdirSync(stagePath).length)throw new ValidationError('owned CLOSE stage must be empty before rendering');
+  const relative=path.relative(sourcePath,stagePath),reverse=path.relative(stagePath,sourcePath);
+  const inside=value=>value===''||(!value.startsWith(`..${path.sep}`)&&value!=='..'&&!path.isAbsolute(value));
+  if(inside(relative)||inside(reverse))throw new ValidationError('CLOSE source and owned stage must be disjoint');
+  const workspace=validateWorkspace(sourcePath),snapshot=workspaceAuthoritySnapshotSha256(workspace);
+  const rendered=renderClosedFeature(sourcePath);requireStableAuthoritySnapshot(sourcePath,snapshot);
+  fs.writeFileSync(path.join(stagePath,'feature_spec.md'),rendered,{flag:'wx'});
+  const linkGroups=new Map();
+  for(const name of sorted(fs.readdirSync(sourcePath))) {
+    if(['feature_spec.md','shared','execution'].includes(name)||isOsMetadata(name))continue;
+    copyExternal(path.join(sourcePath,name),path.join(stagePath,name),name,linkGroups,{root:stagePath,identity:expectedIdentity});
   }
+  validateExternalLinkGroups(linkGroups);compareCloseDocuments(sourcePath,stagePath);
+  requireStableAuthoritySnapshot(sourcePath,snapshot);requireIdentity(stagePath,expected,'owned CLOSE stage');
+  return stagePath;
 }

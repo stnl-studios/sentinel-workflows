@@ -3,9 +3,9 @@
   "benchmarkVersion": 1,
   "seedPath": "seed",
   "supportedRunModes": ["focal", "case", "full"],
-  "campaign": { "fullRuns": 1 },
+  "campaign": { "fullRuns": 3 },
   "turnBudget": {
-    "maxTurnsPerRun": 100
+    "maxTurnsPerRun": 150
   },
   "schemaVersions": {
     "journal": 2,
@@ -23,9 +23,9 @@
     "cases": {
       "A": {
         "SPEC": { "model": "GPT-6.1-Sol", "effort": "medium" },
-        "PLAN": { "model": "GPT-6-Luna", "effort": "high" },
+        "PLAN": { "model": "GPT-6.1-Sol", "effort": "medium" },
         "TASKS": { "model": "GPT-6-Luna", "effort": "high" },
-        "EXECUTE": { "model": "GPT-6-Luna", "effort": "high" },
+        "EXECUTE": { "model": "GPT-6.1-Sol", "effort": "medium" },
         "REVIEW_VALIDATE": { "model": "GPT-6-Luna", "effort": "high" }
       },
       "B": {
@@ -64,12 +64,12 @@
       "requirementsHash": "sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24",
       "fixtureContentHash": "sha256:e0c3233c14356e93accff61b334704a91fb8e4f82a60209768259144d88a10d5",
       "budgets": {
-        "maxReviewPlanEvents": 2,
+        "maxReviewPlanEvents": 5,
         "maxReviewTasksEvents": 2,
         "maxReplans": 1,
-        "maxExecuteSliceAttemptsPerSlice": 3,
-        "maxApplyFindingsPerSlice": 2,
-        "maxWorkflowEvents": 14
+        "maxExecuteSliceAttemptsPerSlice": 5,
+        "maxApplyFindingsPerSlice": 4,
+        "maxWorkflowEvents": 48
       }
     },
     {
@@ -80,12 +80,12 @@
       "requirementsHash": "sha256:0388a84f8c5a9c45fcd5b1d0b59e7d376979e98717d8e028067701f00a16fc57",
       "fixtureContentHash": "sha256:107d1057e48506a20da4460ee33febca26280dd35c85f645b0de6b81ffb33e10",
       "budgets": {
-        "maxReviewPlanEvents": 2,
+        "maxReviewPlanEvents": 5,
         "maxReviewTasksEvents": 2,
         "maxReplans": 1,
-        "maxExecuteSliceAttemptsPerSlice": 3,
-        "maxApplyFindingsPerSlice": 2,
-        "maxWorkflowEvents": 20
+        "maxExecuteSliceAttemptsPerSlice": 5,
+        "maxApplyFindingsPerSlice": 4,
+        "maxWorkflowEvents": 48
       }
     },
     {
@@ -96,12 +96,12 @@
       "requirementsHash": "sha256:a896026d591f06776ade1d88fde292c4e5f0d015e5e18374e9cf754ecce4efcb",
       "fixtureContentHash": "sha256:a9700e1844ce7106809491f924b0fea37d8bf15700afa14c920cc1ee139fdd44",
       "budgets": {
-        "maxReviewPlanEvents": 2,
+        "maxReviewPlanEvents": 5,
         "maxReviewTasksEvents": 2,
         "maxReplans": 1,
-        "maxExecuteSliceAttemptsPerSlice": 3,
-        "maxApplyFindingsPerSlice": 2,
-        "maxWorkflowEvents": 24
+        "maxExecuteSliceAttemptsPerSlice": 5,
+        "maxApplyFindingsPerSlice": 4,
+        "maxWorkflowEvents": 48
       }
     }
   ]

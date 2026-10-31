@@ -1,71 +1,27 @@
 # File Purpose Header
 
 ```yaml
-purpose: Define requirements-source normalization and fingerprinting, execution states, recovery revisions, paths, and slice normalization.
+purpose: Describe the current EC-1 authority and producer boundary.
 status: not_applicable
-read_when: PLAN or REPLAN derives an execution workspace/state, or another execution skill needs the same deterministic path rules.
-do_not_read_when: All selected artifact paths are already explicit and verified.
-contains: SPEC_PATH forms, execution layout, authority fingerprints, revision and supersession rules, relative paths, and SLICE normalization.
+read_when: Planning, reviewing or consuming current EC-1 execution.
+do_not_read_when: The selected current authority is already verified.
+contains: Current image, paths, independent review and literal recovery rules.
 owner: stnl-execution-planner
-update_policy: Change only when execution workspace or identifier rules change.
+update_policy: Update only with the current execution contract.
 ```
 
-# Execution Workspace
+# Current EC-1 workspace
 
-Normalize `SPEC_PATH` without guessing:
+Resolve the official SPEC_PATH through execution-workspace.mjs. A lifecycle directory uses feature_spec.md and execution/; a standalone requirements file uses its sibling <stem>-execution/. The product boundary is the nearest real Git root, or the documentary root when no Git marker exists. Reject symlink traversal, operational allocations selected as authority, containment escape, foreign identity and uncertain ownership. Metadata such as .DS_Store is not authority.
 
-1. A directory is valid only when it contains `feature_spec.md`; use that file and its `execution/` child.
-2. A direct `feature_spec.md` path uses the same `execution/` sibling directory.
-3. Another existing requirements file remains unchanged and uses a sibling `<stem>-execution/` directory.
+The requirements fingerprint uses the existing stnl-requirements-authority-v1 projection. Current preparation is stnl-preparation-v3; activation and continuity are their current v2 formats. Their version numbers are independent. No earlier workflow interpreter, conversion or migration is available.
 
-The execution root contains only:
+PLAN creates a registered isolated candidate only for an absent official execution. Detailed Plan/Task pairs have a runtime delivery UUID and positive local revision. All typed paths are relative to their logical official artifact location, including when the physical candidate is elsewhere. Authorized Areas grant scoped effects; Existing Inputs grant observation only. Verification recipes explicitly bind executable, base, typed arguments and reviewed indirect dependencies. Prose never discovers an input or grants acceptance.
 
-```text
-plan.md
-plans/slice-NN.md
-tasks.md
-tasks/slice-NN.md
-```
+Independent REVIEW_PLAN examines the complete final Plan/Tasks bytes and exact requirement/obligation coverage. Its closed current review binds global and delivery authority plus sorted hashes of every examined artifact. Initial publication installs those reviewed bytes under the existing common lock/CAS and performs strict readback. A draft is never official or executable. Occupied targets and physical REPLAN publication are blocked in this cut; Initial cannot replace them.
 
-Before classifying a lifecycle workspace as `EMPTY`, inspection checks the exact official `98545e4` root-level execution signature (`plan.md`, `plans/plan-NN.md`, `tasks.md`, and `tasks/tasks-NN.md` with their historical owners, primary H1s, tables, and paired filenames). A match is explicit blocked legacy, never empty and never migrated. Current malformed or hybrid siblings are not inferred as historical.
+Current inspection derives legal handoff, counters, evidence validity, active owner and completed facts from the closed current image and self-contained evidence. Delivery UUIDs and review hashes do not prove behavior. Product/proof drift can require validation; formal findings require APPLY_FINDINGS. Only the exact runtime handoff authorizes operation admission. A current PASS remains a retained fact; current validity is checked separately.
 
-No other persisted file or directory is canonical inside the execution root. Never create analysis notes, review checklists, manifests, helper scripts, scratch files, or ad hoc reports there. When temporary support is indispensable, use an operating-system temporary directory outside the SPEC. Unknown execution-root paths and unsafe reserved lifecycle entries block with their exact path and required relocation or explicit removal; arbitrary user-owned SPEC-root siblings are allowed and preserved. Workflow skills never delete them automatically.
+Use execution-current-operation.mjs for native reservation, bound official agent identity, reviewed recipe, complete first literal finalResponse capture, composition, publication/readback and own cleanup. Preserve its handle through restarts. A captured publication retry reuses the same bytes without spawning or rerunning the recipe. An uncertain dispatch cannot be replayed. Explicit bounded normalization is a distinct runtime-admitted successor and retains its original episode budget.
 
-Every persisted path is relative to its containing artifact. For a colocated SPEC, `plan.md` refers to `../feature_spec.md`; detailed plans and tasks refer to `../../feature_spec.md`; a detailed task refers to `../plans/slice-NN.md`.
-
-In implementation-area carriers, every concrete filesystem path claim uses one Markdown code span and resolves relative to the artifact containing that claim. Plain text outside code spans remains a conceptual area or explanation and is not a filesystem claim. This applies to global-plan `Expected areas`, detailed-plan `Likely Areas`, and detailed-task checklist `expected areas`; never copy a claim between those artifacts without rebasing it.
-
-Global-plan and detailed-plan carriers are implementation-only. Do not claim generated execution artifacts such as `execution/plan.md`, `plans/...`, or `tasks/...`, and do not treat commands, symbols, or labels as paths. For a nested lifecycle SPEC, resolve the claim to the nearest ancestor containing the real `.git` marker rather than stopping at the SPEC parent or the `specs/` directory; the containing artifact's relative basis still governs the stored value.
-
-Validation-owned implementation paths are normalized relative to the detailed task. Their trusted boundary is the nearest ancestor of the requirements source containing a real, non-symlink `.git` directory or file. If no such marker exists, the boundary is the lifecycle SPEC root or the standalone requirements directory. Paths may leave a nested lifecycle SPEC only when they remain inside that deterministic project root. Escapes and symlink traversal always block.
-
-The requirements authority is the normalized requirements source plus every lifecycle-owned requirements artifact that supplies its current documentary authority, using the canonical versioned snapshot algorithm `stnl-requirements-authority-v1`. Plans persist exactly `- Requirements authority: sha256:<64hex>` and `- Plan revision: <positive integer>`. The global plan declares the current pair. Each detailed plan and task retains the pair under which that slice was created. Historical `PASS` or `SUPERSEDED` slices are never rewritten merely because current authority changed.
-
-`SLICE` accepts one unsigned decimal number without a prefix and normalizes it to zero-padded `slice-NN`. Reject missing, signed, negative, decimal, prefixed, or non-numeric values. Never infer a slice.
-
-Always ignore `__MACOSX`, `.DS_Store`, and `._*`; they are never workflow artifacts. The deterministic states are:
-
-- `EMPTY`: the root is absent or has no non-ignored entries. This is structural observation: standalone `EMPTY` and lifecycle `ready + EMPTY` authorize `PLAN`; lifecycle `draft|blocked + EMPTY` remains inspectable but exposes no legal or normal `PLAN` handoff;
-- `PLANNED_DRAFT` / `PLANNED_READY`: the exact plan set named by the global Serial Slice Order exists without tasks; this includes a planning-only replacement, which remains revision `1` and carries no historical recovery fields;
-- `PENDING_REPLAN_DRAFT` / `PENDING_REPLAN_READY`: tasks already exist and an append-only extension or materialized-pristine replacement is staged without changing task history;
-- `MATERIALIZED_PRISTINE`: tasks exist with unchecked rows and exact sentinels, including `Delegation Blocker: - none`;
-- `EXECUTION_STARTED`: operational content exists but no more-specific phase applies;
-- `IMPLEMENTED_AWAITING_VALIDATION`: terminal implementation check evidence with a complete mandatory checklist permits only `VALIDATE_SLICE` or authority-driven `REPLAN`; a pre-existing terminal record with an incomplete checklist retains this observed state but collapses legality to mandatory same-slice `EXECUTE_SLICE` recovery owned by `stnl-slice-executor`;
-- `VALIDATION_NEEDS_FIX`: active formal findings require `APPLY_FINDINGS`;
-- `FINDINGS_CORRECTED`: terminal findings-check evidence permits only `VALIDATE_SLICE` or authority-driven `REPLAN`;
-- `VALIDATION_BLOCKED`: the latest formal attempt is `BLOCKED`;
-- `IMPLEMENTATION_RETRY_EXHAUSTED` / `FINDINGS_RETRY_EXHAUSTED`: round `3/3 TESTS_FAIL` permits only `VALIDATE_SLICE`, except that inconsistent implementation exhaustion with an incomplete checklist first requires the same narrow executor recovery;
-- `AUXILIARY_BLOCKED`: a valid auxiliary `BLOCKED` exposes and resumes only its persisted concrete operation, slice, record, and round;
-- `RUNNER_INITIALIZATION_BLOCKED` / `RUNNER_RESULT_BLOCKED`: an active `Delegation Blocker` exposes and resumes only its persisted concrete operation and containing slice, plus its prior-record cursor when one exists;
-- `REQUIREMENTS_CHANGED`, `DIVERGENCE_BLOCKED`, and `REPLAN_REQUIRED`: execution waits for the exact authority/replanning recovery;
-- `COMPLETE`: every row is terminal `PASS` or forward-linked `SUPERSEDED`, final ownership ends in later current-authority `PASS`, and effective blockers and drift are absent.
-
-`SUPERSEDED` is also terminal, but never successful validation: an append-only approved replan commit may change an open prior row to `[x]`, validation `SUPERSEDED`, result `SUPERSEDED`, and the detailed Final Result to `SUPERSEDED` with its replacement slice. Its historical implementation and validation evidence remain immutable. Active records retained in that terminal history do not poison the replacement; every claimed path still requires later `PASS` ownership. `COMPLETE` for execution close therefore means every row is terminal (`PASS` or `SUPERSEDED`), every non-superseded delivery has current valid `PASS` ownership, no effective active blocking finding or divergence remains, and at least one current-revision `PASS` reconciliation/corrective slice covers affected authority and final paths after a requirements change.
-
-No non-terminal recovery state is terminal. The shared runtime derives structured recovery targets from persisted state, including operation, nullable slice, recovery owner, applicable record/round/retry state, and whether same-operation resume is mandatory. Every persisted authority record retains a distinct target identity. Executable action presentation may deduplicate only genuinely equivalent owner/mode/slice actions; multiple lifecycle `MODE=RESUME` records therefore remain present while one aggregate handoff carries no arbitrary record identity. Human diagnostics are rendered from those targets. Unscoped authority recovery keeps `slice: null`; it never fabricates scope from the current request. Candidate validation rejects any terminal implementation result whose mandatory checklist is incomplete, so the inverse ordering cannot be newly published. For an already-persisted occurrence, only exact `EXECUTE_SLICE` on the affected slice is legal; wrong-slice, validation, replan, and unrelated requests retain that concrete recovery target. Completing the checklist removes the override and restores the ordinary state-derived handoff. A normally consistent `IMPLEMENTED_AWAITING_VALIDATION` never reopens execution.
-
-In `tasks.md`, machine authority is the File Purpose Header, owner/status, primary H1, the unique canonical table header/separator, contiguous row grammar/order, checkbox, slice/detail mapping, Validation/Result values, and detailed-task cross-checks. Explanatory prose and Markdown-equivalent whitespace outside the table are editorial: they neither derive state nor create or mask a row. Fenced code and HTML comments are also editorial and cannot supply or mask the primary H1, table header, separator, or rows. Row-like pipe-delimited residue outside the authoritative table remains structural corruption.
-
-`REPLAN` has three deterministic mutation classes. With planning but no tasks, atomically replace the exact planning authority, remove obsolete detailed plans, remain at revision `1`, omit historical recovery fields, and return through review plus initial materialization. With wholly pristine materialized tasks, use the existing increasing `pristine-replacement` revision and atomic plan/task replacement. After any operational evidence/history, use only an increasing `append-only-extension` and preserve history. A pending materialized `REPLAN` persists a non-placeholder reason, increments the highest materialized plan revision by exactly one, and declares `Supersedes open slices` as `none` or unique canonical `slice-NN -> slice-NN` mappings. A pristine replacement declares `none`. An append-only extension maps only open historical sources to newly appended later targets, and an authority-changing extension maps every stale open slice. Before materialization, every effective nonterminal slice after the first open serial frontier remains exactly pristine.
-
-`COMPLETE` is a terminal refinement of `EXECUTION_STARTED`. A partial or malformed artifact set is not coerced to a valid state and blocks mutation. Only an operation authorized to create artifacts may create a missing execution root. Block collisions with the source, a non-directory, unrelated content, or an unrecognized layout.
+Use the existing current local-review producer for approved private recipe/input revisions; preserve completed facts, identities, counters and literal evidence decisions. Shared/set changes require REPLAN_REQUIRED. No physical replacement producer, managed execution, terminal judgment, CLOSE or RECONCILE is introduced here.

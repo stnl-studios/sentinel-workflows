@@ -138,7 +138,7 @@ function checkFilePurposeHeader(file, owner) {
   if (JSON.stringify(fields) !== JSON.stringify(expected)) reject("C008_FILE_HEADERS", `noncanonical File Purpose Header fields: ${file}`);
   const values = Object.fromEntries(lines.map((line) => [line.slice(0, line.indexOf(":")), line.slice(line.indexOf(":") + 1).trim()]));
   if (!["draft", "ready", "blocked", "done", "closed", "not_applicable"].includes(values.status)) reject("C008_FILE_HEADERS", `invalid File Purpose Header status: ${file}`);
-  const expectedOwner = path.basename(file) === "execution-record-schema.md" ? "stnl-task-materializer" : owner;
+  const expectedOwner = path.basename(file) === "execution-record-schema.md" ? "stnl-execution-planner" : owner;
   if (values.owner !== expectedOwner) reject("C008_FILE_HEADERS", `wrong File Purpose Header owner: ${file}`);
   if ((text.match(/```yaml/gu) ?? []).length !== 1) reject("C008_FILE_HEADERS", `extra YAML block in execution resource: ${file}`);
 }
@@ -147,7 +147,7 @@ const checkSchemas = {
   EXECUTE_SLICE: [
     "{",
     '  "status": "TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",',
-    '  "automaticCheckRound": "1/3 | 2/3 | 3/3",',
+    '  "automaticCheckRound": "1/5 | 2/5 | 3/5 | 4/5 | 5/5",',
     '  "head": "<semantic value>",',
     '  "discoverySources": "<semantic value>",',
     '  "discoveryActions": "<semantic value>",',
@@ -173,7 +173,7 @@ const checkSchemas = {
   APPLY_FINDINGS: [
     "{",
     '  "status": "TESTS_PASS | TESTS_FAIL | TESTS_NOT_APPLICABLE | BLOCKED",',
-    '  "automaticCheckRound": "1/3 | 2/3 | 3/3",',
+    '  "automaticCheckRound": "1/5 | 2/5 | 3/5 | 4/5 | 5/5",',
     '  "head": "<semantic value>",',
     '  "discoverySources": "<semantic value>",',
     '  "discoveryActions": "<semantic value>",',
@@ -218,25 +218,25 @@ function extractSchema(contract, operation) {
   return match[1].split("\n").filter(Boolean);
 }
 
-function checkRunner(root) {
+function checkRunner(root, platform = null) {
   if (!fs.statSync(root, { throwIfNoEntry: false })?.isDirectory()) throw new InfrastructureError(`not a directory: ${root}`);
   const codexFile = path.join(root, "codex/.codex/agents/stnl_validation_runner.toml");
   const claudeFile = path.join(root, "claude-code/.claude/agents/stnl-validation-runner.md");
   const readmeFile = path.join(root, "README.md");
-  for (const file of [codexFile, claudeFile, readmeFile]) {
+  for (const file of [readmeFile, ...(platform === 'claude' ? [] : [codexFile]), ...(platform === 'codex' ? [] : [claudeFile])]) {
     if (!fs.statSync(file, { throwIfNoEntry: false })?.isFile()) reject("R002_REGISTRY", `missing runner file: ${file}`);
   }
-  const codex = parseToml(codexFile, "R013_SYNTAX");
-  const claude = parseFrontmatter(claudeFile, "R013_SYNTAX");
+  const codex = platform === 'claude' ? null : parseToml(codexFile, "R013_SYNTAX");
+  const claude = platform === 'codex' ? null : parseFrontmatter(claudeFile, "R013_SYNTAX");
   const expectedCodex = {
     name: "stnl_validation_runner",
     description: "Runner barato e isolado para checks de implementação, checks de findings e validação formal independente de uma slice.",
     model: "gpt-6-luna",
     model_reasoning_effort: "medium",
-    developer_instructions: codex.developer_instructions,
+    developer_instructions: codex?.developer_instructions,
     agents: { max_depth: 1 },
   };
-  if (!keysEqual(codex, expectedCodex) || Object.entries(expectedCodex).some(([key, value]) => key !== "developer_instructions" && key !== "agents" && codex[key] !== value) || codex.agents?.max_depth !== 1) {
+  if (codex && (!keysEqual(codex, expectedCodex) || Object.entries(expectedCodex).some(([key, value]) => key !== "developer_instructions" && key !== "agents" && codex[key] !== value) || codex.agents?.max_depth !== 1)) {
     reject("R001_ADAPTER_METADATA", "Codex runner adapter metadata changed");
   }
   const expectedClaude = {
@@ -246,11 +246,73 @@ function checkRunner(root) {
     model: "claude-sonnet-5",
     effort: "medium",
   };
-  if (!keysEqual(claude.metadata, expectedClaude) || Object.entries(expectedClaude).some(([key, value]) => claude.metadata[key] !== value)) {
+  if (claude && (!keysEqual(claude.metadata, expectedClaude) || Object.entries(expectedClaude).some(([key, value]) => claude.metadata[key] !== value))) {
     reject("R001_ADAPTER_METADATA", "Claude runner adapter metadata changed");
   }
-  const contract = String(codex.developer_instructions ?? "").trim();
-  if (contract !== claude.body) reject("R003_EQUIVALENCE", "runner platform contracts diverge");
+  if (platform === 'claude') {
+    checkRunnerContract(claude.body, readmeFile, 'claude');
+    checkClaudeObservationContract(claude.body);
+    return;
+  }
+  if (platform === 'codex') {
+    checkRunnerContract(String(codex.developer_instructions ?? "").trim(), readmeFile, 'codex');
+    return;
+  }
+  const codexBody = String(codex.developer_instructions ?? "").trim();
+  checkRunnerContract(codexBody, readmeFile, 'codex');
+  checkRunnerContract(claude.body, readmeFile, 'claude');
+  checkClaudeObservationContract(claude.body);
+  checkRunnerParity(codexBody, claude.body);
+}
+
+function checkClaudeObservationContract(contract) {
+  requirePattern(contract, /`EXECUTE_SLICE` e `APPLY_FINDINGS`[\s\S]{0,220}`verificationHelper` e `originFile` absolutos retornados pela admissão oficial/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must use the admitted helper and origin');
+  requirePattern(contract, /`node <verificationHelper> verify-native --origin-file <originFile>`/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must invoke the official recipe helper once');
+  requirePattern(contract, /`commands` somente os comandos e exits da observation concluída pelo helper/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude commands must come from the completed observation');
+  requirePattern(contract, /captura confere essa lista com a observation ligada ao receipt; qualquer divergência bloqueia/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must reject command or exit divergence from its receipt');
+  requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/5`, `2\/5`, `3\/5`, `4\/5`, or `5\/5`/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude round must match the five-call native budget');
+  requirePattern(contract, /exatamente esse ordinal em `automaticCheckRound`/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must echo the official request round');
+  requirePattern(contract, /Pending ou uncertain não autoriza novo dispatch/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must block pending or uncertain redispatch');
+  requirePattern(contract, /`resume` e a publicação\/readback reutilizam exatamente essa resposta e a observation existente sem executar a recipe novamente/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude resume must reuse captured response and observation');
+  requirePattern(contract, /dentro do limite global oficial de cinco invocações/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude recovery must respect the admitted five-call budget');
+  requirePattern(contract, /dentro do limite oficial de cinco invocações/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude correction retries must respect the five-call budget');
+  forbidPattern(contract, /\bSDK\b|App Server|benchmark/iu,
+    'R030_CLAUDE_OBSERVATION', 'Claude distribution must remain free of SDK, App Server and benchmark mechanics');
+  forbidPattern(contract, /budgeto existente de três rodadas|three-round budget/iu,
+    'R030_CLAUDE_OBSERVATION', 'Claude contract retains the obsolete three-round limit');
+  forbidPattern(contract, /(?:Claude|agent Claude)[^\n]{0,100}(?:automaticCheckRound.{0,30}1\/3|\b1\/3\b)/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude current flow must not retain the obsolete three-call round');
+}
+
+function checkRunnerParity(codex, claude) {
+  const pairs = [
+    [/NATIVE_VERIFICATION_HELPER[\s\S]{0,260}NATIVE_ORIGIN_FILE[\s\S]{0,260}verify-native/u,
+      /`verificationHelper`[\s\S]{0,220}`originFile`[\s\S]{0,220}verify-native/u, 'official recipe execution'],
+    [/observação real retornada[\s\S]{0,160}reporte seus comandos\/exits exatos/u,
+      /`commands` somente os comandos e exits da observation concluída pelo helper/u, 'commands from observation'],
+    [/captura consome a observação salva e recusa divergência/u,
+      /captura confere essa lista com a observation ligada ao receipt; qualquer divergência bloqueia/u, 'capture consistency'],
+    [/pending\/uncertain não permite uma segunda chamada/u,
+      /Pending ou uncertain não autoriza novo dispatch/u, 'uncertain dispatch blocking'],
+    [/retomada de persistência não cria invocação/u,
+      /`resume` e a publicação\/readback reutilizam exatamente essa resposta e a observation existente sem executar a recipe novamente/u, 'resume without recipe replay'],
+  ];
+  for (const [left, right, label] of pairs) {
+    if (!left.test(codex) || !right.test(claude)) reject('R031_SEMANTIC_PARITY', `runner behavior differs for ${label}`);
+  }
+}
+
+function checkRunnerContract(contract, readmeFile, platform) {
 
   requirePattern(contract, /^CONTRATO_CANONICO=stnl-validation-runner\/v[0-9]+$/mu, "R013_SYNTAX", "canonical runner contract ID is missing");
   const operations = /^OPERACOES_SUPORTADAS=([^\n]+)$/mu.exec(contract)?.[1];
@@ -262,11 +324,23 @@ function checkRunner(root) {
     const actual = extractSchema(contract, operation);
     if (actual.length !== expected.length || actual.some((line, index) => line !== expected[index])) reject("R007_OUTPUT_SCHEMA", `${operation} output schema changed`);
   }
+  if(platform==='codex') {
+    requirePattern(contract, /responseVariant:"stnl-current-native-judgment-v1"[\s\S]{0,900}omita.*`head` e `requestSha256`/u,
+      'R029_NATIVE_BINDING','native judgment variant must omit copied HEAD and request digest');
+    requirePattern(contract, /nunca deduza a variante por campos ausentes/u,
+      'R029_NATIVE_BINDING','native judgment variant requires explicit dispatch selection');
+    requirePattern(contract, /^Se `origin\.responseVariant` estiver ausente e a entrada oficial incluir `stnl-current-validation-request-v3`[^\n]*stnl-current-validation-response-v1[^\n]*newFindings/mu,
+      'R028_NATIVE_V3','native v3 response envelope/finding variant is missing');
+    requirePattern(contract, /`severity` aceita somente `blocking` ou `advisory`; NEEDS_FIX exige pelo menos um finding `blocking` ativo/u,
+      'R028_NATIVE_V3','native v3 finding severity is not bounded');
+    requirePattern(contract, /Ecoe o digest literal fornecido pelo runtime; não recalcule hash ou owner/u,
+      'R028_NATIVE_V3','native v3 request digest echo is missing');
+  }
   for (const heading of ["EXECUTE_SLICE", "APPLY_FINDINGS", "VALIDATE_SLICE"]) {
     requirePattern(contract, new RegExp(`^# ${heading}$`, "mu"), "R004_OPERATION_SCOPE", `missing runner section: ${heading}`);
   }
   forbidPattern(contract, /^# (?:CLOSE|REPLAN|FINALIZE_SLICE|PARALLELIZE_SLICES|RUN_TESTS)$/mu, "R004_OPERATION_SCOPE", "runner contains a forbidden operation");
-  requirePattern(contract, /`EXECUTE_SLICE` (?:and|e) `APPLY_FINDINGS`[\s\S]{0,180}rodada automática atual como `1\/3`, `2\/3` ou `3\/3`/u, "R004_OPERATION_SCOPE", "runner lacks the exact three-round input set");
+  requirePattern(contract, /`EXECUTE_SLICE` (?:and|e) `APPLY_FINDINGS`[\s\S]{0,220}rodada automática atual como `1\/5`, `2\/5`, `3\/5`, `4\/5` ou `5\/5`/u, "R004_OPERATION_SCOPE", "runner lacks its exact bounded input set");
   forbidPattern(contract, /(?:1\/4|2\/4|3\/4|4\/4)/u, "R004_OPERATION_SCOPE", "runner permits a fourth automatic round");
   requirePattern(contract, /conclusões do contexto principal como não verificadas/iu, "R014_INDEPENDENCE", "runner does not independently verify main-context claims");
   requirePattern(contract, /Leia somente o escopo necessário/iu, "R014_INDEPENDENCE", "runner read scope is not bounded");
@@ -277,13 +351,20 @@ function checkRunner(root) {
   requirePattern(contract, /# Canonical response gate\n\n?Field shape is strict at the JSON boundary:[\s\S]{0,1200}payload is one raw JSON object/u, "R026_OUTPUT_GATE", "runner lacks a byte-for-byte canonical semantic response gate");
   forbidPattern(contract, /^Retorne somente `PASS`, `NEEDS_FIX` ou `BLOCKED`\.[\s\S]{0,500}Em `Findings:`/mu, "R026_OUTPUT_GATE", "validation contract reintroduces a narrative output shape alongside the JSON gate");
   forbidPattern(contract, /(?:^|\n)Em `Findings:`, forneça uma disposição/iu, "R026_OUTPUT_GATE", "validation findings are not constrained to the semantic JSON field");
-  requirePattern(contract, /`commands`[^\n]{0,180}(?:somente|only)[^\n]{0,120}`?command`?[^\n]{0,80}`?exit`?/iu, "R027_TUPLE_GRAMMAR", "runner does not state the exact semantic command tuple grammar");
+  requirePattern(contract, /`commands` is an array of objects with exactly `command` and integer `exit`/u, "R027_TUPLE_GRAMMAR", "runner does not state the exact semantic command tuple grammar");
   requirePattern(contract, /The machine-key schema is fixed[\s\S]{0,500}EXECUTE_SLICE[\s\S]{0,500}APPLY_FINDINGS[\s\S]{0,500}VALIDATE_SLICE/u, "R028_FIELD_SEQUENCE", "runner does not require the literal semantic field sequence at the final response gate");
   requirePattern(contract, /Field shape is strict at the JSON boundary:[\s\S]{0,500}every judgment property except `commands` is one scalar string[\s\S]{0,300}`commands` is an array of objects with exactly `command` and integer `exit`[\s\S]{0,300}payload is one raw JSON object/u, "R029_FIELD_SHAPE", "runner does not require scalar semantic fields outside Commands");
-  requirePattern(contract, /managed ownership and active IDs come only from `FINDINGS_OWNERSHIP`/u, "R029_FIELD_SHAPE", "managed findings ownership must be sealed, not inferred from legacy text");
-  requirePattern(contract, /`automaticCheckRound` is optional diagnostic data in managed mode: history uses the round admitted and sealed by the broker/u, "R029_FIELD_SHAPE", "managed round ownership must come from the broker");
-  requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/3`, `2\/3`, or `3\/3`/u, "R029_FIELD_SHAPE", "native round requirement is missing");
-  requirePattern(contract, /optional legacy `findingsCycle` never defines ownership in either mode/u, "R029_FIELD_SHAPE", "legacy cycle cannot grant ownership");
+  if(platform==='codex') {
+    requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/5`, `2\/5`, `3\/5`, `4\/5`, or `5\/5`/u, 'R029_FIELD_SHAPE', 'native round requirement is missing');
+    requirePattern(contract, /No legacy `findingsCycle` diagnostic is supported/u, 'R029_FIELD_SHAPE', 'unsupported cycle diagnostics must not acquire authority');
+    requirePattern(contract,/Only native transport is supported/u,'R029_FIELD_SHAPE','native-only transport contract is missing');
+  } else {
+  requirePattern(contract,/Only native transport is supported/u,'R029_FIELD_SHAPE','native-only transport contract is missing');
+  forbidPattern(contract,/managed ownership|optional diagnostic data in managed mode/u,'R029_FIELD_SHAPE','removed managed ownership must not remain operational');
+    requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/5`, `2\/5`, `3\/5`, `4\/5`, or `5\/5`, identical to the admitted `request\.round`/u, "R029_FIELD_SHAPE", "native round requirement is missing or not tied to the request");
+  requirePattern(contract, /optional legacy `findingsCycle` never defines ownership/u, "R029_FIELD_SHAPE", "legacy cycle cannot grant ownership");
+  }
+  if(platform==='codex')requirePattern(contract,/Preserve the complete first concluded response; format refusal follows the current controller policy and never a manual replacement of those bytes/u,'R009_VALIDATION_ATTEMPT','native capture must preserve its first literal response without manual repair');
   for (const [operation, section] of [["EXECUTE_SLICE", execute], ["APPLY_FINDINGS", findings]]) {
     forbidPattern(section, /(?:crie|create|emita|emit|marque|mark).{0,80}(?:Validation Attempt|Effective Validation Base|PASS formal|conclusão `\[x\]`)/iu, "R015_CHECK_AUTHORITY", `${operation} claims formal authority`);
   }
@@ -336,14 +417,14 @@ function checkRunner(root) {
   requirePattern(contract, /A ausência ou o valor pending desses campos finais desta tentativa não é causa de BLOCKED/u, "R009_VALIDATION_ATTEMPT", "runner requires fields produced only after its verdict");
   requirePattern(contract, /Para cada critério de aceitação aplicável[^\n]{0,220}evidência direta de check ou inspeção suficiente/u, "R009_VALIDATION_ATTEMPT", "runner does not require evidence for each acceptance criterion");
   requirePattern(contract, /Nunca retorne PASS enquanto algum critério aplicável estiver sem evidência suficiente/u, "R009_VALIDATION_ATTEMPT", "runner permits PASS with an unverified acceptance criterion");
-  requirePattern(contract, /uma única correção apenas de formato JSON[^\n]*mesmo objeto semântico[^\n]*evidência idênticos/u, "R009_VALIDATION_ATTEMPT", "format repair can change runner evidence or verdict");
-  requirePattern(contract, /única equivalência de tipo permitida é array vazio[^\n]*findingReferences[^\n]*findingDispositions/u, "R009_VALIDATION_ATTEMPT", "format repair permits unbounded schema conversion");
+  if(platform!=='codex') requirePattern(contract, /uma única correção apenas de formato JSON[^\n]*mesmo objeto semântico[^\n]*evidência idênticos/u, "R009_VALIDATION_ATTEMPT", "format repair can change runner evidence or verdict");
+  if(platform!=='codex') requirePattern(contract, /única equivalência de tipo permitida é array vazio[^\n]*findingReferences[^\n]*findingDispositions/u, "R009_VALIDATION_ATTEMPT", "format repair permits unbounded schema conversion");
   requirePattern(contract, /check marcado com exit não zero impede[^\n]*mesmo se uma execução posterior passar/u, "R009_VALIDATION_ATTEMPT", "runner may omit earlier failed verification");
   requirePattern(contract, /runner não cria nem edita scripts ou testes[^\n]*lacuna de cobertura/u, "R009_VALIDATION_ATTEMPT", "runner may prepare checks beyond its authority");
   requirePattern(contract, /Não use heredoc, here-string[^\n]*múltiplas camadas de quoting/u, "R009_VALIDATION_ATTEMPT", "runner depends on implicit shell temporary files");
   requirePattern(contract, /Não tente novamente por outro path, ferramenta, TMPDIR\/TMPPREFIX ou modo de permissão/u, "R009_VALIDATION_ATTEMPT", "runner may bypass a denied command");
   requirePattern(contract, /Não confunda ausência de teste prévio com impossibilidade de verificar/u, "R009_VALIDATION_ATTEMPT", "runner may block instead of verifying an accessible coverage gap");
-  requirePattern(contract, /Não use esse caminho para resposta semântica válida, timeout, processError ou conclusão incerta/u, "R009_VALIDATION_ATTEMPT", "format repair permits an uncertain or already valid result");
+  if(platform!=='codex') requirePattern(contract, /Não use esse caminho para resposta semântica válida, timeout, processError ou conclusão incerta/u, "R009_VALIDATION_ATTEMPT", "format repair permits an uncertain or already valid result");
   requirePattern(contract, /Checks nunca emitem[^\n]{0,160}(?:Validation Attempt|Effective Validation Base)/iu, "R015_CHECK_AUTHORITY", "check/formal authority separation is incomplete");
   requirePattern(contract, /Responda somente de forma compacta[^\n]{0,120}sem logs completos/iu, "R011_COMPACT_OUTPUT", "runner compact-output boundary is missing");
   requirePattern(contract, /nunca o reverta automaticamente/iu, "R005_READ_ONLY", "runner may automatically revert workspace effects");
@@ -355,14 +436,19 @@ function checkRunner(root) {
   forbidPattern(readme, /stnl-execution-closer|OPERATION=CLOSE|EXECUTION_(?:APPROVED|BLOCKED)/u, "R012_README", "README retains the removed execution closer contract");
   requirePattern(readme, /não existe fallback/iu, "R012_README", "README fallback boundary is missing");
   requirePattern(readme, /não existe passo manual adicional de testes/iu, "R012_README", "README manual-test-step boundary is missing");
-  requirePattern(readme, /no mínimo uma vez e no máximo três vezes/iu, "R012_README", "README bounded automatic-round policy is missing");
+  requirePattern(readme, /no mínimo uma vez e no máximo cinco vezes/iu, "R012_README", "README bounded automatic-round policy is missing");
   requirePattern(readme, /sem histórico da conversa[\s\S]{0,500}Históricos e logs completos não são encaminhados/iu, "R012_README", "README history/minimum-payload boundary is missing");
-  requirePattern(readme, /Falha de inicialização ou transporte[\s\S]{0,300}não consomem rodada `N\/3`/iu, "R012_README", "README transport/round separation is missing");
-  requirePattern(readme, /não criam `implementation-check-NN`, `findings-check-NN` ou `attempt-NN`/iu, "R012_README", "README transport/evidence separation is missing");
-  requirePattern(readme, /retoma diretamente na delegação[\s\S]{0,240}não reinicia identificadores/iu, "R012_README", "README initialization-resume semantics are missing");
-  requirePattern(readme, /terceira falha entra em `IMPLEMENTATION_RETRY_EXHAUSTED` ou `FINDINGS_RETRY_EXHAUSTED`[\s\S]{0,180}`VALIDATE_SLICE` é a única próxima operação/iu, "R012_README", "README third-failure recovery is missing");
+  if(platform!=='codex') requirePattern(readme, /Falhas de inicialização ou transporte[\s\S]{0,300}não consomem uma rodada `N\/5`/iu, "R012_README", "README transport/round separation is missing");
+  if(platform!=='codex') requirePattern(readme, /não criam `implementation-check-NN`, `findings-check-NN` ou `attempt-NN`/iu, "R012_README", "README transport/evidence separation is missing");
+  if(platform!=='codex') requirePattern(readme, /retomam? diretamente na delegação[\s\S]{0,240}(?:não reinicia|sem reiniciar) identificadores/iu, "R012_README", "README initialization-resume semantics are missing");
+  if(platform==='codex') {
+    requirePattern(readme,/Uma publicação interrompida retoma esses mesmos bytes sem novo spawn nem recipe/u,'R012_README','current publication recovery must reuse its captured proof');
+    requirePattern(readme,/Pending\/uncertain não concede redispatch/u,'R012_README','uncertain native transport cannot create another invocation');
+    requirePattern(readme,/Somente normalização explícita admitida pelo runtime cria um sucessor, preservando o episódio e saldo originais/u,'R012_README','current successor must retain the original episode budget');
+  }
+  requirePattern(readme, /quinta falha entra em `IMPLEMENTATION_RETRY_EXHAUSTED` ou `FINDINGS_RETRY_EXHAUSTED`[\s\S]{0,180}`VALIDATE_SLICE` é a única próxima operação/iu, "R012_README", "README final-round recovery is missing");
   requirePattern(readme, /última slice aberta[\s\S]{0,320}cobertura global[\s\S]{0,180}cross-slice[\s\S]{0,180}`BLOCKED`[\s\S]{0,80}`REPLAN`/iu, "R017_TERMINAL_VALIDATION", "README terminal semantic validation is missing");
-  requirePattern(readme, /`COMPLETE`[\s\S]{0,260}runtime[\s\S]{0,260}ownership final[\s\S]{0,180}drift[\s\S]{0,180}`REPLAN`/iu, "R018_TERMINAL_INTEGRITY", "README terminal deterministic inspection is missing");
+  requirePattern(readme, /`COMPLETE`[\s\S]{0,260}runtime[\s\S]{0,260}ownership final[\s\S]{0,240}inspeção read-only[\s\S]{0,100}drift[\s\S]{0,520}REPLAN/iu, "R018_TERMINAL_INTEGRITY", "README terminal deterministic inspection is missing");
   requirePattern(readme, /fontes em `Discovery sources`, métodos em `Discovery actions`/iu, "R007_OUTPUT_SCHEMA", "README discovery labels are not canonical");
   forbidPattern(readme, /`Check discovery (?:sources|actions)`/iu, "R007_OUTPUT_SCHEMA", "README authorizes historical discovery labels");
 }
@@ -391,18 +477,16 @@ function checkScout(root) {
   if (schema.length !== expected.length || schema.some((line, index) => line !== expected[index])) reject("S005_OUTPUT", "scout schema changed");
 }
 
-function checkSubagents(root) {
+function checkSubagents(root, platform = null) {
   const expected = new Set([
     "README.md",
     "codex/.codex/agents/stnl_validation_runner.toml",
     "codex/.codex/agents/stnl_spec_context_scout.toml",
     "codex/package.json",
     "codex/package-lock.json",
-    "codex/runtime/isolated-home.mjs",
-    "codex/runtime/managed-runner-bridge.mjs",
-    "codex/runtime/managed-slice-preflight.mjs",
-    "codex/runtime/runner-broker.mjs",
-    "codex/runtime/sdk-transport.mjs",
+    "codex/runtime/app-server-transport.mjs",
+    "codex/runtime/native-provider.mjs",
+    "codex/runtime/offline-provider-context.mjs",
     "codex/runtime/usage-accounting.mjs",
     "codex/runtime/validation-runner.mjs",
     "claude-code/.claude/agents/stnl-validation-runner.md",
@@ -411,7 +495,7 @@ function checkSubagents(root) {
   const actual = new Set(realFiles(root)
     .map((file) => path.relative(root, file).split(path.sep).join("/")));
   if (actual.size !== expected.size || [...actual].some((file) => !expected.has(file))) reject("S002_REGISTRY", `subagent registry mismatch; actual=${JSON.stringify([...actual].sort())}`);
-  checkRunner(root);
+  checkRunner(root, platform);
   checkScout(root);
 }
 
@@ -427,8 +511,6 @@ const launcherSpecs = {
   "execution-plan": ["stnl-execution-planner", "OPERATION", "PLAN", ["SPEC_PATH"]],
   "execution-replan": ["stnl-execution-planner", "OPERATION", "REPLAN", ["SPEC_PATH", "REPLAN_REASON"]],
   "execution-plan-review": ["stnl-plan-reviewer", "OPERATION", "REVIEW_PLAN", ["SPEC_PATH"]],
-  "execution-tasks": ["stnl-task-materializer", "OPERATION", "MATERIALIZE_TASKS", ["SPEC_PATH"]],
-  "execution-tasks-review": ["stnl-task-reviewer", "OPERATION", "REVIEW_TASKS", ["SPEC_PATH"]],
   "slice-execute-codex": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", ["SPEC_PATH", "SLICE"]],
   "slice-execute-claude": ["stnl-slice-executor", "OPERATION", "EXECUTE_SLICE", ["SPEC_PATH", "SLICE"]],
   "slice-apply-findings-codex": ["stnl-slice-executor", "OPERATION", "APPLY_FINDINGS", ["SPEC_PATH", "SLICE"]],
@@ -531,6 +613,23 @@ function checkRepository(root) {
   }
   const vendor = /\bCodex\b|\bClaude(?: Code)?\b|@agent-|stnl[_-]validation[_-]runner|fork_turns|\bgpt-[0-9]|\bhaiku\b|\bsonnet\b/iu;
   for (const [file, text] of genericTexts) if (vendor.test(text)) reject("C004_VENDOR_NEUTRALITY", `${file}: generic execution skill contains vendor invocation syntax`);
+  const guides = ['stnl-slice-executor', 'stnl-slice-quality-manager'].map(name => {
+    const base = path.join(workflowRoot, name);
+    const skill = read(path.join(base, 'SKILL.md'));
+    requirePattern(skill, /mandatory \[runner invocation guide\]\(references\/runner-invocation\.md\)[^\n]*installed skill[^\n]*before selecting or spawning/u,
+      'C006_DISTRIBUTION', `${name}: installed runner guide is not a mandatory read`);
+    const guide = read(path.join(base, 'references/runner-invocation.md'), 'C006_DISTRIBUTION');
+    const body = guide.slice(guide.indexOf('# Native runner invocation'));
+    for (const pattern of [/fork_turns:"none"/u, /complete selected candidate-distribution runner contract/u,
+      /Missing independence, contract or official identity blocks before spawn/u, /without that contract is not the runner/u,
+      /task-level instruction loading; it does not confer developer-level priority/u, /origin-bound receipt is mandatory/u,
+      /reserve-dispatch[\s\S]*bind-native[\s\S]*verify-native[\s\S]*capture-native/u, /saved observation without replay/u,
+      /Preserve uncertain dispatches|Never replay a pending or uncertain dispatch/u]) {
+      requirePattern(body, pattern, 'C006_DISTRIBUTION', `${name}: runner guide loses a required integration guarantee`);
+    }
+    return body;
+  });
+  if (guides[0] !== guides[1]) reject('C006_DISTRIBUTION', 'installed runner invocation guides diverge');
   const allExecutionText = genericTexts.map(([, text]) => text).join("\n");
   for (const token of ["stnl-spec-execution-manager", "stnl-execution-closer", "OPERATION=CLOSE", "EXECUTION_APPROVED", "EXECUTION_BLOCKED", "FINALIZE_SLICE", "PARALLELIZE_SLICES", "EXECUTE_SLICES", "RUN_TESTS", "RETRY_TESTS", "FIX_TESTS", "TEST_SLICE", "TEST_FINDINGS", "VALIDATE_IMPLEMENTATION"]) {
     if (allExecutionText.includes(token)) reject("C009_REMOVED_TOKENS", `removed execution token remains: ${token}`);
@@ -538,9 +637,9 @@ function checkRepository(root) {
   const plannerContract = ["SKILL.md", "templates/plan.template.md", "templates/slice-plan.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-execution-planner", relative))).join("\n");
   const globalPlanTemplate = read(path.join(workflowRoot, "stnl-execution-planner/templates/plan.template.md"));
   const detailedPlanTemplate = read(path.join(workflowRoot, "stnl-execution-planner/templates/slice-plan.template.md"));
-  if (!globalPlanTemplate.includes("Model-selected physical target (repository-relative before serialization): `<repository-relative physical target>`; <optional conceptual area> (plain-text description)")) reject("C005_PATH_CARRIERS", "global Expected areas template must separate its semantic physical target from plain-text description");
-  if (!detailedPlanTemplate.includes("Implementation filesystem path (outside generated execution artifacts): `<artifact-relative path>` — <optional contract, subsystem, test area, or explanation> (plain-text description)")) reject("C005_PATH_CARRIERS", "detailed Likely Areas template must separate its implementation path from plain-text description");
-  const taskContract = ["SKILL.md", "templates/tasks.template.md", "templates/slice-tasks.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-task-materializer", relative))).join("\n");
+  if (!globalPlanTemplate.includes("directory: `<artifact-relative physical target>`")) reject("C005_PATH_CARRIERS", "global Expected areas template must separate its semantic physical target from plain-text description");
+  if (!detailedPlanTemplate.includes("## Authorized Areas\n\n- directory: `<artifact-relative authorized subtree or exact file>`")) reject("C005_PATH_CARRIERS", "detailed Likely Areas template must separate its implementation path from plain-text description");
+  const taskContract = ["SKILL.md", "templates/tasks.template.md", "templates/slice-tasks.template.md"].map((relative) => read(path.join(workflowRoot, "stnl-execution-planner", relative))).join("\n");
   for (const [label, contract] of [["planning", plannerContract], ["tasks", taskContract]]) {
     if (!contract.includes("Requirements authority: sha256:<64hex>")) reject("C005_AUTHORITY_FIELDS", `${label} contract lacks exact Requirements authority field`);
     if (!contract.includes("Plan revision: <positive integer>")) reject("C005_AUTHORITY_FIELDS", `${label} contract lacks exact Plan revision field`);
@@ -607,13 +706,19 @@ function checkLifecycleStatic(root) {
     if (/READINESS_SCOPE\s*=\s*(?!LOCAL\|GLOBAL|\{\{READINESS_SCOPE\}\})(?:local|global|localized|repository)|`(?:local|global|localized|repository)`/u.test(text)) reject("C016_READINESS_SCOPE", `noncanonical READINESS scope remains: ${file}`);
   }
   const lifecycleText = publicFiles.filter((file) => file.startsWith(lifecycle)).map((file) => read(file)).join("\n");
+  const canonicalIds = read(path.join(lifecycle, "references/canonical-ids.md"));
+  if (!/\bnever\s+(?:physically\s+)?remove,\s*renumber,\s*reuse,\s*(?:or\s+)?fill gaps\b/iu.test(canonicalIds)) {
+    reject("C015_LIFECYCLE_AUTHORITY", "lifecycle contracts lack immutable IDs");
+  }
   for (const [marker, label] of [
-    ["never remove, renumber, reuse, fill gaps", "immutable IDs"], ["retired_reason", "tombstone reason"],
+    ["retired_reason", "tombstone reason"],
     ["runtime/create-readiness-attestation.mjs", "attestation creator"], ["--readiness-attestation", "attestation binding"],
-    ["CLOSE <TARGET> <CANDIDATE>", "direct CLOSE publisher binding"], ["renamed backup digest before promotion", "post-rename verification"],
+    ["CLOSE <TARGET>", "direct target-only CLOSE publisher binding"], ["Recheck backup digest before promotion", "post-rename verification"],
   ]) if (!lifecycleText.includes(marker)) reject("C015_LIFECYCLE_AUTHORITY", `lifecycle contracts lack ${label}`);
+  if(/CLOSE\s+<TARGET>\s+<CANDIDATE>/u.test(lifecycleText))reject('C015_LIFECYCLE_AUTHORITY','external CLOSE candidate route remains');
   const readme = read(path.join(lifecycle, "README.md"));
-  if (!read(path.join(root, ".gitignore")).includes(".*.lifecycle.lock") || !readme.includes(".*.lifecycle.lock")) reject("C015_LIFECYCLE_AUTHORITY", "persistent publisher lock contract is missing");
+  const ignored=read(path.join(root,'.gitignore'));
+  if(!ignored.includes('.*.lifecycle.lock')||!ignored.includes('/tmp')||!readme.includes('materialRoot/lifecycle.lock')||!readme.includes('common lease remains outside'))reject('C015_LIFECYCLE_AUTHORITY','coordinated publisher locator or legacy exclusion contract is missing');
 }
 
 function parseArguments(argv) {
@@ -622,26 +727,31 @@ function parseArguments(argv) {
   if (!["launchers", "validation-runner", "subagents", "repository"].includes(scope)) throw new InfrastructureError(`unknown scope: ${scope}`);
   let root;
   let executor;
+  let platform = null;
+  const seen = new Set();
   for (let index = 1; index < argv.length; index += 2) {
     const flag = argv[index];
     const value = argv[index + 1];
     if (!value) throw new InfrastructureError(`missing value for ${flag}`);
+    if (seen.has(flag)) throw new InfrastructureError(`repeated argument: ${flag}`);
+    seen.add(flag);
     if (flag === "--root") root = path.resolve(value);
     else if (flag === "--executor") executor = path.resolve(value);
+    else if (flag === '--platform' && ['validation-runner', 'subagents'].includes(scope) && ['codex', 'claude'].includes(value)) platform = value;
     else throw new InfrastructureError(`unknown argument: ${flag}`);
   }
   if (!root) throw new InfrastructureError("--root is required");
-  return { scope, root, executor };
+  return { scope, root, executor, platform };
 }
 
 export function run(arguments_) {
   try {
-    const { scope, root } = parseArguments(arguments_);
+    const { scope, root, platform } = parseArguments(arguments_);
     if (scope === "launchers") checkLaunchers(root);
-    else if (scope === "validation-runner") checkRunner(root);
-    else if (scope === "subagents") checkSubagents(root);
+    else if (scope === "validation-runner") checkRunner(root, platform);
+    else if (scope === "subagents") checkSubagents(root, platform);
     else checkRepository(root);
-    process.stdout.write(`PASS: semantic ${scope} contract: ${root}\n`);
+    process.stdout.write(`PASS: semantic ${scope}${platform ? ` (${platform} only; aggregate parity not checked)` : ''} contract: ${root}\n`);
     return 0;
   } catch (error) {
     if (error instanceof ContractError) {

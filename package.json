@@ -7,5 +7,8 @@
     "benchmark:campaign": "node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs",
     "benchmark:verify": "node benchmarks/sentinel-todo/runtime/benchmark.mjs verify",
     "benchmark:status": "node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status"
+  },
+  "devDependencies": {
+    "ajv": "https://registry.npmjs.org/ajv/-/ajv-8.17.1.tgz"
   }
 }

@@ -1,160 +1,91 @@
 #!/usr/bin/env node
-
-import * as fs from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-
-const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
-const SKILL_ROOT = path.dirname(RUNTIME_ROOT);
-const PLAN_TEMPLATE = path.join(SKILL_ROOT, "templates", "plan.template.md");
-const SLICE_PLAN_TEMPLATE = path.join(SKILL_ROOT, "templates", "slice-plan.template.md");
-const HEADER_PATTERN = /^# File Purpose Header\n\n```yaml\n([\s\S]*?)^```\n\n/mu;
-
-function blocked(message) {
-  throw new Error(`plan candidate preparation blocked: ${message}`);
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {pathToFileURL} from 'node:url';
+import {resolveCurrentExecutionContext,resolveExecutionWorkspace} from './execution-workspace.mjs';
+import {assertOwnedPreparationCandidate,readOwnedFile,persistAllocation} from './execution-publication.mjs';
+import {captureCurrentSetReplacementSource} from './execution-state.mjs';
+export async function assertPreparationCandidate(root,specPath=null,{filesystemContext=null}={}){return assertOwnedPreparationCandidate({candidateExecutionRoot:root,specPath,resolveWorkspace:spec=>resolveExecutionWorkspace(spec,{filesystemContext})});}
+function fail(code,message){throw Object.assign(new Error(message),{code});}
+export function setPreparationMembers(source,ids,{terminalValidation=false}={}) {
+ const continuity=JSON.parse(Buffer.from(source.files.get('continuity.json'))),members=[...continuity.deliveries,...continuity.completed];
+ if(!Array.isArray(ids)||new Set(ids).size!==ids.length||ids.some(id=>!members.some(item=>item.deliveryId===id)))
+  fail('INVALID_CURRENT_IMAGE','Completed selection differs from the captured source');
+ const active=members.filter(item=>!ids.includes(item.deliveryId));
+ if(typeof terminalValidation!=='boolean')fail('INVALID_CURRENT_IMAGE','Terminal validation selection must be boolean');
+ if(terminalValidation) {
+  const snapshot=JSON.parse(Buffer.from(source.files.get('approved-preparation.json')));
+  if(continuity.deliveries.length!==0||active.length!==1||source.inspection.state!=='VALIDATION_BLOCKED'
+    ||!source.inspection.diagnostics.some(item=>item.field==='terminal')
+    ||!snapshot.normativeProjection.completed.find(item=>item.deliveryId===active[0].deliveryId)?.obligations
+      .some(item=>item.contribution==='complete'&&item.fullOwner==='delivery:'+active[0].deliveryId))
+   fail('REPLAN_REQUIRED','Terminal reentry requires an empty queue without current integral proof and its same integral owner');
+ }
+ if(!(continuity.deliveries.length>0&&active.length===0)
+   &&!(continuity.deliveries.length===0&&active.length===1&&(ids.length>0||terminalValidation)&&active[0].normalization===null))
+  fail('UNSUPPORTED_FORMAT','Preparation supports Q18 retirement, Q19 private reopening or explicit Q20 terminal reentry');
+ return active;
 }
-
-async function readRegularFile(file, label) {
-  const metadata = await fs.lstat(file).catch(() => null);
-  if (metadata === null || metadata.isSymbolicLink() || !metadata.isFile()) {
-    blocked(`${label} is not a real regular file: ${file}`);
-  }
-  return fs.readFile(file, "utf8");
+export async function capturePreparationSource(owned) {
+ if(owned.marker.operation!=='REPLAN')fail('REPLAN_REQUIRED','Expected a registered REPLAN allocation');
+ const source=await captureCurrentSetReplacementSource(owned.marker.specPath);
+ if(owned.marker.expectedActivationId!==source.inspection.activationId
+   ||owned.marker.preparationRevision!==source.inspection.preparationRevision+1)
+  fail('STALE_BASE','Preparation activation or revision differs from its official source');
+ setPreparationMembers(source,owned.marker.completedDeliveryIds,{terminalValidation:owned.marker.terminalValidation??false});
+ return source;
 }
-
-function canonicalHeader(template, label) {
-  const match = HEADER_PATTERN.exec(template);
-  if (match === null) blocked(`${label} template has no canonical File Purpose Header`);
-  return match[0];
-}
-
-function parseHeaderFields(block, label) {
-  const match = HEADER_PATTERN.exec(block);
-  if (match === null || match.index !== 0 || match[0] !== block) {
-    blocked(`${label} has a malformed or conflicting File Purpose Header`);
-  }
-  const lines = match[1].split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  const fields = new Map();
-  for (const line of lines) {
-    const field = /^([a-z][a-z0-9_]*): (\S.*)$/u.exec(line);
-    if (field === null || fields.has(field[1])) {
-      blocked(`${label} has a malformed or conflicting File Purpose Header`);
-    }
-    fields.set(field[1], field[2]);
-  }
-  return fields;
-}
-
-function prepareHeader(text, header, label) {
-  const match = HEADER_PATTERN.exec(text);
-  if (match === null) {
-    if (text.includes("# File Purpose Header")) {
-      blocked(`${label} has a malformed or conflicting File Purpose Header`);
-    }
-    return `${header}${text}`;
-  }
-  if (match.index !== 0) {
-    blocked(`${label} has a malformed or conflicting File Purpose Header`);
-  }
-
-  const sourceFields = parseHeaderFields(match[0], label);
-  const canonicalFields = parseHeaderFields(header, `${label} template`);
-  const sourceKeys = [...sourceFields.keys()].sort();
-  const canonicalKeys = [...canonicalFields.keys()].sort();
-  if (JSON.stringify(sourceKeys) !== JSON.stringify(canonicalKeys)) {
-    blocked(`${label} has a malformed or conflicting File Purpose Header`);
-  }
-  const status = sourceFields.get("status");
-  if (status !== "draft" && status !== "ready") {
-    blocked(`${label} has a malformed or conflicting File Purpose Header`);
-  }
-  const remainder = text.slice(match[0].length);
-  if (/^# File Purpose Header(?:\n|$)/mu.test(remainder)) {
-    blocked(`${label} has a malformed or conflicting File Purpose Header`);
-  }
-  const canonicalForStatus = header.replace(/^status: draft$/mu, `status: ${status}`);
-  return `${canonicalForStatus}${remainder}`;
-}
-
-async function writeAtomically(file, text) {
-  const temporary = `${file}.stnl-purpose-header-${process.pid}.tmp`;
-  await fs.writeFile(temporary, text, { encoding: "utf8", flag: "wx" });
-  try {
-    await fs.rename(temporary, file);
-  } catch (error) {
-    await fs.rm(temporary, { force: true });
-    throw error;
-  }
-}
-
-export async function preparePlanCandidate({ candidateExecutionRoot }) {
-  const candidate = path.resolve(String(candidateExecutionRoot));
-  const candidateMetadata = await fs.lstat(candidate).catch(() => null);
-  if (candidateMetadata === null || candidateMetadata.isSymbolicLink() || !candidateMetadata.isDirectory()) {
-    blocked(`candidate execution root is not a real directory: ${candidate}`);
-  }
-
-  const [planTemplate, slicePlanTemplate] = await Promise.all([
-    readRegularFile(PLAN_TEMPLATE, "plan template"),
-    readRegularFile(SLICE_PLAN_TEMPLATE, "slice-plan template"),
-  ]);
-  const headers = {
-    plan: canonicalHeader(planTemplate, "plan"),
-    slice: canonicalHeader(slicePlanTemplate, "slice-plan"),
+export async function preparePlanCandidate({candidateExecutionRoot,filesystemContext=null}) {
+ const owned=await assertPreparationCandidate(candidateExecutionRoot,null,{filesystemContext}),{context}=await resolveCurrentExecutionContext(owned.marker.specPath,{filesystemContext});
+ if(owned.marker.operation==='REPLAN') {
+  const source=await capturePreparationSource(owned),active=setPreparationMembers(source,owned.marker.completedDeliveryIds,
+   {terminalValidation:owned.marker.terminalValidation??false});
+  const continuity=JSON.parse(Buffer.from(source.files.get('continuity.json')));
+  for(const member of [...continuity.deliveries,...continuity.completed].filter(item=>!active.some(value=>value.deliveryId===item.deliveryId)))
+   for(const group of ['plans','tasks']) {
+    const name=`${group}/${member.slice}.md`;
+    if(source.files.has(name))await fs.rm(path.join(owned.root,name),{force:true});
+   }
+  const revision=owned.marker.preparationRevision;
+  const writeRevision=(text,previous)=>{
+   const supplied=text.match(/^- Plan revision: (.+)$/mu)?.[1];
+   const prior=previous?Buffer.from(previous).toString('utf8').match(/^- Plan revision: (.+)$/mu)?.[1]:null;
+   if(![prior,String(revision),'runtime'].includes(supplied))fail('STALE_BASE','Plan revision differs from the captured preparation');
+   return text.replace(/^- Plan revision: .+$/mu,'- Plan revision: '+revision);
   };
-  const artifacts = [{
-    path: path.join(candidate, "plan.md"),
-    header: headers.plan,
-    label: "candidate plan.md",
-  }];
-  const plansDirectory = path.join(candidate, "plans");
-  const directoryMetadata = await fs.lstat(plansDirectory).catch(() => null);
-  if (directoryMetadata !== null) {
-    if (directoryMetadata.isSymbolicLink() || !directoryMetadata.isDirectory()) {
-      blocked(`candidate plans directory is not a real directory: ${plansDirectory}`);
-    }
-    const entries = await fs.readdir(plansDirectory, { withFileTypes: true });
-    for (const entry of entries.filter((item) => /^slice-\d+\.md$/u.test(item.name)).sort((a, b) => a.name.localeCompare(b.name))) {
-      artifacts.push({
-        path: path.join(plansDirectory, entry.name),
-        header: headers.slice,
-        label: `candidate ${entry.name}`,
-      });
-    }
+  const global=path.join(owned.root,'plan.md');
+  await fs.writeFile(global,writeRevision((await readOwnedFile(global)).bytes.toString('utf8'),source.files.get('plan.md')));
+  for(const member of active)for(const group of ['plans','tasks']) {
+   const localRevision=member.localRevision+(owned.marker.terminalValidation?0:1);
+   const target=path.join(owned.root,group,`${member.slice}.md`),before=(await readOwnedFile(target)).bytes.toString('utf8');
+   const supplied=before.match(/^- Delivery ID: (.+)$/mu)?.[1],local=before.match(/^- Local revision: (.+)$/mu)?.[1];
+   if(supplied&&supplied!=='runtime'&&supplied!==member.deliveryId)fail('OWNER_UNCERTAIN','Delivery identity differs from its official source');
+   if(local&&local!=='runtime'&&local!==String(localRevision))fail('STALE_BASE','Local revision differs from its official source');
+   let text=supplied?before.replace(/^- Delivery ID: .+$/mu,'- Delivery ID: '+member.deliveryId):before.replace('## References\n\n','## References\n\n- Delivery ID: '+member.deliveryId+'\n');
+   text=writeRevision(text,source.files.get(`${group}/${member.slice}.md`));
+   text=local?text.replace(/^- Local revision: .+$/mu,'- Local revision: '+localRevision):text.replace(/^- Plan revision: .+$/mu,line=>line+'\n- Local revision: '+localRevision);
+   await fs.writeFile(target,text);
   }
-
-  const preparedArtifacts = [];
-  for (const artifact of artifacts) {
-    const before = await readRegularFile(artifact.path, artifact.label);
-    const after = prepareHeader(before, artifact.header, artifact.label);
-    preparedArtifacts.push({ path: artifact.path, before, after });
+  await capturePreparationSource(await assertPreparationCandidate(owned.root,owned.marker.specPath,{filesystemContext}));
+  return {status:'DRAFT',candidateExecutionRoot:owned.root,logicalAuthorityPath:context.logicalAuthorityPath};
+ }
+ if(owned.marker.source!==null||owned.marker.preparationRevision!==1)throw Object.assign(new Error('Only absent-target Initial preparation is supported'),{code:'REPLAN_REQUIRED'});
+ const marker=owned.marker;
+ const names=(await fs.readdir(path.join(owned.root,'plans'))).sort();
+ if(!names.length||names.some(name=>!/^slice-[0-9]{2,}\.md$/u.test(name)))throw new Error('Expected current detailed plans');
+ for(const name of names) {
+  const identity=marker.deliveryIds[name]??randomUUID();
+  if(!marker.deliveryIds[name]){marker.deliveryIds[name]=identity;await persistAllocation(`${owned.root}.owner.json`,marker);}
+  for(const group of ['plans','tasks']) {
+   const target=path.join(owned.root,group,name),before=(await readOwnedFile(target)).bytes.toString('utf8');
+   const supplied=before.match(/^- Delivery ID: (.+)$/mu)?.[1];
+   if(supplied&&supplied!=='runtime'&&supplied!==identity)throw new Error('Delivery identity differs from the owned producer');
+   let text=supplied?before.replace(/^- Delivery ID: .+$/mu,'- Delivery ID: '+identity):before.replace('## References\n\n','## References\n\n- Delivery ID: '+identity+'\n');
+   if(!/^- Local revision: /mu.test(text))text=text.replace(/^- Plan revision: .+$/mu,x=>x+'\n- Local revision: 1');
+   await fs.writeFile(target,text);
   }
-
-  const changedPaths = [];
-  for (const artifact of preparedArtifacts) {
-    if (artifact.after === artifact.before) continue;
-    await writeAtomically(artifact.path, artifact.after);
-    changedPaths.push(artifact.path);
-  }
-  return Object.freeze({
-    status: "PASS",
-    changedPaths: Object.freeze(changedPaths),
-  });
+ }
+ return {status:'DRAFT',candidateExecutionRoot:owned.root,logicalAuthorityPath:context.logicalAuthorityPath};
 }
-
-async function main() {
-  const arguments_ = process.argv.slice(2);
-  if (arguments_.length !== 2 || arguments_[0] !== "--candidate-execution-root") {
-    throw new Error("usage: prepare-plan-candidate.mjs --candidate-execution-root CANDIDATE_EXECUTION_ROOT");
-  }
-  const result = await preparePlanCandidate({ candidateExecutionRoot: arguments_[1] });
-  process.stdout.write(`${JSON.stringify(result)}\n`);
-}
-
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
-  main().catch((error) => {
-    process.stderr.write(`${error.message}\n`);
-    process.exitCode = 1;
-  });
-}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const args=process.argv.slice(2);if(args.length!==2||args[0]!=='--candidate-execution-root')throw new Error('Usage: prepare-plan-candidate.mjs --candidate-execution-root ROOT');process.stdout.write(JSON.stringify(await preparePlanCandidate({candidateExecutionRoot:args[1]}))+'\n');}

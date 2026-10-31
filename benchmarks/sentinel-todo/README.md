@@ -1,57 +1,86 @@
 # Sentinel Todo benchmark
 
-## Running the benchmark
+## Adaptation status
 
-For a fresh diagnostic full run at the repository root, run:
+U3.16 is implemented and accepted within its documented offline scope.
+**Do not run the real manager/campaign yet:** S2/App Server capture, bundle
+selection and child completion have been exercised with an offline provider,
+not demonstrated in the normal authenticated client. S1 remains a historical
+`NATIVE_TRANSPORT_UNPROVEN` diagnosis. Normal manager paths through Initial and
+converted CLOSE/readers/export are covered mechanically; source retention fixes
+were explicitly authorized in the product, without benchmark hooks. U3.15-D's
+native acceptance belongs to its historical freeze and does not qualify the
+changed candidate. See [interfaces](INTERFACES.md) and
+[the current offline acceptance](../../maintenance/P1-B-PLANO.md#u316-retencao)
+for tests, known historical failures and the approval gate before U3.17.
+No real product/model/runner call was used in this adaptation's offline tests.
+
+## Campaign entrypoints after qualification
 
 ```sh
 npm run benchmark
-```
-
-No install is needed. The functional mode of the existing campaign driver checks
-the benchmark and activity, preserves compact reports from eligible previous
-runs, and cleans only recognized, owned, inactive scratch through the manager's
-cleanup, including private homes. It then starts exactly one new full manager
-run: A first, followed by B/C concurrently only after A passes. Unknown or
-ambiguous data is preserved and reported; a previous run whose report cannot be
-preserved keeps its raw files.
-
-The command publishes terminal results, including BLOCKED, cancellation and
-budget pauses, to [`measurements/latest.json`](measurements/latest.json) and
-[`measurements/latest.md`](measurements/latest.md), with immutable per-run
-history at `measurements/<run-id>.json`. Latest shows the last published round,
-including a blocked round. The Markdown is a deterministic view of that JSON.
-The current run's raw evidence and snapshot remain in ignored `benchmark-temp/`
-for diagnosis until a later preparation can safely preserve and clean them.
-
-A dirty checkout, unpublished HEAD, missing baseline or unavailable comparison
-does not prevent functional use. Reports retain the real HEAD, dirty state and
-frozen source identity. A failure before a terminal run exists does not invent a
-measurement or replace latest. Missing evidence or a publication failure keeps
-scratch and reports the limitation alongside the execution result.
-
-For the formal measurement campaign, explicitly run:
-
-```sh
 npm run benchmark:campaign
 ```
 
-That command retains the formal clean-checkout and active-process checks,
-safe-scratch cleanup, baseline comparison, and report promotion to
-`measurements/<campaign-id>/` for review and commit. The campaign summary
-retains every value and leaves G2/G3 decisions pending.
-That pending status describes the protocol's historical pre-acceptance
-checkpoint. The final P0 acceptance subsequently recorded G2 and G3 as
-PROVEN in [`maintenance/p0-summary.md`](../../maintenance/p0-summary.md).
-This benchmark README documents measurement procedure; it is not the authority
-for P0 acceptance status.
+Both entrypoints use `campaign.fullRuns` (default **3**) and accept an explicit
+positive integer override, for example `npm run benchmark -- --runs 1` or
+`npm run benchmark:campaign -- --runs 2`. Invalid, duplicated and unknown
+arguments are rejected before preparation or dispatch. The functional entrypoint
+is additionally capped at three FULLs by the approved campaign budget. Each FULL retains the
+manager's A-first, then B/C policy. A terminal B/C failure blocks admission of
+later sibling operations. An already admitted operation settles under its original
+deadline; this cooperative stop does not cancel its observation or invent a result.
+FULLs are sequential; the first failure, cancellation, unavailable evidence or
+publication error stops the sequence.
 
-A blocked run or Ctrl+C stops the formal sequence and preserves scratch evidence;
-no partial formal campaign is promoted. The functional command independently
-publishes the available terminal result. Active or ambiguous scratch requires
-inspection before cleanup. `npm run benchmark:verify` and `npm run benchmark:status` remain
-available for standalone diagnostics. The Node commands below remain available
-for advanced debugging.
+The formal campaign also accepts `--max-operations N` as an operational stop
+after at most N additional operations per case. It retains FULL scope and never
+qualifies a partial result. Resume with `npm run benchmark:campaign -- --resume
+<campaign-id>` (repeat `--runs N` if the initial N overrode the manifest).
+Only a settled checkpoint from the same candidate, controller and configuration
+is eligible; accepted FULLs/cases are revalidated without executing them again.
+Refusals, uncertain effects, altered evidence and historical runs without this
+checkpoint are excluded. Costs and correction limits remain cumulative.
+The offline tests use controlled hooks, not real FULLs.
+
+Both entrypoints retain per-run reports and campaign state in ignored
+`benchmark-temp/campaign-<id>/` (functional campaigns use `campaign-functional-<id>`).
+Failed, interrupted or incomplete campaigns preserve their raw diagnostics and
+cost ledgers there; they do not publish individual reports into official history.
+The `--functional` entrypoint can accept coherent PASS A/B/C FULLs while
+reporting measurement completeness separately, but functional campaign
+acceptance still requires at least the configured **3/3** passing FULLs on one
+candidate. An explicit `--runs 1` is only one completed round; it returns
+`FUNCTIONAL_ROUND_PASS`, remains pending and is not promoted. When expected usage or other
+measurement dimensions are missing, it returns `FUNCTIONAL_PASS`, keeps reports
+and explicit missing dimensions under `benchmark-temp`, and does not promote
+them into official measurements. G3 campaign distributions are `unavailable`;
+per-run reports retain only observed values. This does not qualify a complete
+benchmark or imply savings.
+
+The formal entrypoint and fully measured functional campaigns still require
+complete measurements. Only after at least three coherent passing FULLs and
+complete measurement evidence does atomic promotion create
+`measurements/<campaign-id>/`. Existing history, including legacy
+`latest.json`/`latest.md`, is preserved; the returned measurement path
+identifies the new campaign. A failure before a run exists does not invent a
+measurement.
+
+The formal entrypoint additionally requires a clean local Git candidate.
+HEAD need not already be pushed; a cached
+upstream is informational and does not prove remote synchronization. A baseline
+is optional: absent, malformed or incompatible historical data leaves comparison
+and deltas `unavailable`, separately from current N/N quality. Unexpected errors
+in a compatible comparison stop the campaign. G2/G3 decisions remain explicit.
+Historical P0 acceptance is recorded in
+[maintenance/p0-summary.md](../../maintenance/p0-summary.md), not recertified here.
+
+Neither entrypoint deletes/re-publishes another invocation's history when
+starting. Active, foreign, unsafe or ambiguous scratch blocks dispatch. Retained
+raw data, ledgers, interrupted states and owners are not discarded for a clean
+start. Explicit manager cleanup still needs its own legal preconditions and
+retain-before-clean qualification; it is not certified by these campaign tests.
+`benchmark:verify` and `benchmark:status` remain diagnostic entrypoints.
 
 This benchmark is measurement and regression tooling for the stabilized Sentinel
 workflow on a small Todo CLI. It is not requirements, lifecycle, or execution
@@ -65,6 +94,59 @@ current checkpoint. The Sentinel skills and their official validators remain
 workflow authority.
 
 ## Functional baseline
+
+### Measurement evidence for a complete benchmark
+
+Functional execution, formal judgment, product oracle and measurement completeness
+are separate results. Complete benchmark qualification still requires
+consumption. The approved P1-B functional acceptance gate requires A/B/C
+product/oracle results but permits a separately labeled incomplete measurement.
+Keep historical outputs unchanged and label incomplete results as functional
+evidence with missing metrics. A diagnostic export retains the functional result and reports
+`measurement.status: incomplete` with missing dimensions. It cannot be published
+or used to certify savings. Missing values never become zero.
+
+A focal finalizer can return PASS for its selected prefix without reaching
+CLOSE. Export its diagnostic state without inventing terminal evidence; accepted
+case/FULL results still require the complete closure proof. A newer reader may
+use `export --root <canonical measured checkout> --run <id> --output <temporary path>`
+only for read-only focal diagnostics. It rechecks owner/snapshot/identity and
+records exporter/normalizer hashes separately from the measured source. Such an
+external diagnostic export is always incomplete and cannot qualify, publish or
+produce savings claims. The measured checkout, journals and ledger are unchanged.
+
+| Evidence | Existing authoritative source / unit | Aggregation and completeness |
+| --- | --- | --- |
+| Run, case, repetition, operation and attempt | campaign state, run.json, operation evidence, ledger; IDs/counts | Required. Match the frozen run and ABC/N scope; no missing, foreign or duplicate identities. |
+| Wall time per operation/case/run | journal durationMs and startedAt/endedAt; milliseconds | Required. Preserve real boundaries. B/C overlap: summed case time is not run wall time. |
+| Failed/cancelled attempts and pauses | ledger timestamps/states, operation records, recovery provenance | Required attempts and recorded boundaries. Wall time includes waiting. An exact model/observation-wait/administrative split is unavailable when the provider or preserved records do not distinguish it; do not manufacture that split. Unknown original exits/times stay unknown. |
+| Input/cached input/output | public `thread/tokenUsage/updated`, scoped by threadId/turnId; tokens | Required for every admitted main/child turn, including failed attempts. Preserve official counter fields before normalization; establish cumulative/delta/final semantics and parent/child scope before summing. Cached input is a subset, not additional input. |
+| Total tokens | attributable input + output; tokens | Derived only from complete compatible buckets. Never add cached or reasoning tokens again. Known partial subtotals must be labelled partial. |
+| Reasoning/cache-write detail | provider's explicit counters; tokens | Retain when supplied. Never silently coerce an unsupported/missing field to zero; absence must remain explicit. |
+| Calls, turns and admissions | scoped public turn IDs and ledger states/reservations; counts | Required. A skill operation may cause several model turns. Count all children/corrections; replay is not another dispatch. Reservations are not token usage or money. |
+| Models and effort | frozen manifest, operation requests, official thread/binding metadata | Required declared profiles and available acknowledgements. Distinguish requested, acknowledged and unavailable provider-reported values; do not relabel a requested alias as an observed model version. |
+| SDK/CLI, source, seed, schema and configuration | snapshot.json, manifest, freeze and effective public settings | Required reproducibility evidence. Preserve exact observed versions, hashes, overrides and context regime. A different global config hash needs an effective-settings check, not restoration by inference. |
+| Formal result and product result | native receipts/terminal proof and independent productAcceptance | Required, separate from metrics. Formal PASS does not override an oracle failure or missing consumption. |
+| Qualification | complete ABC/N campaign plus required evidence | Required. Only complete coherent runs count; a diagnostic/focal run, incomplete metrics or a successful run from another candidate cannot fill N. |
+| Monetary estimate | dated tariff source + complete attributable usage by applicable model/tier | Optional. Label estimated; otherwise unavailable. Do not equate subscription quota/admission counts with billing or invent a price. |
+| TTFT and per-tool time series | optional provider notifications | Optional; not needed for the requested comparison. No telemetry subsystem is introduced. |
+
+The original defect discarded native notifications and returned null usage.
+The corrected path projects notifications into existing event journals and
+rebuilds deltas at export against the admitted ledger. The legacy SDK normalizer
+is not used to reinterpret App Server data. Official 0.163.0 source establishes
+the counter semantics; history Thread/Turn responses do not contain usage, so
+missing historical tokens cannot be recovered from those reads. Delivery of all
+child notifications on the real connection remains unproven. Synthetic fixtures
+prove the consumer pipeline, not that historical/live notifications were emitted
+or received. No paid proof is authorized by the offline work.
+
+Offline acceptance covers source event → binding/normalization → existing
+evidence persistence → export → comparison, with missing usage/child, duplicate
+or late events, cumulative/reset semantics, failed retry then success, replay
+and resume, incompatible cache semantics and missing cases/repetitions. A
+complete positive fixture must have the expected identities and observations;
+changing a coverage fraction alone never supplies missing evidence.
 
 The initial comparison reference is the full run
 `run-20260927034729-712b2b42` (2026-09-27 03:47–05:02 UTC), recorded under
@@ -89,9 +171,11 @@ Run from the repository root:
 
 ```sh
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --full
+node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --full --max-operations 6
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --case A
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --case A --max-operations 4
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --resume <focal-run-id> --max-operations 3
+node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs run --resume <stopped-full-run-id>
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status --run <run-id>
 node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs inspect --run <run-id> --case A
@@ -139,7 +223,7 @@ cancelled run is retained. `status` and `inspect` are read only and use no model
 important full run's canonical measurement before removing its raw directory.
 Measurement export and publication accept only terminal `full` runs, including
 failed full-suite attempts for diagnosis. `case` and `focal` remain scratch
-evidence; the launcher's existing safe cleanup skips their measurement export.
+evidence without automatic measurement export or startup cleanup.
 The versioned `benchmark.json` sets `turnBudget.maxTurnsPerRun` to 100. Every
 new run starts with zero consumed turns and keeps its reservation ledger inside
 that run directory. B and C share that run budget safely while executing
@@ -192,9 +276,9 @@ of the provider's reported model.
 | Phase | A | B | C |
 | --- | --- | --- | --- |
 | SPEC | GPT-6.1-Sol / medium | GPT-6.1-Sol / high | GPT-6-Astra / high |
-| PLAN | GPT-6-Luna / high | GPT-6.1-Sol / medium | GPT-6.1-Sol / high |
+| PLAN | GPT-6.1-Sol / medium | GPT-6.1-Sol / medium | GPT-6.1-Sol / high |
 | TASKS | GPT-6-Luna / high | GPT-6.1-Sol / medium | GPT-6.1-Sol / high |
-| EXECUTE / APPLY_FINDINGS | GPT-6-Luna / high | GPT-6-Luna / high | GPT-6.1-Sol / high |
+| EXECUTE / APPLY_FINDINGS | GPT-6.1-Sol / medium | GPT-6-Luna / high | GPT-6.1-Sol / high |
 | REVIEW / VALIDATE | GPT-6-Luna / high | GPT-6.1-Sol / medium | GPT-6-Astra / high |
 
 `SPEC_INIT` and `SPEC_CLOSE` use SPEC. `SPEC_READINESS` uses REVIEW / VALIDATE.
@@ -243,12 +327,14 @@ checks at export. The source checkout may have advanced since the run.
 `benchmark-temp/` is scratch space: runs, snapshots, candidate workspaces,
 prompts, event streams, focals, private runtime metadata, active-run markers,
 and turn ledgers all belong there. `benchmark.json`, this protocol, and promoted
-measurements belong in Git. Export a canonical report for any run used as a
-baseline, comparison reference, or gate evidence, then review and commit that
-small report. The default command publishes these compact reports automatically;
-the formal campaign retains its explicit promotion. Do not copy raw trees into
-Git. Preparation preserves reports before cleaning eligible scratch and retains
-unrecognized data. A fresh run recreates its runtime state from the versioned
+measurements belong in Git only after campaign qualification. Export standalone
+reports for diagnosis or comparison into ignored temporary output, never directly
+into `measurements/`. The standalone report writer also requires an explicit
+diagnostic destination and refuses official history, including path aliases;
+only campaign promotion can write that history. Both entrypoints use this
+qualification boundary. Do not copy raw trees into
+Git. Campaign startup retains previous scratch and its ledgers. Explicit cleanup
+requires its own retention and safety gates. A fresh run recreates its runtime state from the versioned
 manifest; no old ledger, focal artifact, or handshake is required.
 
 `measurements/` is output, excluded from functional source selection, copying
@@ -286,6 +372,46 @@ savings or direct parity with historical reused-thread runs from offline tests.
 
 ### Direct comparison and campaign
 
+For the native App Server 0.163.0 path, the numeric source is the separate
+`thread/tokenUsage/updated` notification. `total` is a thread runtime counter;
+`last` can describe one response or a context estimate and is never treated as
+the turn total. Preserve projected snapshots, thread/turn identity and the
+birth/baseline proof in the existing operation journal. Deduplicate identical
+snapshots and replay; each received notification has one local observation ID
+in that same journal, so rereading a preserved record is distinct from a newly
+received lower counter. This is not a provider response ID or billing receipt.
+Missing/conflicting observation identity is incomplete. Use a coherent cumulative difference only after terminal
+notification. Count failed/interrupted attempts too. A fork, unknown baseline,
+missing child notification, reset, changed late snapshot, persistence failure or
+incomplete expected/observed matrix keeps the measurement incomplete. No new
+model turn or silent child resume is used to obtain telemetry.
+
+These are **observed runtime counters, not billed tokens**: the provider can
+restore or synthesize counters. Reject detectable incoherence; do not claim
+that this detects every synthetic value or proves an invoice. Cached input is
+inside input; reasoning output is inside output. Missing values are never zero.
+Delivery and attribution for every admitted child require runtime evidence;
+one observed child does not certify universal subscription behavior. A complete export
+requires its admitted main and child turns, including corrections, to have
+attributable counters. Preserve fork-origin presence/type and its relation to the
+observed parent as non-sensitive metadata. Neither a missing origin nor equal
+first `total`/`last` proves a zero baseline: a fork may replay inherited counters.
+Unavailable historical provenance stays unrecorded; a known partial subtotal
+stays labelled partial. This does not restrict legitimate auxiliary strategies.
+
+Native exports also retain SDK/CLI versions from the frozen snapshot and safe
+model/service-tier/approval/legacy-sandbox acknowledgements from thread start/resume,
+beside requested effort and the model/effort from each child's public binding.
+An explicit null tier is recorded as unspecified, never inferred as default;
+an absent field remains unknown. A legacy sandbox type is not an effective
+permission-profile attestation. An acknowledgement is configuration evidence, not proof
+of every underlying response's selected model or effort. Missing mandatory
+acknowledgements prevent complete measurement. The frozen configuration/source,
+seed and case hashes remain the comparison authority; no user configuration or
+credentials are copied into the report. Run wall time includes its recorded
+start/end interval, while summed case/operation durations are separate; an
+administrative recovery gap is not invented as model execution time.
+
 Compare reports directly only when the measurement schema and metric
 definitions, benchmark version, case requirements hashes, seed hash, result
 schema, qualification contract, and production profile match. A deliberately
@@ -300,13 +426,13 @@ Durations, slice counts, final
 tests, provider, auth mode, isolation, profile mismatches, and finalizer status
 are diagnostic dimensions where recorded; they are not G2 or G3 scores.
 
-For the initial functional comparison, use one full run per
-configuration. Preserve the report, and summarize median,
+The historical initial comparison used one full run per configuration.
+Current campaign defaults are N=3; preserve every report and summarize median,
 minimum/maximum, and success rate without hiding outliers. Stop interpreting
 G2/G3 when integrity fails, runs are incomplete, or the comparison contract
 does not match. One sample checks function but does not establish a mature
 statistical distribution. The versioned
-`campaign.fullRuns` setting can be raised explicitly in the future. No
+`campaign.fullRuns` defaults to3 and can be overridden explicitly with `--runs N`. No
 retrospective threshold is set from the reference run. Under the protocol's
 historical pre-acceptance state, G2 and G3 stayed `PARTIAL` pending comparable
 empirical evidence and an explicit gate decision. The later acceptance decision

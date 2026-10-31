@@ -39,7 +39,7 @@ test('workspace validation rejects broken references without mutation', (t) => {
   assert.deepEqual(fs.readFileSync(criterion), before);
 });
 
-test('INIT, READINESS, and CLOSE transitions preserve their boundaries', (t) => {
+test('INIT, READINESS, and CLOSE transitions preserve their boundaries', async (t) => {
   const root = temporary(t);
   const ready = copyFixture(root, 'ready', 'candidate with spaces');
   const absent = path.join(root, 'absent destination');
@@ -47,7 +47,7 @@ test('INIT, READINESS, and CLOSE transitions preserve their boundaries', (t) => 
   const readinessCopy = copyFixture(root, 'ready', 'readiness copy');
   assert.equal(validateReadinessTransition(ready, readinessCopy, 'GLOBAL')[1].status, 'ready');
   const closed = copyFixture(root, 'closed', 'closed copy');
-  assert.equal(validateCloseTransition(ready, closed)[1].closed, true);
+  assert.equal((await validateCloseTransition(ready, closed))[1].closed, true);
   replace(path.join(readinessCopy, 'feature_spec.md'), 'Provide deterministic', 'Provide changed');
   assert.throws(() => validateReadinessTransition(ready, readinessCopy, 'LOCAL'), /mutated the workspace/u);
 });

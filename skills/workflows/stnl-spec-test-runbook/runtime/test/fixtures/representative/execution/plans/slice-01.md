@@ -1,60 +1,78 @@
 # File Purpose Header
 
 ```yaml
-purpose: Approved plan for the invitation acceptance API slice.
+purpose: Detailed plan for Foundation.
 status: ready
-read_when: Executing or reviewing slice 01.
-do_not_read_when: Another slice is active and no dependency requires this plan.
-contains: References, result, scope, boundaries, dependencies, risks, strategy, expected tests, and completion criterion.
+read_when: Preparing the initial invitation execution image.
+do_not_read_when: Another delivery is selected.
+contains: Current authority and initial delivery carriers.
 owner: stnl-execution-planner
-update_policy: PLAN created it as draft; REVIEW_PLAN approved it and made it immutable to execution skills.
+update_policy: Author writes; reviewer approves the final bytes.
 ```
 
-# Slice 01 - Invitation API
+# Slice 01 - Foundation
 
 ## References
 
 - Slice: 01
+- Delivery ID: 11111111-1111-4111-8111-111111111111
 - Requirements source: `../../feature_spec.md`
 - Requirements authority: sha256:11aba916db71705bfb2f518aac2b8f808c5f410559b1693949764b318b0f6424
 - Plan revision: 1
+- Local revision: 1
 - Global plan: `../plan.md`
 - Review state: approved
 
 ## Objective and Observable Result
 
-Eligible and expired invitations produce the persistence and HTTP results defined by AC-001 and AC-002.
+Prepare the invitation export.
 
 ## Requirements
 
-- AC-001
-- AC-002
+- AC-001: Invitation acceptance.
+- AC-002: Expired invitation rejection.
 
 ## Included Scope
 
-- Eligible acceptance, duplicate prevention, and expired rejection.
+- Implement the invitation export.
 
 ## Out of Scope and Boundaries
 
-- Confirmation copy belongs to slice 02.
+- Do not alter authentication.
 
-## Likely Areas
+## Authorized Areas
 
-- Invitation service and API integration tests.
+- directory: `../../../../../test`
+
+## Expected Files
+
+- `../../../../../test/fixtures/invitations.json`
+
+## Existing Inputs
+
+- none
+
+## Protected Responsibilities
+
+- Keep authentication unchanged.
 
 ## Dependencies
 
-- None.
+- none
 
 ## Risks and Strategy
 
-- Risk: Clock drift can destabilize boundary data.
-- Strategy: Use fixtures comfortably before or after expiration and record service UTC time.
+- Risk: a shared file could drift.
+- Strategy: keep the edit scoped.
 
 ## Expected Tests
 
-- API integration tests for eligible, duplicate, and expired invitation behavior.
+- Mechanical documentary setup; no behavior verdict.
+
+## Verification Recipe
+
+- Recipe: {"format":"stnl-verification-recipe-v1","base":"workspace","cwd":".","checks":[{"id":"verification-01","executable":{"literal":"node"},"args":[{"literal":"-e"},{"literal":"if (2+2!==4) process.exit(1)"}],"inputs":[]}],"dependencyReview":"Mechanical documentary fixture only; no claim of invitation behavior verification."}
 
 ## Completion Criterion
 
-- AC-001 and AC-002 are observable through stable API and persistence results.
+- Partial invitation check exists.

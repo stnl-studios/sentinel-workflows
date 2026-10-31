@@ -681,7 +681,7 @@
     ],
     "expected_files": [
       "feature_spec.md",
-      "execution/retained-record.txt"
+      "assets/retained-record.txt"
     ],
     "allowed_changes": [
       "feature_spec.md",
@@ -737,29 +737,20 @@
       "shared/",
       "execution/retained-record.txt"
     ],
-    "expected_files": [
-      "feature_spec.md",
-      "execution/retained-record.txt"
-    ],
+    "expected_files": [],
     "allowed_changes": [
       "feature_spec.md",
       "shared/"
     ],
-    "expected_valid": true,
-    "expected_status": "closed",
-    "expected_ids": [
-      "AC-001",
-      "C-001",
-      "D-001",
-      "Q-001",
-      "R-001",
-      "RK-001"
-    ],
+    "expected_valid": false,
+    "expected_status": "invalid",
+    "expected_ids": [],
     "expected_links": {},
     "assertions": [
-      "execution hash unchanged",
-      "resolved question keeps linked_decision without blocks"
-    ]
+      "Historical case ID retained: opaque execution is refused before operational allocation; source preserved",
+      "Resolved questions remain documentary authority, not implementation PASS"
+    ],
+    "expected_error": "CLOSE cannot discard execution"
   },
   {
     "id": "close-detects-content-loss",
@@ -787,7 +778,7 @@
     "runner": "close_execution_mutation",
     "fixture": "ready_with_execution",
     "input_files": [
-      "execution/retained-record.txt"
+      "assets/retained-record.txt"
     ],
     "expected_files": [],
     "allowed_changes": [],
@@ -797,7 +788,7 @@
     "expected_links": {},
     "expected_error": "changed an external directory",
     "assertions": [
-      "external_boundary_gate fails"
+      "Historical case ID retained: documentary comparator detects unrelated external asset changes; not admission proof"
     ]
   },
   {

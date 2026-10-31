@@ -9,8 +9,8 @@ node --test scripts/test-execution-contract.mjs
 node --test scripts/test-skill-consolidation.mjs
 node --test skills/workflows/stnl-spec-test-runbook/runtime/test/*.test.mjs
 node --test skills/workflows/stnl-spec-roadmap/runtime/test/*.test.mjs
-node --test scripts/test-runbook-execution-compat.mjs
-node --test scripts/test-execution-layout.mjs
+node --test scripts/test-current-execution-format.mjs
+node --test scripts/test-execution-filesystem-context.mjs scripts/test-current-runtime-boundaries.mjs
 node --test scripts/test-launcher-contract.mjs
 node --test scripts/test-validation-runner-contract.mjs
 node --test scripts/test-repository-contract.mjs

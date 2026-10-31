@@ -1,102 +1,150 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { assertRunnerRoundPayload, composeRunnerRequest, main as runnerMain,
-  describeSemanticResponseFile, readRunnerConfiguration,
-  submitRunnerPayload } from '../agents/codex/runtime/validation-runner.mjs';
+import {describeSemanticResponseFile,readRunnerConfiguration} from '../agents/codex/runtime/validation-runner.mjs';
 import { captureRunnerResponse } from '../skills/workflows/stnl-slice-executor/runtime/capture-runner-response.mjs';
-import { codexClientConfig, runCodexTurn } from '../agents/codex/runtime/sdk-transport.mjs';
-import { configText } from '../agents/codex/runtime/isolated-home.mjs';
-import { formatRepairSource, sameFormatOnlyContent } from '../agents/codex/runtime/format-repair.mjs';
 import { emptyFindingArrays, validationResponse, newlineCheck, usageCheck, correctedCheck } from './fixtures/validation-response-regressions.mjs';
-import { parseSemanticValidationPayload } from '../skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs';
-import { createUsageNormalizer, ZERO_USAGE } from '../agents/codex/runtime/usage-accounting.mjs';
+import { parseSemanticValidationPayload } from '../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs';
+import { createUsageNormalizer, ZERO_USAGE, appServerUsageObservations, projectAppServerMeasurement } from '../agents/codex/runtime/usage-accounting.mjs';
 import { frozenFileMode } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUNNER_ADAPTER = path.join(ROOT, 'agents/codex/runtime/validation-runner.mjs');
 
-function runnerArtifacts(workspace, slice = 'slice-01') {
-  const executionRoot = path.join(workspace, 'specs/benchmark-case-a/execution');
-  return {
-    executionRoot,
-    planPath: path.join(executionRoot, 'plan.md'),
-    slicePlanPath: path.join(executionRoot, 'plans', `${slice}.md`),
-    taskPath: path.join(executionRoot, 'tasks', `${slice}.md`),
-  };
-}
+// Synthetic protocol counters exercise accounting only, never paid consumption.
+const tokens = (input, output = 2, cached = 0) => ({ inputTokens: input, outputTokens: output,
+  cachedInputTokens: cached, cacheWriteInputTokens: 0, reasoningOutputTokens: 0, totalTokens: input + output });
+const scope = (threadId, turnId, extra = {}) => ({ type: 'native.usage.scope', scope: {
+  source: 'main', threadId, turnId, operationId: turnId, fresh: true, proof: 'thread/start', ...extra } });
+const notification = (threadId, turnId, total, last = total) => ({ type: 'native.usage.notification', observationId: randomUUID(),
+  notification: projectAppServerMeasurement({ method: 'thread/tokenUsage/updated',
+    params: { threadId, turnId, tokenUsage: { total, last, modelContextWindow: 200000 } } }) });
+const terminal = (threadId, turnId, status = 'completed') => ({ type: 'native.usage.notification', observationId: randomUUID(),
+  notification: projectAppServerMeasurement({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status } } }) });
 
-test('validation runner stays directly executable in the frozen benchmark snapshot', async () => {
-  const metadata = await fs.stat(RUNNER_ADAPTER);
-  assert.notEqual(metadata.mode & 0o111, 0);
-  assert.equal(frozenFileMode(metadata.mode), 0o555);
+test('App Server counters use final cumulative total, not last or repeated rate-limit snapshots', () => {
+  const a = notification('main', 'one', tokens(20, 4, 8), tokens(10, 2, 4));
+  const events = [scope('main', 'one'), notification('main', 'one', tokens(10, 2, 4)), a, a, terminal('main', 'one'), a];
+  const result = appServerUsageObservations(events);
+  assert.deepEqual(result.issues, []);
+  assert.equal(result.observations[0].status, 'attributable');
+  assert.deepEqual(result.observations[0].delta, { input: 20, cachedInput: 8, cacheWrite: 0, output: 4, reasoningOutput: 0, total: 24 });
+  assert.equal(result.observations[0].billing, false);
+  assert.deepEqual(appServerUsageObservations([...events, ...events]), result, 'persisted replay is idempotent');
 });
 
-test('independent runner receives mechanical context and semantic payload without role or producer instructions in the request', async () => {
-  const configuration = await readRunnerConfiguration(ROOT);
-  const workspace = path.join(ROOT, 'benchmark-temp/run-example/case-a/workspace');
-  const snapshot = path.join(ROOT, 'benchmark-temp/run-example/snapshot');
-  const serializer = path.join(snapshot, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs');
-  const specPath = path.join(workspace, 'specs/benchmark-case-a');
-  const officialPreflight = { exitCode: 0, operation: 'EXECUTE_SLICE', slice: 'slice-01', specPath,
-    legalOperations: [{ operation: 'EXECUTE_SLICE', slice: 'slice-01' }], mandatoryRecovery: null };
-  const prompt = 'automaticCheckRound=1/3\nExact main-context semantic payload.';
-  const request = composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
-    slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt });
-  assert.equal(configuration.model, 'gpt-6-luna');
-  assert.equal(configuration.effort, 'medium');
-  assert.equal((request.match(/RUNNER_EVIDENCE_SERIALIZER=/gu) ?? []).length, 0);
-  assert.ok(!request.includes(serializer));
-  assert.equal((request.match(/serialize-runner-evidence\.mjs/gu) ?? []).length, 0);
-  assert.ok(!request.includes(configuration.developerInstructions));
-  assert.ok(serializer.startsWith(`${snapshot}${path.sep}`));
-  assert.ok(!request.includes(path.join(ROOT, 'skills/workflows/stnl-slice-executor/runtime/serialize-runner-evidence.mjs')));
-  assert.ok(!request.includes('/Library/Application Support/'));
-  assert.equal((request.match(/MANAGED_WORKSPACE=/gu) ?? []).length, 1);
-  assert.equal((request.match(/^SPEC_PATH=/gmu) ?? []).length, 1);
-  assert.equal((request.match(/^OPERATION=/gmu) ?? []).length, 1);
-  assert.equal((request.match(/^SLICE=/gmu) ?? []).length, 1);
-  assert.equal((request.match(/^EXECUTION_ROOT=/gmu) ?? []).length, 1);
-  assert.equal((request.match(/^PLAN_PATH=/gmu) ?? []).length, 1);
-  assert.equal((request.match(/^SLICE_PLAN_PATH=/gmu) ?? []).length, 1);
-  assert.equal((request.match(/^TASK_PATH=/gmu) ?? []).length, 1);
-  assert.ok(request.includes(`OFFICIAL_EXECUTION_PREFLIGHT=${JSON.stringify(officialPreflight)}`));
-  assert.ok(request.endsWith(prompt));
-  assert.throws(() => composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
-    slice: 'slice-01', workspace, ...runnerArtifacts(workspace), executionRoot: 'relative/root', prompt }), /context path is invalid/u);
-  assert.throws(() => composeRunnerRequest({ officialPreflight, operation: 'EXECUTE_SLICE',
-    slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt: `automaticCheckRound=1/3\nRUNNER_EVIDENCE_SERIALIZER=/private/installed/skill/runtime/serialize-runner-evidence.mjs` }),
-  /competing serializer authority/u);
+test('App Server main/child and failed/retried turns have independent scope and retained baselines', () => {
+  const events = [scope('main', 'failed'), notification('main', 'failed', tokens(10)), terminal('main', 'failed', 'failed'),
+    scope('main', 'retry', { fresh: false, proof: 'retained-thread' }), notification('main', 'retry', tokens(30, 6)), terminal('main', 'retry'),
+    scope('child', 'review', { source: 'runner', proof: 'public-child-no-fork', forkedFromId: null }),
+    notification('child', 'review', tokens(7, 1)), terminal('child', 'review')];
+  const result = appServerUsageObservations(events);
+  assert.deepEqual(result.issues, []);
+  assert.deepEqual(result.observations.map(o => [o.source, o.status, o.delta.total, o.turnStatus]),
+    [['main', 'attributable', 12, 'failed'], ['main', 'attributable', 24, 'completed'], ['runner', 'attributable', 8, 'completed']]);
 });
 
-test('Sentinel dispatch omits remote canonical output schema independently of replay fixtures', async () => {
-  const source = await fs.readFile(RUNNER_ADAPTER, 'utf8');
-  const invocation = /turn = await runTurn\(\{([\s\S]*?)\n    \}\);/u.exec(source)?.[1];
-  assert.ok(invocation, 'runner dispatch call must remain visible');
-  assert.doesNotMatch(invocation, /outputSchema/u);
-});
-
-test('automatic round is required before runner dispatch and managed CLI cannot bypass the bridge', async () => {
-  for (const operation of ['EXECUTE_SLICE', 'APPLY_FINDINGS']) {
-    assert.throws(() => assertRunnerRoundPayload(operation, '{}'), /automaticCheckRound/u);
-    assert.throws(() => assertRunnerRoundPayload(operation, 'automaticCheckRound=1/3\nautomaticCheckRound=2/3'), /automaticCheckRound/u);
-    for (const round of ['1/3', '2/3', '3/3']) {
-      assert.doesNotThrow(() => assertRunnerRoundPayload(operation, `automaticCheckRound=${round}`));
-      assert.doesNotThrow(() => assertRunnerRoundPayload(operation, `{"automaticCheckRound":"${round}"}`));
-    }
-    await assert.rejects(submitRunnerPayload({ operation, slice: 'slice-01',
-      cwd: '/nonexistent', prompt: '{}' }), /automaticCheckRound/u);
+test('App Server inherited or missing child usage stays partial and cannot count the shared prefix', () => {
+  const forged = appServerUsageObservations([scope('child','one',{source:'runner',proof:'thread/start',forkedFromId:'parent'}),
+    notification('child','one',tokens(100)),terminal('child','one')]);
+  assert.equal(forged.observations[0].status,'partial','a main birth proof cannot authorize a child zero baseline');
+  for (const forkedFromId of ['parent', 'unknown']) {
+    const result = appServerUsageObservations([scope('child', 'one', { source: 'runner', proof: 'public-child-no-fork', forkedFromId }),
+      notification('child', 'one', tokens(100)), terminal('child', 'one'),
+      scope('child', 'two', { source: 'runner', fresh: false, proof: 'retained-thread' }),
+      notification('child', 'two', tokens(110, 4)), terminal('child', 'two')]);
+    assert.equal(result.observations[0].status, 'partial'); assert.equal(result.observations[0].delta, null);
+    assert.equal(result.observations[1].delta.total, 12, 'only the later known delta may be reported as a subtotal');
   }
-  assert.doesNotThrow(() => assertRunnerRoundPayload('VALIDATE_SLICE', '{}'));
-  await assert.rejects(runnerMain(['--operation', 'EXECUTE_SLICE', '--slice', 'slice-01'],
-    { STNL_MANAGED_CONTEXT: '{}' }), /pathless bridge/u);
+  const missing = appServerUsageObservations([scope('child', 'one', { source: 'runner' }), terminal('child', 'one')]);
+  assert.match(missing.observations[0].reason, /snapshot missing/u);
+  assert.equal(missing.observations[0].delta, null);
 });
+
+test('App Server equal total/last cannot distinguish a fresh response from replayed fork prefix', () => {
+  // Official 0.163.0 seeds fork counters from history, and rate-limit updates
+  // may emit the unchanged total/last. These same bytes are not birth proof.
+  const samples=[notification('child','one',tokens(100)),notification('child','one',tokens(120,4)),terminal('child','one')];
+  for(const [forkState,reason]of [['present','fork source present'],['absent','field absent'],['invalid','field invalid'],[undefined,'not retained']]) {
+    const events=[scope('child','one',{source:'runner',proof:'retained-thread',fresh:false,forkedFromId:'unknown',forkState,
+      forkSourceMatchesParent:forkState==='present'?true:forkState===undefined?undefined:null}),...samples];
+    const result=appServerUsageObservations(events),observation=result.observations[0];
+    assert.equal(observation.status,'partial');assert.equal(observation.baseline,null);assert.equal(observation.delta,null);
+    assert.match(observation.reason,new RegExp(reason));
+    assert.deepEqual(appServerUsageObservations([...events,...events]),result);
+  }
+  const fresh=appServerUsageObservations([scope('child','one',{source:'runner',proof:'public-child-no-fork',forkedFromId:null,forkState:'none',forkSourceMatchesParent:null}),...samples]);
+  assert.equal(fresh.observations[0].delta.total,124,'zero comes only from independent birth proof, never numeric equality');
+  for(const meta of [{forkedFromId:null,forkState:'present',forkSourceMatchesParent:true},
+    {forkedFromId:null,forkState:'none',forkSourceMatchesParent:true},
+    {forkedFromId:'unknown',forkState:'present',forkSourceMatchesParent:null}]) {
+    const contradictory=appServerUsageObservations([scope('child','one',{source:'runner',proof:'public-child-no-fork',...meta}),...samples]);
+    assert.equal(contradictory.observations[0].delta,null);assert.ok(contradictory.issues.includes('conflicting fork provenance'));
+  }
+});
+
+test('App Server context estimates in last do not alter total; synthetic totals, reset and impossible cache are refused', () => {
+  const estimate = { ...tokens(0, 0), totalTokens: 5000 };
+  const ok = appServerUsageObservations([scope('main', 'one'), notification('main', 'one', tokens(10), estimate), terminal('main', 'one')]);
+  assert.equal(ok.observations[0].delta.total, 12);
+  for (const changed of [estimate, tokens(5, 1), tokens(20, 4, 21)]) {
+    const result = appServerUsageObservations([scope('main', 'one'), notification('main', 'one', tokens(10, 2)),
+      notification('main', 'one', changed), terminal('main', 'one')]);
+    assert.equal(result.observations[0].status, 'partial'); assert.equal(result.observations[0].delta, null);
+  }
+});
+
+test('App Server late changed snapshots invalidate the boundary and subsequent turn rather than combining fragments', () => {
+  const result = appServerUsageObservations([scope('main', 'one'), notification('main', 'one', tokens(10)), terminal('main', 'one'),
+    scope('main', 'two', { fresh: false, proof: 'retained-thread' }), notification('main', 'two', tokens(20, 4)), terminal('main', 'two'),
+    notification('main', 'one', tokens(12))]);
+  assert.ok(result.observations.every(o => o.status === 'partial' && o.delta === null && o.reason.includes('late changed total')));
+});
+
+test('App Server a newly received counter decrease cannot masquerade as replay of an older value', () => {
+  const first=notification('main','one',tokens(10));
+  const reset={...notification('main','one',tokens(10)),observedAt:'new observation'};
+  const result=appServerUsageObservations([scope('main','one'),first,notification('main','one',tokens(20,4)),reset,terminal('main','one')]);
+  assert.equal(result.observations[0].status,'partial');assert.equal(result.observations[0].delta,null);
+  const missing={...first};delete missing.observationId;
+  assert.ok(appServerUsageObservations([scope('main','one'),missing,terminal('main','one')]).issues.includes('missing observation identity'));
+  const conflict={...notification('main','one',tokens(30)),observationId:first.observationId};
+  assert.ok(appServerUsageObservations([scope('main','one'),first,conflict,terminal('main','one')]).issues.includes('conflicting observation identity'));
+});
+
+test('App Server missing terminal, unchanged totals, invalid scope and conflicting roles never certify completeness', () => {
+  const cases = [
+    [scope('main', 'one'), notification('main', 'one', tokens(10))],
+    [scope('main', 'one'), notification('main', 'one', tokens(0, 0)), terminal('main', 'one')],
+    [scope('main', 'one'), notification('main', 'one', tokens(10)), terminal('main', 'one', 'unknown')],
+    [scope('main', 'one'), { type: 'native.usage.unavailable' }],
+  ];
+  for (const events of cases) assert.ok(appServerUsageObservations(events).observations.every(o => o.status === 'partial'));
+  assert.ok(appServerUsageObservations([scope('main', 'one'), scope('main', 'one', { source: 'runner' })]).issues.includes('conflicting usage scope'));
+  assert.ok(appServerUsageObservations([scope('bad path', 'one')]).issues.includes('invalid usage scope'));
+  for (const invalid of [null, 1, [], 'private secret'])
+    assert.deepEqual(appServerUsageObservations([invalid]).issues, ['invalid measurement event']);
+  assert.ok(appServerUsageObservations([scope('main', 'one'), notification('main', 'other', tokens(10))]).issues.includes('unbound turn usage'));
+  const foreign=appServerUsageObservations([scope('main','one'),notification('main','one',tokens(10)),terminal('main','one'),notification('foreign','other',tokens(7))]);
+  assert.ok(foreign.issues.includes('unbound thread usage'));
+  assert.equal(foreign.observations.length,1,'foreign usage is diagnosed but never charged');
+});
+
+test('App Server projection omits contents and secrets and preserves malformed-not-zero diagnostics', () => {
+  const result = projectAppServerMeasurement({ method: 'thread/tokenUsage/updated', params: {
+    threadId: 'main', turnId: 'one', tokenUsage: { total: tokens(10), last: tokens(10), credentials: 'SECRET' },
+    output: 'SECRET', environment: 'SECRET' } });
+  assert.doesNotMatch(JSON.stringify(result), /SECRET|credentials|environment|output"/u);
+  assert.equal(projectAppServerMeasurement({ method: 'item/completed', params: { text: 'SECRET' } }), null);
+  assert.equal(projectAppServerMeasurement({ method: 'thread/tokenUsage/updated', params: { threadId: 'main', turnId: 'one', tokenUsage: {} } }).method, 'invalid');
+});
+
 
 test('receipt describes the captured final semantic response despite intermediate BLOCKED messages', async (t) => {
   await fs.mkdir(path.join(ROOT, 'benchmark-temp'), { recursive: true });
@@ -119,6 +167,7 @@ test('receipt describes the captured final semantic response despite intermediat
   assert.equal(JSON.parse(bytes).status, 'TESTS_PASS');
 });
 
+
 test('invalid local semantic JSON is rejected after capture without provider schema', async (t) => {
   await fs.mkdir(path.join(ROOT, 'benchmark-temp'), { recursive: true });
   const root = await fs.mkdtemp(path.join(ROOT, 'benchmark-temp/local-semantic-'));
@@ -130,51 +179,6 @@ test('invalid local semantic JSON is rejected after capture without provider sch
     outputFile: path.join(root, 'response.json') }), /not valid JSON/u);
 });
 
-test('format repair accepts bounded syntax fixes and preserves tokens in their original positions', () => {
-  const valid = '{"status":"BLOCKED","head":"0123456789abcdef0123456789abcdef01234567","commands":[{"command":"node --test","exit":0}],"evidence":"same evidence","findingReferences":"none","findingDispositions":"none","blockers":"missing prerequisite","unexpectedWorkspaceEffects":"none","persistenceSummary":"none"}';
-  const source = formatRepairSource(valid.slice(0, -1));
-  assert.ok(source);
-  assert.equal(sameFormatOnlyContent(source, valid), true);
-  assert.equal(sameFormatOnlyContent(source, valid.replace('"BLOCKED"', '"PASS"')), false);
-  assert.equal(sameFormatOnlyContent(source, valid.replace('same evidence', 'new evidence')), false);
-  assert.equal(sameFormatOnlyContent(source, valid.replace('"commands":[', '"commands":{"extra":[')), false);
-  assert.equal(formatRepairSource('{"status":"BLOCKED","evidence":"unfinished'), null);
-  assert.ok(formatRepairSource(`\`\`\`json\n${valid}\n\`\`\``));
-  assert.equal(sameFormatOnlyContent(formatRepairSource(valid.slice(0, -1) + ',}'), valid), true);
-  assert.equal(sameFormatOnlyContent(formatRepairSource(valid.replace('"exit":0}', '"exit":0,}')), valid), true);
-  assert.equal(sameFormatOnlyContent(formatRepairSource('{"a":[1],"b":2}'), '{"a":1,"b":[2]}'), false);
-  assert.equal(formatRepairSource(valid.replace('"head":', '"head"')), null);
-  assert.equal(formatRepairSource(`Here is the result: ${valid}`), null);
-  assert.equal(formatRepairSource(valid.slice(0, -2)), null);
-  assert.equal(formatRepairSource(valid.replace('"exit":0', '"exit":1 2')), null);
-  assert.equal(formatRepairSource(' '.repeat(65537)), null);
-  assert.equal(sameFormatOnlyContent(source, valid.replace('"exit":0', '"exit":1')), false);
-  assert.equal(sameFormatOnlyContent(source, valid.replace('node --test', 'npm test')), false);
-  assert.equal(sameFormatOnlyContent(source, `\`\`\`json\n${valid}\n\`\`\``), false);
-});
-
-test('schema preflight rejects the real empty-array shape before creating a deliverable', async (t) => {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-schema-preflight-')));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const events = path.join(root, 'events.jsonl');
-  const output = path.join(root, 'response.json');
-  const stream = JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: emptyFindingArrays } }) + '\n';
-  await fs.writeFile(events, stream);
-  await assert.rejects(captureRunnerResponse({ structuredOutputFile: events, outputFile: output,
-    validateResponse: parseSemanticValidationPayload }), (error) => error.code === 'RUNNER_RESPONSE_SCHEMA_INVALID');
-  await assert.rejects(fs.access(output), { code: 'ENOENT' });
-  assert.equal(await fs.readFile(events, 'utf8'), stream);
-  const source = formatRepairSource(emptyFindingArrays);
-  assert.deepEqual(source.emptyFindingFields, ['findingReferences', 'findingDispositions']);
-  assert.deepEqual(parseSemanticValidationPayload(source.canonicalText), validationResponse());
-  assert.equal(sameFormatOnlyContent(source, JSON.stringify(validationResponse())), true);
-  assert.equal(sameFormatOnlyContent(source, JSON.stringify(validationResponse('PASS'))), false);
-  assert.equal(sameFormatOnlyContent(source, source.canonicalText.replace('absent storage', 'existing storage')), false);
-  for (const override of [{ findingReferences: ['finding-01'] }, { evidence: [] }, { findingReferences: null }]) {
-    const unsupported = formatRepairSource(JSON.stringify({ ...validationResponse(), ...override }));
-    assert.throws(() => parseSemanticValidationPayload(unsupported.canonicalText));
-  }
-});
 
 test('sanitized ad hoc check fixtures reproduce both real failures and their corrected check', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-check-fixture-'));
@@ -192,181 +196,6 @@ test('sanitized ad hoc check fixtures reproduce both real failures and their cor
   }
 });
 
-test('APPLY_FINDINGS schema leaves legacy cycle data optional and without authority', async () => {
-  const schema = JSON.parse(await fs.readFile(path.join(ROOT,
-    'skills/workflows/stnl-slice-executor/runtime/runner-apply-findings-response.schema.json'), 'utf8'));
-  assert.ok(!schema.required.includes('findingsCycle'));
-  assert.equal(schema.properties.findingsCycle.type, undefined);
-  assert.match(schema.properties.findingsCycle.description, /diagnostic only/);
-});
-
-test('SDK keeps provider schema event when the CLI later exits with stderr', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-sdk-schema-error-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const cli = path.join(root, 'fake-codex.mjs');
-  const eventsPath = path.join(root, 'events.jsonl');
-  await fs.writeFile(cli, `#!${process.execPath}\nconsole.log(JSON.stringify({type:'thread.started',thread_id:'thread-schema'}));\nconsole.log(JSON.stringify({type:'error',code:'invalid_json_schema',message:'invalid_json_schema'}));\nconsole.error('process exited after provider error');\nprocess.exit(1);\n`);
-  await fs.chmod(cli, 0o755);
-  const result = await runCodexTurn({ env: { CODEX_HOME: root }, cwd: root, prompt: 'offline',
-    model: 'gpt-5.6-luna', effort: 'medium', operationId: 'schema-error', eventsPath, codexPathOverride: cli });
-  assert.deepEqual(result.errorEvent, {
-    operationId: 'schema-error', type: 'error', code: 'invalid_json_schema', message: 'invalid_json_schema',
-  });
-  assert.equal(result.error, 'invalid_json_schema');
-  assert.match(result.processError, /process exited after provider error/u);
-  assert.equal(result.errorEvent.code, 'invalid_json_schema');
-  const persisted = (await fs.readFile(eventsPath, 'utf8')).trim().split('\n').map(JSON.parse);
-  assert.deepEqual(persisted.find(({ type }) => type === 'error'), result.errorEvent);
-});
-
-test('adapter rejects stale managed context before runner dispatch', async () => {
-  const workspace = path.join(ROOT, 'benchmark-temp/run-ABC123/case-c/workspace');
-  const officialPreflight = { exitCode: 0, operation: 'APPLY_FINDINGS', slice: 'slice-01',
-    specPath: path.join(workspace, 'specs/case-c'), authority: `sha256:${'a'.repeat(64)}` };
-  assert.throws(() => composeRunnerRequest({ officialPreflight,
-    operation: 'EXECUTE_SLICE', slice: 'slice-01', workspace, ...runnerArtifacts(workspace),
-    prompt: 'automaticCheckRound=1/3\nsemantic payload\nOPERATION=APPLY_FINDINGS' }), /competing|mechanical/u);
-});
-
-test('managed validation runner gets the official SPEC_PATH and rejects a private-home declaration', async () => {
-  const workspace = path.join(ROOT, 'benchmark-temp/run-XYZ/case-c/workspace');
-  const privateHome = path.join(ROOT, 'benchmark-temp/run-XYZ-c-AbCd12');
-  const specPath = path.join(workspace, 'specs/case-c');
-  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-01', specPath,
-    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-01' }], mandatoryRecovery: null };
-  const request = composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
-    slice: 'slice-01', workspace, ...runnerArtifacts(workspace), prompt: 'Review the current slice against requirements.' });
-  assert.ok(request.includes(`SPEC_PATH=${specPath}\n\nOPERATION=VALIDATE_SLICE\n\nSLICE=slice-01`));
-  assert.equal(request.includes(privateHome), false);
-  assert.throws(() => composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
-    slice: 'slice-01', workspace, ...runnerArtifacts(workspace),
-    prompt: `SPEC_PATH=${path.join(privateHome, 'case-c/workspace/specs/case-c')}` }),
-  /competing mechanical identity/u);
-});
-
-test('validation payload preserves historical overlap without replacing the current envelope', () => {
-  const workspace = path.join(ROOT, 'benchmark-temp/run-fixture/case-a/workspace');
-  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-02',
-    specPath: path.join(workspace, 'specs/fixture'),
-    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-02' }], mandatoryRecovery: null };
-  const payload = { objective: 'Validate current behavior and the prior overlap.',
-    acceptance_criteria: ['Invalid filters preserve storage and return a usage error.'],
-    overlap: { slice: '01', paths: ['src/cli.mjs', 'test/cli.test.mjs'], prior_result: 'PASS',
-      required_regression: 'Prepared assertions must still prove valid filtering and ordering.' } };
-  for (const prompt of [JSON.stringify(payload), `\n${JSON.stringify(payload, null, 2)}\n`]) {
-    const request = composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
-      slice: 'slice-02', workspace, ...runnerArtifacts(workspace, 'slice-02'), prompt });
-    assert.equal(request.endsWith(prompt), true, 'semantic payload bytes must remain intact');
-    assert.equal((request.match(/^SLICE=slice-02$/gmu) ?? []).length, 1);
-    assert.equal((request.match(/^OPERATION=VALIDATE_SLICE$/gmu) ?? []).length, 1);
-    assert.ok(request.includes(`TASK_PATH=${runnerArtifacts(workspace, 'slice-02').taskPath}\n`));
-  }
-});
-
-test('validation payload rejects top-level mechanical identity and envelope assignments', () => {
-  const workspace = path.join(ROOT, 'benchmark-temp/run-fixture/case-a/workspace');
-  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-02',
-    specPath: path.join(workspace, 'specs/fixture'),
-    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-02' }], mandatoryRecovery: null };
-  const compose = (prompt) => composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
-    slice: 'slice-02', workspace, ...runnerArtifacts(workspace, 'slice-02'), prompt });
-  for (const field of ['operation', 'specPath', 'workspace', 'slice', 'executionRoot', 'planPath',
-    'slicePlanPath', 'taskPath', 'adapterPath', 'snapshotPath']) {
-    assert.throws(() => compose(JSON.stringify({ objective: 'Review.', [field]: 'competing identity',
-      overlap: { slice: '01' } })), /competing mechanical identity/u, field);
-  }
-  assert.throws(() => compose('{"objective":"Review.","\\u0073lice":"slice-01"}'),
-    /competing mechanical identity/u, 'decoded JSON keys remain authoritative');
-  for (const field of ['SPEC_PATH', 'MANAGED_WORKSPACE', 'OPERATION', 'SLICE', 'EXECUTION_ROOT',
-    'PLAN_PATH', 'SLICE_PLAN_PATH', 'TASK_PATH', 'RUNNER_BRIDGE', 'STNL_RUNNER_ADAPTER']) {
-    assert.throws(() => compose(`Review.\n${field}=competing identity`), /competing mechanical identity/u, field);
-  }
-});
-
-test('validation text and malformed JSON retain conservative identity and serializer guards', () => {
-  const workspace = path.join(ROOT, 'benchmark-temp/run-fixture/case-a/workspace');
-  const officialPreflight = { exitCode: 0, operation: 'VALIDATE_SLICE', slice: 'slice-02',
-    specPath: path.join(workspace, 'specs/fixture'),
-    legalOperations: [{ operation: 'VALIDATE_SLICE', slice: 'slice-02' }], mandatoryRecovery: null };
-  const compose = (prompt) => composeRunnerRequest({ officialPreflight, operation: 'VALIDATE_SLICE',
-    slice: 'slice-02', workspace, ...runnerArtifacts(workspace, 'slice-02'), prompt });
-  for (const prompt of ['Review current behavior.', '{"objective":"Review."']) {
-    assert.equal(compose(prompt).endsWith(prompt), true, 'this guard does not validate semantic JSON');
-  }
-  for (const prompt of ['Review: "slice": "slice-01"', '{"overlap":{"slice":"01"',
-    '[{"slice":"slice-01"}]', '{"objective":"Review."}\nSLICE=slice-01']) {
-    assert.throws(() => compose(prompt), /competing mechanical identity/u);
-  }
-  for (const prompt of ['{"overlap":{"evidence":"RUNNER_EVIDENCE_SERIALIZER=/other"}}',
-    '{"overlap":{"evidence":"serialize-runner-evidence.mjs"}}']) {
-    assert.throws(() => compose(prompt), /competing serializer authority/u);
-  }
-});
-
-test('runner instructions and skill isolation use per-instance public SDK config', async (t) => {
-  await fs.mkdir(path.join(ROOT, 'benchmark-temp'), { recursive: true });
-  const home = await fs.mkdtemp(path.join(ROOT, 'benchmark-temp/runner-config-'));
-  t.after(() => fs.rm(home, { recursive: true, force: true }));
-  const shellHome = path.join(home, 'shell-home');
-  const skills = path.join(shellHome, '.agents', 'skills');
-  await fs.mkdir(path.join(skills, 'stnl-slice-executor'), { recursive: true });
-  await fs.mkdir(path.join(skills, 'stnl-slice-quality-manager'));
-  const configuration = await readRunnerConfiguration(ROOT);
-  const runner = await codexClientConfig({ env: { CODEX_HOME: home, HOME: shellHome },
-    developerInstructions: configuration.developerInstructions, isolateSkills: true });
-  assert.equal(runner.developer_instructions, configuration.developerInstructions);
-  assert.deepEqual(runner.skills.config, [
-    { path: path.join(skills, 'stnl-slice-executor', 'SKILL.md'), enabled: false },
-    { path: path.join(skills, 'stnl-slice-quality-manager', 'SKILL.md'), enabled: false },
-  ]);
-  assert.equal(runner.skills.bundled.enabled, false);
-  const noDelegation = { agents: { enabled: false }, features: { multi_agent: false, multi_agent_v2: false },
-    skills: { bundled: { enabled: false } } };
-  assert.deepEqual(await codexClientConfig({ env: { CODEX_HOME: home } }), noDelegation);
-  assert.equal(runner.agents.enabled, false);
-  assert.equal(runner.features.multi_agent_v2, false);
-  const privateConfig = configText({ privateHome: home, snapshot: ROOT, workspace: ROOT,
-    candidates: home, tmpdir: home });
-  assert.match(privateConfig, /\[agents\]\nenabled = false/u);
-  assert.match(privateConfig, /\[features\][\s\S]*?multi_agent = false\nmulti_agent_v2 = false/u);
-  await assert.rejects(codexClientConfig({ env: { CODEX_HOME: home }, isolateSkills: true }), /instructions are missing/u);
-});
-
-test('real SDK forwards delegation policy to CLI on start and resume without a provider', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-sdk-cli-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const cli = path.join(root, 'fake-codex.mjs');
-  const calls = path.join(root, 'calls.jsonl');
-  await fs.writeFile(path.join(root, 'config.toml'), '[agents]\nenabled = true\n[features]\nmulti_agent = true\nmulti_agent_v2 = true\n');
-  await fs.writeFile(cli, `#!${process.execPath}\nimport fs from 'node:fs';\nfs.appendFileSync(process.env.STNL_FAKE_CLI_CAPTURE, JSON.stringify(process.argv.slice(2)) + '\\n');\nconsole.log(JSON.stringify({type:'thread.started',thread_id:'thread-fixture'}));\nconsole.log(JSON.stringify({type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}));\n`);
-  await fs.chmod(cli, 0o755);
-  const env = { CODEX_HOME: root, STNL_FAKE_CLI_CAPTURE: calls };
-  for (const [index, threadId] of [null, 'thread-fixture'].entries()) {
-    const result = await runCodexTurn({ env, cwd: root, prompt: 'offline fixture', model: 'gpt-5.6-luna',
-      effort: 'medium', threadId, operationId: `offline-${index}`, eventsPath: path.join(root, `events-${index}.jsonl`),
-      ...(index === 0 ? { outputSchema: { type: 'object', properties: { status: { type: 'string' } } } } : {}),
-      codexPathOverride: cli });
-    assert.equal(result.completed, true, result.error);
-  }
-  const invocations = (await fs.readFile(calls, 'utf8')).trim().split('\n').map(JSON.parse);
-  assert.equal(invocations.length, 2);
-  for (const args of invocations) {
-    const overrides = args.flatMap((value, index) => args[index - 1] === '--config' ? [value] : []);
-    for (const required of ['agents.enabled=false', 'features.multi_agent=false', 'features.multi_agent_v2=false']) {
-      assert.ok(overrides.includes(required), `${required} must override inherited config`);
-    }
-  }
-  assert.ok(invocations[1].includes('resume'));
-  assert.ok(invocations[1].includes('thread-fixture'));
-  assert.ok(invocations[0].includes('--output-schema'));
-  const packagedCli = path.join(ROOT, 'agents/codex/node_modules/.bin/codex');
-  const features = spawnSync(packagedCli, ['-c', 'agents.enabled=false', '-c', 'features.multi_agent=false',
-    '-c', 'features.multi_agent_v2=false', 'features', 'list'],
-  { env: { ...process.env, CODEX_HOME: root }, encoding: 'utf8' });
-  assert.equal(features.status, 0, features.stderr);
-  assert.match(features.stdout, /^multi_agent\s+stable\s+false$/mu);
-  assert.match(features.stdout, /^multi_agent_v2\s+stable\s+false$/mu);
-});
 
 test('usage normalizer attributes cumulative snapshots from a known baseline exactly once', () => {
   const normalizer = createUsageNormalizer({ baseline: ZERO_USAGE, source: 'main' });
@@ -382,6 +211,7 @@ test('usage normalizer attributes cumulative snapshots from a known baseline exa
   assert.equal(duplicate.delta.total, 0);
 });
 
+
 test('usage normalizer reports unknown baselines, resets, forks, and incomplete runner events', () => {
   const unknown = createUsageNormalizer({ source: 'main' });
   assert.equal(unknown.observe({ threadId: 'thread-a', segment: 'turn-01', usage: { input_tokens: 100 } }).status, 'unavailable');
@@ -396,6 +226,7 @@ test('usage normalizer reports unknown baselines, resets, forks, and incomplete 
   assert.equal(fork.status, 'partial');
   assert.equal(fork.reason, 'fork detected');
 });
+
 
 test('usage reset is partial and independent runner observations are counted once', () => {
   const main = createUsageNormalizer({ baseline: ZERO_USAGE, source: 'main' });

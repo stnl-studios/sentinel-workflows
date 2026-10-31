@@ -6,6 +6,8 @@
   "additionalProperties": false,
   "required": ["schemaVersion", "benchmarkVersion", "benchmarkId", "caseId", "runMode", "sentinelSha", "productionProfileId", "status", "finalExecutionState", "specClosed", "finalTestsPassed", "decomposition", "operations", "modelUse", "contextCost", "workspace", "finalTests"],
   "properties": {
+    "nativeTerminal": { "$ref": "#/$defs/nativeTerminal" },
+    "contextPolicy": { "$ref": "#/$defs/contextPolicy" },
     "schemaVersion": { "const": 1 },
     "benchmarkVersion": { "const": 1 },
     "benchmarkId": { "const": "sentinel-todo" },
@@ -109,6 +111,8 @@
       "additionalProperties": false,
       "required": ["changedFileCount", "finalDiffBytes", "seedContentHash", "requirementsHash", "requirementsHashMatches", "observedSentinelSha", "sentinelShaMatchesCheckout"],
       "properties": {
+        "productRoot": { "type": "string", "minLength": 1 },
+        "productSha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
         "changedFileCount": { "type": "integer", "minimum": 0 },
         "finalDiffBytes": { "type": "integer", "minimum": 0 },
         "seedContentHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
@@ -129,16 +133,49 @@
       }
     }
   },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "PASS"}, "runMode": {"enum": ["case", "full"]}}, "required": ["status", "runMode"]}, "then": {"required": ["productAcceptance"], "properties": {"productAcceptance": {"type": "object", "required": ["instrumentSha256", "product"], "properties": {"passed": {"const": true}, "checks": {"minItems": 1}, "commands": {"minimum": 1}, "contract": {"const": "sentinel-todo-product-v2"}, "product": {"type": "object"}}}, "workspace": {"type": "object", "required": ["productRoot", "productSha256"]}}}},
+    {"if": {"properties": {"caseId": {"const": "A"}}}, "then": {"properties": {"productAcceptance": {"properties": {"caseId": {"const": "A"}}}}}},
+    {"if": {"properties": {"caseId": {"const": "B"}}}, "then": {"properties": {"productAcceptance": {"properties": {"caseId": {"const": "B"}}}}}},
+    {"if": {"properties": {"caseId": {"const": "C"}}}, "then": {"properties": {"productAcceptance": {"properties": {"caseId": {"const": "C"}}}}}},
+    {"if": {"properties": {"caseId": {"const": "A"}, "status": {"const": "PASS"}, "runMode": {"enum": ["case", "full"]}}, "required": ["caseId", "status", "runMode"]}, "then": {"properties": {"productAcceptance": {"properties": {"checks": {"items": {"enum": ["list-storage", "list-filters", "list-empty", "list-usage", "add-complete", "existing-errors"]}, "minItems": 6, "maxItems": 6}}}}}},
+    {"if": {"properties": {"caseId": {"const": "B"}, "status": {"const": "PASS"}, "runMode": {"enum": ["case", "full"]}}, "required": ["caseId", "status", "runMode"]}, "then": {"properties": {"productAcceptance": {"properties": {"checks": {"items": {"enum": ["list-storage", "add-complete", "existing-errors", "priority-persist", "priority-errors", "priority-legacy", "priority-literal", "dependencies"]}, "minItems": 8, "maxItems": 8}}}}}},
+    {"if": {"properties": {"caseId": {"const": "C"}, "status": {"const": "PASS"}, "runMode": {"enum": ["case", "full"]}}, "required": ["caseId", "status", "runMode"]}, "then": {"properties": {"productAcceptance": {"properties": {"checks": {"items": {"enum": ["list-storage", "add-complete", "existing-errors", "archive-list", "archive-state", "archive-errors", "archive-usage", "archive-compat", "dependencies"]}, "minItems": 9, "maxItems": 9}}}}}}
+  ],
   "$defs": {
+    "nativeTerminal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceActivationId", "transactionId", "closedSnapshotSha256", "sourceSha256"],
+      "properties": {
+        "sourceActivationId": { "type": "string", "pattern": "^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$" },
+        "transactionId": { "type": "string", "pattern": "^[a-f0-9]{32}$" },
+        "closedSnapshotSha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "sourceSha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    },
+    "contextPolicy": {
+      "type": "object", "additionalProperties": false, "required": ["regime", "authorContinuityOperations"],
+      "properties": {
+        "regime": { "enum": ["fresh", "author-continuity"] },
+        "authorContinuityOperations": { "type": "array", "uniqueItems": true,
+          "items": { "enum": ["SPEC_RESUME", "SPEC_PROMOTE", "PLAN", "REPLAN", "EXECUTE_SLICE", "APPLY_FINDINGS", "SPEC_CLOSE"] } }
+      },
+      "allOf": [{ "if": { "properties": { "regime": { "const": "fresh" } } },
+        "then": { "properties": { "authorContinuityOperations": { "maxItems": 0 } } },
+        "else": { "properties": { "authorContinuityOperations": { "minItems": 1 } } } }]
+    },
     "productAcceptance": {
+      "allOf": [{ "if": { "properties": { "passed": { "const": true } }, "required": ["passed"] }, "then": { "properties": { "failedCheck": { "type": "null" }, "diagnostic": { "type": "null" }, "errorCode": { "type": "null" } } }, "else": { "properties": { "failedCheck": { "type": "string" }, "diagnostic": { "type": "string" } } } }],
       "type": ["object", "null"],
       "additionalProperties": false,
       "required": ["contract", "caseId", "passed", "checks", "commands", "failedCheck", "diagnostic", "errorCode"],
       "properties": {
-        "contract": { "const": "sentinel-todo-product-v1" },
-        "caseId": { "enum": ["A", "B"] },
+        "contract": { "enum": ["sentinel-todo-product-v1", "sentinel-todo-product-v2"] },
+        "instrumentSha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "product": { "type": ["object", "null"], "additionalProperties": false, "required": ["root", "sha256"], "properties": { "root": { "type": "string", "minLength": 1 }, "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } } },
+        "caseId": { "enum": ["A", "B", "C"] },
         "passed": { "type": "boolean" },
-        "checks": { "type": "array", "items": { "type": "string" } },
+        "checks": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
         "commands": { "type": "integer", "minimum": 0 },
         "failedCheck": { "type": ["string", "null"] },
         "diagnostic": { "type": ["string", "null"] },

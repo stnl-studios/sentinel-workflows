@@ -26,7 +26,6 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import {
-  ExecutionContractError,
   inspectExecutionState,
 } from "../skills/workflows/stnl-slice-quality-manager/runtime/execution-state.mjs";
 import { WORKFLOW_OPERATIONS } from "./lib/skill-registry.mjs";
@@ -43,7 +42,7 @@ const {
   CATEGORIES,
   ValidationError,
   resumeWorkspaceIdentity,
-  validateCloseTransition,
+  compareCloseDocuments, validateCloseTransition,
   validateInitTransition,
   validateReadinessTransition,
   validateResumeTransition,
@@ -55,9 +54,11 @@ const {
   validateReadinessAttestation,
   workspaceAuthoritySnapshotSha256,
 } = await import(pathToFileURL(path.join(RUNTIME_ROOT, "lib", "readiness.mjs")).href);
-const { buildClosedCandidate, renderClosedFeature } = await import(
+const { renderClosedFeature } = await import(
   pathToFileURL(path.join(RUNTIME_ROOT, "lib", "closed-spec.mjs")).href
 );
+
+const {closedDocumentFixture} = await import(pathToFileURL(path.join(RUNTIME_ROOT,"test","helpers.mjs")).href);
 
 const CATALOG = readJson(CASES_PATH);
 const CONTRACT_CATALOG = readJson(CONTRACT_CASES_PATH);
@@ -678,7 +679,7 @@ function buildClosePair(base, status) {
   const before = path.join(base, "before");
   const after = path.join(base, "after");
   writeFullWorkspace(before, status);
-  write(path.join(before, "execution", "retained-record.txt"), "external execution state\n");
+  write(path.join(before, "assets", "retained-record.txt"), "external execution state\n");
   const source = validateWorkspace(before);
   cpSync(before, after, { recursive: true });
   write(path.join(after, "feature_spec.md"), renderClosed(source));
@@ -892,7 +893,7 @@ function runResumeManifestCase(case_, base) {
   return [workspace, after];
 }
 
-function executeCatalogCase(case_, base) {
+async function executeCatalogCase(case_, base) {
   if (case_.runner === "template_isolated") {
     const root = path.join(base, "workspace");
     writeIsolatedTemplateWorkspace(root, case_.fixture);
@@ -911,9 +912,13 @@ function executeCatalogCase(case_, base) {
         "Clients may observe a changed expiration decision.",
       );
     } else if (case_.runner === "close_execution_mutation") {
-      write(path.join(after, "execution", "retained-record.txt"), "mutated external execution state\n");
+      write(path.join(after, "assets", "retained-record.txt"), "mutated external execution state\n");
     }
-    const [, workspace] = validateCloseTransition(before, after);
+    if(case_.id==='close-preserves-execution') {
+      write(path.join(before,'execution/retained-record.txt'),'opaque execution is not discardable');
+      await validateCloseTransition(before,after);
+    }
+    const [, workspace] = compareCloseDocuments(before, after);
     assertAllowedChanges(changedPaths(beforeSnapshot, fileSnapshot(after)), case_.allowed_changes, case_.id);
     return [workspace, after];
   }
@@ -975,16 +980,16 @@ test("catalog contract: 69 complete, unique executable lifecycle cases", () => {
 });
 
 for (const case_ of CATALOG) {
-  test(`eval catalog: ${case_.id}`, (t) => {
+  test(`eval catalog: ${case_.id}`, async (t) => {
     const base = temporaryDirectory(t, `stnl-node-${case_.id}-`);
     if (case_.expected_valid) {
       let result;
-      assert.doesNotThrow(() => { result = executeCatalogCase(case_, base); });
+      await assert.doesNotReject(async () => { result = await executeCatalogCase(case_, base); });
       const [workspace, resultRoot] = result;
       assertWorkspace(case_, workspace, resultRoot);
       return;
     }
-    assert.throws(
+    await assert.rejects(
       () => executeCatalogCase(case_, base),
       (error) => {
         assert.equal(error instanceof ValidationError, true, `${case_.id}: wrong error category: ${error}`);
@@ -1205,7 +1210,11 @@ test("ready lifecycle boundary routes only EMPTY and defers existing execution t
   assert.equal(existing.execution_state, null);
   assert.equal(existing.authority, "execution-runtime-required");
   assert.equal(existing.legal_execution_operations, null);
-  await assert.rejects(inspectExecutionState(workspace), ExecutionContractError);
+  await assert.rejects(inspectExecutionState(workspace),error=>{
+    assert.equal(error.code,'CURRENT_FORMAT_REQUIRED');
+    assert.deepEqual(error.diagnostics,[{kind:'integrity',artifact:'activation.json',field:null,reason:'execution exists without activation'}]);
+    return true;
+  });
 });
 
 for (const [name, arguments_, diagnostic] of [
@@ -1228,7 +1237,6 @@ for (const [name, arguments_, diagnostic] of [
 for (const [entrypoint, prefix] of [
   ["validate-spec-lifecycle.mjs", []],
   ["create-readiness-attestation.mjs", []],
-  ["build-closed-spec.mjs", []],
   ["validate-spec-lifecycle.mjs", ["workspace"]],
   ["validate-spec-lifecycle.mjs", ["init-transition"]],
   ["validate-spec-lifecycle.mjs", ["resume-transition"]],
@@ -1267,13 +1275,9 @@ test("CLI option syntax preserves equals, double-dash, and repeated-last-wins se
   assert.equal(result.status, 0, result.stderr);
   validateReadinessAttestation(before, attestation);
 
-  const candidate = path.join(base, "closed");
-  result = runCli(
-    "build-closed-spec.mjs",
-    ["--readiness-attestation=missing.json", `--readiness-attestation=${attestation}`, "--", before, candidate],
-  );
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(validateWorkspace(candidate).status, "closed");
+  const candidate=path.join(base,'closed');closedDocumentFixture(before,candidate);
+  result=runCli('validate-spec-lifecycle.mjs',['close-transition','--',before,candidate]);assert.equal(result.status,0,result.stderr);
+
 });
 
 test("validator CLI reports validation failures as exit 1 without mutation", (t) => {
@@ -1413,60 +1417,26 @@ test("CLOSE renderer is deterministic and read-only", (t) => {
   assert.doesNotMatch(first.toString("utf8"), /## Canonical Artifact Index/u);
 });
 
-test("CLOSE builder needs no attestation, preserves external state, and leaves source untouched", (t) => {
+test("CLOSE documentary stage fixture preserves assets without authorizing admission", (t) => {
   const base = temporaryDirectory(t, "stnl-node-build-close-");
   const source = path.join(base, "fonte com espaços");
   const candidate = path.join(base, "candidato fechado com espaços");
   writeFullWorkspace(source, "ready");
-  write(path.join(source, "execution", "evidência.txt"), "evidência externa íntegra\n");
+  write(path.join(source, "assets", "evidência.txt"), "evidência externa íntegra\n");
   const sourceBefore = workspaceSnapshot(source);
-  const built = buildClosedCandidate(source, candidate);
+  const built = closedDocumentFixture(source, candidate);
   assert.equal(built, realpathSync(candidate));
   const closed = validateWorkspace(candidate);
   assert.equal(closed.status, "closed");
-  validateCloseTransition(source, candidate);
-  assert.equal(readFileSync(path.join(candidate, "execution", "evidência.txt"), "utf8"), "evidência externa íntegra\n");
+  compareCloseDocuments(source, candidate);
+  assert.equal(readFileSync(path.join(candidate, "assets", "evidência.txt"), "utf8"), "evidência externa íntegra\n");
   assert.deepEqual(workspaceSnapshot(source), sourceBefore);
   assert.equal(existsSync(path.join(candidate, "shared")), false);
 });
 
-test("CLOSE builder CLI success and failure exit contracts", (t) => {
-  const base = temporaryDirectory(t, "stnl-node-build-close-cli-");
-  const source = path.join(base, "source");
-  writeFullWorkspace(source, "ready");
-  const attestation = path.join(base, "attestation.json");
-  createReadinessAttestation(source, attestation, { scope: "GLOBAL", verdict: "READY" });
-  const candidate = path.join(base, "closed");
-  let result = runCli("build-closed-spec.mjs", [source, candidate], { cwd: base });
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /PASS: deterministic CLOSE candidate built at /u);
-  assert.equal(validateWorkspace(candidate).status, "closed");
-
-  const draft = path.join(base, "draft");
-  const rejectedCandidate = path.join(base, "rejected-draft");
-  writeFullWorkspace(draft, "draft");
-  const draftBefore = workspaceSnapshot(draft);
-  result = runCli("build-closed-spec.mjs", [draft, rejectedCandidate]);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /ready/u);
-  assert.equal(existsSync(rejectedCandidate), false);
-  assert.deepEqual(workspaceSnapshot(draft), draftBefore);
-
-  result = runCli("build-closed-spec.mjs", [source]);
-  assert.equal(result.status, 2);
-  assert.match(result.stderr, /expected source and candidate/u);
-
-  result = runCli(
-    "build-closed-spec.mjs",
-    [source, path.join(base, "duplicate"), "--readiness-attestation", attestation],
-  );
-  assert.equal(result.status, 0, result.stderr);
-  result = runCli(
-    "build-closed-spec.mjs",
-    [source, path.join(base, "duplicate"), "--readiness-attestation", attestation],
-  );
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /^FAIL: candidate must not exist/mu);
+test("normal CLOSE CLI refuses an external candidate before allocation",t=>{
+ const base=temporaryDirectory(t,'stnl-node-close-cli-'),source=path.join(base,'source'),candidate=path.join(base,'candidate');writeFullWorkspace(source,'ready');const before=workspaceSnapshot(source);
+ const result=runCli('publish-spec-lifecycle.mjs',['CLOSE',source,candidate]);assert.equal(result.status,2,result.stderr);assert.match(result.stderr,/omit external candidate/u);assert.equal(existsSync(candidate),false);assert.deepEqual(workspaceSnapshot(source),before);
 });
 
 test("CLOSE renders current ready authority even when a legacy attestation is stale", (t) => {
@@ -1483,9 +1453,9 @@ test("CLOSE renders current ready authority even when a legacy attestation is st
   );
   assert.throws(() => validateReadinessAttestation(source, attestation), /is stale/u);
   const sourceBefore = workspaceSnapshot(source);
-  buildClosedCandidate(source, candidate, { readinessAttestation: attestation });
+  closedDocumentFixture(source, candidate);
   assert.equal(validateWorkspace(candidate).status, "closed");
-  validateCloseTransition(source, candidate);
+  compareCloseDocuments(source, candidate);
   assert.match(readFileSync(path.join(candidate, "feature_spec.md"), "utf8"), /envelope público estável/u);
   assert.deepEqual(workspaceSnapshot(source), sourceBefore);
   assert.deepEqual(
@@ -1735,7 +1705,7 @@ test("failed INIT, RESUME, READINESS, and CLOSE validations mutate no input", (t
   const closeBeforeSnapshot = workspaceSnapshot(closeBefore);
   const closeAfterSnapshot = workspaceSnapshot(closeAfter);
   assert.throws(
-    () => validateCloseTransition(closeBefore, closeAfter),
+    () => compareCloseDocuments(closeBefore, closeAfter),
     (error) => error instanceof ValidationError && error.message.includes("changed canonical content"),
   );
   assert.deepEqual(workspaceSnapshot(closeBefore), closeBeforeSnapshot);

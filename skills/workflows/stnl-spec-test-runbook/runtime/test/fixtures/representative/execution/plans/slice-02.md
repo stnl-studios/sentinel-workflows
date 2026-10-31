@@ -1,59 +1,77 @@
 # File Purpose Header
 
 ```yaml
-purpose: Approved plan for the invitation confirmation UI slice.
+purpose: Detailed plan for Verification.
 status: ready
-read_when: Executing or reviewing slice 02.
-do_not_read_when: Another slice is active and no dependency requires this plan.
-contains: References, result, scope, boundaries, dependencies, risks, strategy, expected tests, and completion criterion.
+read_when: Preparing the initial invitation execution image.
+do_not_read_when: Another delivery is selected.
+contains: Current authority and initial delivery carriers.
 owner: stnl-execution-planner
-update_policy: PLAN created it as draft; REVIEW_PLAN approved it and made it immutable to execution skills.
+update_policy: Author writes; reviewer approves the final bytes.
 ```
 
-# Slice 02 - Confirmation UI
+# Slice 02 - Verification
 
 ## References
 
 - Slice: 02
+- Delivery ID: 22222222-2222-4222-8222-222222222222
 - Requirements source: `../../feature_spec.md`
 - Requirements authority: sha256:11aba916db71705bfb2f518aac2b8f808c5f410559b1693949764b318b0f6424
 - Plan revision: 1
+- Local revision: 1
 - Global plan: `../plan.md`
 - Review state: approved
 
 ## Objective and Observable Result
 
-An accepted eligible invitation presents confirmation copy approved by product.
+Verify the invitation export.
 
 ## Requirements
 
-- AC-001
+- AC-001: The invitation export must be observable by the prepared test.
 
 ## Included Scope
 
-- Confirmation presentation and browser validation.
+- Verify the prepared export.
 
 ## Out of Scope and Boundaries
 
-- API behavior remains owned by slice 01.
+- Do not alter authentication.
 
-## Likely Areas
+## Authorized Areas
 
-- Invitation UI and browser tests.
+- directory: `../../../../../test`
+
+## Expected Files
+
+- `../../../../../test/fixtures/invitations.json`
+
+## Existing Inputs
+
+- none
+
+## Protected Responsibilities
+
+- Keep authentication unchanged.
 
 ## Dependencies
 
-- slice-01.
+- slice-01
 
 ## Risks and Strategy
 
-- Risk: Product copy is not yet authoritative.
-- Strategy: Keep the scenario blocked until an explicit decision is persisted.
+- Risk: a shared file could drift.
+- Strategy: keep the edit scoped.
 
 ## Expected Tests
 
-- Browser flow for eligible acceptance and confirmation presentation.
+- Mechanical documentary setup; no behavior verdict.
+
+## Verification Recipe
+
+- Recipe: {"format":"stnl-verification-recipe-v1","base":"workspace","cwd":".","checks":[{"id":"verification-01","executable":{"literal":"node"},"args":[{"literal":"-e"},{"literal":"if (2+2!==4) process.exit(1)"}],"inputs":[]}],"dependencyReview":"Mechanical documentary fixture only; no claim of invitation behavior verification."}
 
 ## Completion Criterion
 
-- The displayed message exactly matches the persisted product decision.
+- Full invitation result is proven.

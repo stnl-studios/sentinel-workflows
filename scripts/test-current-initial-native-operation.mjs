@@ -1,0 +1,2003 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {createHash} from 'node:crypto';
+import {initialArtifacts,REQUIREMENTS} from './fixtures/current-initial-preparation.mjs';
+import {projectInitialPreparation} from '../skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs';
+import {resolveCurrentExecutionContext} from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
+import {inspectCurrentExecution,captureCurrentExecution,captureCurrentActiveExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
+import {inspectCurrentExecution as inspectQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
+import {installCurrentInitial,recoverCurrentInitialPublication} from '../skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs';
+import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish,normalizeSuccessor,resume,abort,prepareNativeContinuation} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {payload as initialPayload} from './fixtures/current-initial-evidence.mjs';
+import {parseSemanticExecutionPayload,formalRecoveryBudget} from '../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs';
+import {applyPayload} from './fixtures/current-findings-evidence.mjs';
+import {READY_FIXTURE,copyTree,PUBLISHER_CLI} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/test/publisher-fixtures.mjs';
+import {publishCandidate,TEST_ONLY_ACK,TEST_ONLY_ACK_ENV,TEST_ONLY_CRASH_ENV} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs';
+import {validateWorkspace} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs';
+import {inspectCurrentEvidence} from '../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs';
+
+import {preparePreparationCandidate} from '../skills/workflows/stnl-slice-executor/runtime/prepare-task-candidate.mjs';
+import {captureExecutionTree,resolveExecutionFilesystemRoots,executionLockIdentity} from '../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
+const run=promisify(execFile);
+const repo=path.resolve('.');
+const operationCli=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
+const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+async function fixture({otherInput=false,kind='standalone',entry='file',sharedAncestor=false,missingAncestor=false,single=false,independentAreas=false,productRefs=false,futureLeaf=false,closeReady=false,inputTest=false,coverageOmission=false,staleMode='none'}={}) {
+  const root=await fs.mkdtemp(path.join(repo,'tmp/stnl Initial test '));
+  await run('git',['-C',root,'init','-q']);
+  await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
+  const specDirectory=sharedAncestor?'docs/spec':'specs/pay';
+  await fs.mkdir(path.join(root,specDirectory),{recursive:true});
+  await fs.mkdir(path.join(root,'src'));
+  const authorityPath=path.join(root,specDirectory,kind==='lifecycle'?'feature_spec.md':'requirements.md');
+  const specPath=kind==='lifecycle'&&entry==='directory'?path.dirname(authorityPath):authorityPath;
+  const lifecycleHeader='# File Purpose Header\n\n```yaml\npurpose: Pay feature.\nstatus: ready\nread_when: Reviewing pay.\ndo_not_read_when: Another feature is selected.\ncontains: Pay requirements.\nowner: stnl-spec-lifecycle-manager\nupdate_policy: Author writes.\n```\n\n';
+  const lifecycleBody='# Feature: Pay\n\n'+[['Objective','Pay export.'],['Context','Pay module.'],['Scope','Pay export.'],['Out of Scope','Authentication.'],['Business Rules','Observe pay.'],['Relevant Contracts','AC-001: Pay export.']].map(([name,body])=>`## ${name}\n\n${body}\n\n`).join('');
+  if(!closeReady)await fs.writeFile(authorityPath,kind==='lifecycle'?lifecycleHeader+lifecycleBody:'# Initial delivery\n\nAC-001: export pay.\n');
+  if(coverageOmission)await fs.writeFile(authorityPath,'# Initial delivery\n\nAC-001: pay returns paid for a positive amount and declined for zero.\n');
+  if(closeReady)await copyTree(READY_FIXTURE,path.dirname(authorityPath));
+  await fs.writeFile(path.join(root,'src/pay.test.mjs'),staleMode==='none'
+    ?'import test from "node:test";import assert from "node:assert/strict";import {pay} from "./pay.mjs";test("AC-001",()=>assert.equal(pay(),"paid"));\n'
+    :`import test from "node:test";import fs from "node:fs";test("AC-001",()=>{const file=new URL("./pay.mjs",import.meta.url);${staleMode==='once'?'if(!fs.existsSync(file))':''}fs.appendFileSync(file,"// verifier mutation\\n");});\n`);
+  if(independentAreas){await fs.mkdir(path.join(root,'other'));await fs.copyFile(path.join(root,'src/pay.test.mjs'),path.join(root,'other/pay.test.mjs'));}
+  if(otherInput) await fs.writeFile(path.join(root,'src/other.txt'),'independent input\n');
+  const before=await inspectCurrentExecution(specPath);
+  const {context}=await resolveCurrentExecutionContext(specPath);
+  const artifacts=new Map([...initialArtifacts({form:kind})].filter(([name])=>!single||!name.includes('slice-02')).map(([name,bytes])=>{
+    let content=bytes.toString('utf8').replaceAll(REQUIREMENTS,before.requirementsAuthority);
+    if(single)content=content.split('\n').filter(line=>!line.includes('| 02 - Verification |')).join('\n')
+      .replaceAll('contribution: partial | full owner: slice-02','contribution: complete | full owner: slice-01');
+    if(sharedAncestor) {
+      const document=missingAncestor?'docs/missing/report.md':'docs/report.md';
+      if(!independentAreas||!name.includes('slice-02'))content=content.replaceAll('- directory: `../../../../src`','- directory: `../../../../src`\n- file: `../../../../'+document+'`');
+      content=content.split('\n').map(line=>independentAreas&&!line.includes('| 01 -')?line:
+        line.replaceAll('directory: `../../../src`','directory: `../../../src`; file: `../../../'+document+'`')).join('\n');
+    }
+    if(independentAreas){
+      if(name.includes('slice-02'))content=content.replaceAll('../../../../src','../../../../other');
+      if(name==='plan.md')content=content.split('\n').map(line=>line.includes('| 02 -')?line.replaceAll('../../../src','../../../other'):line).join('\n');
+    }
+    if(futureLeaf) {
+      content=content.replaceAll('- directory: `../../../../src`','- directory: `../../../../src`\n- file: `../../../../optional.mjs`');
+      if(name==='plan.md')content=content.replaceAll('directory: `../../../src`','directory: `../../../src`; file: `../../../optional.mjs`');
+    }
+    if(productRefs || inputTest)content=content.split('\n').map(line=>{
+      if(!line.startsWith('- Recipe: '))return line;
+      const recipe=JSON.parse(line.slice('- Recipe: '.length));
+      if(productRefs)recipe.checks[0].inputs=[{kind:'product',path:'../../../../src/pay.mjs'}];
+      if(inputTest)recipe.checks[0].args[1].file.kind='input';
+      return '- Recipe: '+JSON.stringify(recipe);
+    }).join('\n');
+    if(inputTest && /^(plans|tasks)\/slice-/u.test(name))content=content.replace('## Existing Inputs\n\n- none\n\n','## Existing Inputs\n\n- `../../../../src/pay.test.mjs`\n\n');
+    if(otherInput && ['plans/slice-02.md','tasks/slice-02.md'].includes(name)) content=content
+      .replace('## Existing Inputs\n\n- none\n\n','## Existing Inputs\n\n- `../../../../src/other.txt`\n\n');
+    return [name,Buffer.from(content)];
+  }));
+  const projected=projectInitialPreparation({context,requirementsAuthority:before.requirementsAuthority,artifacts});
+  const hashes=new Map(projected.artifactHashes.map(item=>[item.path,item.sha256]));
+  const decision=(scope,hash,names)=>({scope,decision:'approved',authoritySha256:hash,
+    examinedArtifactHashes:[...names].sort().map(name=>({path:name,sha256:hashes.get(name)})),
+    evidenceDecisions:[],summary:'Reviewed the exact Initial preparation bytes for the local fixture.'});
+  const review={globalReview:decision('set',projected.globalReviewAuthoritySha256,['plan.md','tasks.md']),
+    deliveries:projected.deliveries.map(item=>({deliveryId:item.deliveryId,
+      review:decision('slice',item.authoritySha256,[`plans/${item.slice}.md`,`tasks/${item.slice}.md`])}))};
+  const preparationRoot=path.join(root,'reviewed');
+  for(const [name,bytes] of artifacts) {
+    const target=path.join(preparationRoot,name);
+    await fs.mkdir(path.dirname(target),{recursive:true});
+    await fs.writeFile(target,bytes);
+  }
+  await run('git',['-C',root,'add','.gitignore',path.relative(root,authorityPath),'src/pay.test.mjs',
+    ...(independentAreas?['other/pay.test.mjs']:[]),
+    ...(otherInput?['src/other.txt']:[])]);
+  await run('git',['-C',root,'-c','user.name=Sentinel','-c','user.email=sentinel@example.invalid',
+    'commit','-qm','fixture baseline']);
+  return {root,specPath,preparationRoot,review};
+}
+async function reserved(f,responseVariant) {
+  const image=await inspectCurrentExecution(f.specPath);
+  const started=await begin({specPath:f.specPath,slice:image.normalHandoff.slice,
+    expectedActivationId:image.activationId,operation:'EXECUTE_SLICE'});
+  const dispatch=await reserveDispatch(started.handle,responseVariant?{responseVariant}:undefined);
+  return {started,dispatch};
+}
+
+test('EC-1 EXECUTE preserves stale evidence, then retries the same owner without treating stale as a verdict',async t=>{
+  const f=await fixture({single:true,staleMode:'once'});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');
+  const owner=JSON.parse(await fs.readFile(first.originFile,'utf8')).owner;
+  await bindNative(started.handle,'stale-execute-first-agent');
+  await assert.rejects(()=>verifyNative(first.originFile),error=>error.code==='EVIDENCE_STALE');
+  const operationRoot=path.dirname(first.originFile);
+  const divergence=JSON.parse(await fs.readFile(path.join(operationRoot,'round-1.divergence.json'),'utf8'));
+  assert.equal(divergence.diagnostic,'EVIDENCE_STALE');
+  assert.equal(divergence.owner.operationAttemptId,owner.operationAttemptId);
+  assert.ok(divergence.diff.some(item=>item.path==='src/pay.mjs'));
+  assert.equal((await resume(started.handle)).nextAction,'await-same-agent');
+  await assert.rejects(begin({specPath:f.specPath,slice:owner.slice,operation:'EXECUTE_SLICE',
+    expectedActivationId:owner.originActivationId}),error=>['OWNER_ACTIVE','OWNER_UNCERTAIN'].includes(error.code));
+  const foreign=path.join(f.root,'foreign-tool.json');
+  await fs.writeFile(foreign,JSON.stringify({agentId:'foreign-agent',status:'completed',finalResponse:'untrusted'})+'\n');
+  await assert.rejects(()=>captureNative(started.handle,foreign),error=>error.code==='OWNER_MISMATCH');
+  const concluded=path.join(f.root,'stale-tool.json');
+  await fs.writeFile(concluded,JSON.stringify({agentId:'stale-execute-first-agent',status:'completed',finalResponse:'untrusted'})+'\n');
+  const staleCapture=await captureNative(started.handle,concluded);
+  assert.equal(staleCapture.captureClass,'verification-divergence');
+  assert.equal(staleCapture.status,null);
+  assert.equal((await resume(started.handle)).nextAction,'reserve-dispatch');
+  const receipt=JSON.parse(await fs.readFile(path.join(operationRoot,'round-1.receipt.json'),'utf8'));
+  assert.equal(receipt.status,'RUNNER_RESULT_BLOCKED');
+  assert.equal(receipt.semanticResponseStatus,null);
+  assert.equal(receipt.verification.status,'stale');
+
+  const second=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const secondOrigin=JSON.parse(await fs.readFile(second.originFile,'utf8'));
+  assert.equal(second.round,2);
+  assert.equal(secondOrigin.owner.operationAttemptId,owner.operationAttemptId);
+  assert.equal(secondOrigin.admission.reservedActivation.activeAttempt.operationAttemptId,owner.operationAttemptId);
+  await bindNative(started.handle,'stale-execute-second-agent');
+  const measured=await verifyNative(second.originFile);
+  const {head,...result}=initialPayload(2,'TESTS_PASS');
+  result.commands=measured.commands;result.automaticCheckRound='2/5';
+  const response=path.join(f.root,'second-tool.json');
+  await fs.writeFile(response,JSON.stringify({agentId:'stale-execute-second-agent',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
+  assert.equal((await captureNative(started.handle,response)).status,'TESTS_PASS');
+  assert.equal((await resume(started.handle)).nextAction,'publish');
+  const published=await publish(started.handle);
+  assert.equal(published.publication,'confirmed');
+  const image=await captureCurrentExecution(f.specPath);
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const current=continuity.deliveries.find(item=>item.deliveryId===owner.deliveryId);
+  const bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path)));
+  assert.equal(bundle.implementation.length,1,'stale invocation must not become an implementation check');
+  assert.equal(bundle.support.length,1);
+  assert.equal(bundle.support[0].diagnostic,'EVIDENCE_STALE');
+  assert.equal(bundle.support[0].consumedInvocations,1);
+  assert.equal(current.counters.implementationChecks,1,'only the completed verification consumes a check record');
+});
+
+test('EC-1 EXECUTE stale recovery blocks at the existing five-invocation limit',async t=>{
+  const f=await fixture({single:true,staleMode:'always'});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');
+  const owner=JSON.parse(await fs.readFile(first.originFile,'utf8')).owner;
+  let dispatch=first;
+  for(let round=1;round<=5;round++) {
+    const agentId=`stale-limit-${round}`;await bindNative(started.handle,agentId);
+    await assert.rejects(()=>verifyNative(dispatch.originFile),error=>error.code==='EVIDENCE_STALE');
+    const staleFile=path.join(f.root,`stale-limit-tool-${round}.json`);
+    await fs.writeFile(staleFile,JSON.stringify({agentId,status:'completed',finalResponse:'untrusted'})+'\n');
+    assert.equal((await captureNative(started.handle,staleFile)).status,null);
+    assert.equal((await resume(started.handle)).nextAction,round<5?'reserve-dispatch':'stop-and-diagnose');
+    if(round<5) {
+      const next=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+      assert.equal(next.round,round+1);
+      const nextOrigin=JSON.parse(await fs.readFile(next.originFile,'utf8'));
+      assert.equal(nextOrigin.owner.operationAttemptId,owner.operationAttemptId);
+      dispatch=next;
+    } else await assert.rejects(()=>reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'}),
+      error=>error.code==='OWNER_UNCERTAIN');
+  }
+});
+
+for(const skill of ['stnl-slice-executor','stnl-slice-quality-manager'])test(`B-T15 ${skill} CLI refuses ambiguous arguments before any effect`,async t=>{
+  const f=await fixture({single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));await installCurrentInitial(f);
+  const image=await captureCurrentExecution(f.specPath),cli=path.resolve('skills/workflows',skill,'runtime/execution-current-operation.mjs');
+  const handle=path.join(f.root,'must-not-read.json');
+  const base=['begin','--spec-path',f.specPath,'--slice','slice-01','--expected-activation-id',image.inspection.activationId];
+  const before=await captureExecutionTree(f.root);
+  for(const args of [
+    [...base,'--operation','EXECUTE_SLICE','--termnial'],base,
+    [...base,'--operation','EXECUTE_SLICE','--operation','VALIDATE_SLICE'],
+    [...base,'--operation'],[...base,'--operation','EXECUTE_SLICE','extra'],
+    ['reserve-dispatch','--handle',handle,'--terminal','false'],
+    ['reserve-dispatch','--handle',handle,'--termnial'],
+    ['resume','--handle',handle,'--handle',handle],['resume','--handle','--terminal'],
+    ['normalize','--handle',handle,'--spec-path',f.specPath]
+  ]) {
+    const result=await run(process.execPath,[cli,...args]).then(value=>({...value,code:0}),error=>error);
+    assert.equal(result.code,1,JSON.stringify(args));
+    assert.equal(JSON.parse(result.stdout).code,'INVALID_ARGUMENTS',JSON.stringify(args));
+    assert.deepEqual(await captureExecutionTree(f.root),before,'invalid CLI must not reserve or mutate');
+  }
+  const admitted=JSON.parse((await run(process.execPath,[cli,...base,'--operation','EXECUTE_SLICE'])).stdout);
+  assert.equal(admitted.owner.operation,'EXECUTE_SLICE');assert.equal(admitted.owner.originActivationId,image.inspection.activationId);
+  await fs.writeFile(handle,JSON.stringify(admitted.handle));
+  const dispatch=JSON.parse((await run(process.execPath,[cli,'reserve-dispatch','--handle',handle,
+    '--response-variant','stnl-current-native-judgment-v1'])).stdout);
+  const request=JSON.parse(await fs.readFile(dispatch.requestFile));assert.equal(Object.hasOwn(request,'terminal'),false);
+});
+
+async function sealedBlockingFormal(f) {
+  await installCurrentInitial(f);
+  const execute=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  if(f.initialOnly)await fs.writeFile(path.join(f.root,'src/initial-only.mjs'),'export const initialOnly=true;\n');
+  await bindNative(execute.started.handle,'controlled-apply-predecessor-execute');
+  const executeMeasured=await verifyNative(execute.dispatch.originFile);
+  const {head,...executeResult}=initialPayload(1);
+  executeResult.commands=executeMeasured.commands;
+  const executeFile=path.join(f.root,'controlled-apply-predecessor-execute.json');
+  await fs.writeFile(executeFile,JSON.stringify({agentId:'controlled-apply-predecessor-execute',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:executeResult})})+'\n');
+  await captureNative(execute.started.handle,executeFile);
+  await publish(execute.started.handle);
+  const prior=await inspectCurrentExecution(f.specPath);
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"broken";\n');
+  if(f.normalizedFirst) {
+    const {context}=await resolveCurrentExecutionContext(f.specPath);
+    const {normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+    await normalizedFormal({...f,delivery:{slice:'slice-01'},view:{execution:context.logicalExecutionRoot}},
+      {invalid:true,responseVariant:'stnl-current-native-judgment-v1'});
+  }
+  const formal=f.normalizedFirst?await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:(await inspectCurrentExecution(f.specPath)).activationId}):await begin({specPath:f.specPath,slice:'slice-01',
+    expectedActivationId:prior.activationId,operation:'VALIDATE_SLICE'});
+  const formalDispatch=await reserveDispatch(formal.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(formal.handle,'controlled-apply-predecessor-formal');
+  const formalMeasured=await verifyNative(formalDispatch.originFile);
+  const request=JSON.parse(await fs.readFile(formalDispatch.requestFile));
+  const finding={id:'finding-01',severity:'blocking',originAttempt:request.attemptId,
+    problem:'The pay export returns broken.',evidence:'The prepared assertion fails on the pay result.',
+    impact:'AC-001 is unmet.',relatedAuthority:'AC-001',expectedCorrection:'Restore the pay result to paid.'};
+  const formalResult={status:'NEEDS_FIX',commands:formalMeasured.commands,
+    evidence:'The prepared pay assertion failed with the recorded exit.',
+    findingReferences:'finding-01',findingDispositions:'finding-01=active',blockers:'none',
+    unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
+  const formalFile=path.join(f.root,'controlled-apply-predecessor-formal.json');
+  await fs.writeFile(formalFile,JSON.stringify({agentId:'controlled-apply-predecessor-formal',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:formalResult,newFindings:[finding]})})+'\n');
+  await captureNative(formal.handle,formalFile);
+  await publish(formal.handle);
+  const inspection=await inspectCurrentExecution(f.specPath);
+  assert.equal(inspection.normalHandoff.operation,'APPLY_FINDINGS');
+  return inspection;
+}
+
+test('Initial first APPLY semantic refusal publishes from the same captured bytes after partial failure',async t=>{
+  const f=await fixture();
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const predecessor=await sealedBlockingFormal(f);
+  const started=await begin({specPath:f.specPath,slice:'slice-01',
+    expectedActivationId:predecessor.activationId,operation:'APPLY_FINDINGS'});
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const agentId='controlled-apply-refusal';
+  await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=applyPayload(1,'TESTS_PASS',0);
+  result.commands=measured.commands;
+  result.coverage='none'; // controlled semantic defect after one verified APPLY recipe
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+  const file=path.join(f.root,'controlled-apply-refusal.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+  const foreign=path.join(f.root,'controlled-apply-refusal-foreign.json');
+  await fs.writeFile(foreign,JSON.stringify({agentId:'foreign-agent',status:'completed',finalResponse})+'\n');
+  await assert.rejects(captureNative(started.handle,foreign),error=>error.code==='OWNER_MISMATCH');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.captureClass,'findings-rejection');
+  assert.equal(captured.nextAction,'publish');
+  assert.equal(captured.rawResponseSha256,digest(Buffer.from(finalResponse)));
+  assert.equal((await captureNative(started.handle,file)).replayed,true);
+  const changed=path.join(f.root,'controlled-apply-refusal-changed.json');
+  await fs.writeFile(changed,JSON.stringify({agentId,status:'completed',finalResponse:finalResponse+' '})+'\n');
+  await assert.rejects(captureNative(started.handle,changed),error=>error.code==='OWNER_MISMATCH');
+  const owned=path.dirname(dispatch.originFile);
+  const responseBefore=await fs.readFile(path.join(owned,'round-1.response.json'));
+  const observationBefore=await fs.readFile(path.join(owned,'round-1.observation.json'));
+  assert.equal(digest(responseBefore),captured.rawResponseSha256);
+  let interrupted=false;
+  await assert.rejects(publish(started.handle,{checkpoint:phase=>{
+    if(phase==='after-candidate-file') {interrupted=true;throw new Error('controlled APPLY partial candidate');}
+  }}),/controlled APPLY partial candidate/u);
+  assert.equal(interrupted,true);
+  const handleFile=path.join(f.root,'controlled-apply-refusal-handle.json');
+  await fs.writeFile(handleFile,JSON.stringify(started.handle)+'\n');
+  const cli=async command=>JSON.parse((await run(process.execPath,[operationCli,command,'--handle',handleFile])).stdout);
+  const resumed=await cli('resume');
+  assert.equal(resumed.nextAction,'normalize');
+  assert.equal(resumed.responseSha256,captured.rawResponseSha256);
+  const normalized=await cli('normalize');
+  assert.equal(normalized.rawResponseSha256,captured.rawResponseSha256);
+  const published=await cli('publish');
+  assert.equal(published.publication,'confirmed');
+  assert.equal(published.cleanup,'complete');
+  assert.equal(published.transition.outcome,'rejected');
+  assert.equal(digest(await fs.readFile(path.join(owned,'round-1.response.json'))),captured.rawResponseSha256);
+  assert.deepEqual(await fs.readFile(path.join(owned,'round-1.observation.json')),observationBefore);
+  await assert.rejects(fs.lstat(path.join(owned,'round-2.origin.json')),error=>error.code==='ENOENT');
+  const a=await inspectCurrentExecution(f.specPath),b=await inspectQualityExecution(f.specPath);
+  assert.deepEqual(a,b);
+  assert.equal(a.state,'VALIDATION_NEEDS_FIX');
+  assert.equal(a.deliveries[0].formalStatus,'NEEDS_FIX','a recorded auxiliary refusal grants no formal acceptance');
+  assert.equal(a.normalHandoff?.operation,'APPLY_FINDINGS');
+  assert.equal(a.deliveries[0].persistedValidation,'revalidation-required');
+  assert.deepEqual(a.deliveries[0].counters,
+    {implementationChecks:1,findingsChecks:0,validationAttempts:1,findings:1});
+  assert.deepEqual(a.deliveries[1].counters,
+    {implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0});
+  const corrected=await bConclude(f,'APPLY_FINDINGS',{successor:true});
+  assert.equal(corrected.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  assert.deepEqual(await fs.readFile(path.join(owned,'round-1.response.json')),responseBefore);
+});
+
+test('Initial first APPLY valid BLOCKED stays distinct from semantic refusal',async()=>{
+  const f=await fixture();
+  const predecessor=await sealedBlockingFormal(f);
+  const started=await begin({specPath:f.specPath,slice:'slice-01',
+    expectedActivationId:predecessor.activationId,operation:'APPLY_FINDINGS'});
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const agentId='controlled-apply-blocked';
+  await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=applyPayload(1,'BLOCKED',0);
+  result.commands=measured.commands;
+  const file=path.join(f.root,'controlled-apply-blocked.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.status,'BLOCKED');
+  assert.equal(captured.nextAction,'publish');
+  assert.equal((await resume(started.handle)).nextAction,'publish');
+  assert.equal(captured.captureClass,'formal-response');
+});
+
+test('Initial first APPLY malformed native response retains refusal and admits only a correction',async t=>{
+  const f=await fixture();
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const predecessor=await sealedBlockingFormal(f);
+  const started=await begin({specPath:f.specPath,slice:'slice-01',
+    expectedActivationId:predecessor.activationId,operation:'APPLY_FINDINGS'});
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const agentId='controlled-apply-schema-defect';
+  await bindNative(started.handle,agentId);
+  await verifyNative(dispatch.originFile);
+  const file=path.join(f.root,'controlled-apply-schema-defect.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:'{"invalid":'})+'\n');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.captureClass,'findings-rejection');assert.equal(captured.nextAction,'publish');
+  assert.equal(captured.rawResponseSha256,digest(Buffer.from('{"invalid":')));
+  assert.equal((await captureNative(started.handle,file)).replayed,true);
+  const rejected=await publish(started.handle);assert.equal(rejected.transition.outcome,'rejected');
+  const image=await inspectCurrentExecution(f.specPath);
+  assert.equal(image.normalHandoff?.operation,'APPLY_FINDINGS');
+  assert.equal(image.deliveries[0].counters.findingsChecks,0,'malformed content is never an accepted check');
+  const corrected=await bConclude(f,'APPLY_FINDINGS',{successor:true});
+  assert.equal(corrected.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  const row=JSON.parse(Buffer.from(corrected.image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(corrected.image.files.get(row.evidence.path)));
+  assert.ok(bundle.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')==='{"invalid":'));
+});
+
+test('Initial new native judgment binds HEAD without runner transcription',async()=>{
+  const f=await fixture();
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  assert.equal(dispatch.responseVariant,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await bindNative(started.handle,'mechanical-initial-judgment');
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=initialPayload(1);
+  result.commands=measured.commands;
+  const response=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+  const file=path.join(f.root,'mechanical-tool.json');
+  await fs.writeFile(file,JSON.stringify({agentId:'mechanical-initial-judgment',status:'completed',finalResponse:response})+'\n');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.status,'TESTS_PASS');
+  assert.equal((await publish(started.handle)).publication,'confirmed');
+  assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff.operation,'VALIDATE_SLICE');
+});
+
+test('Initial concluded semantic EXECUTE refusal publishes and resumes the same captured bytes',async()=>{
+  const f=await fixture();
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const agentId='controlled-initial-refusal';
+  await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=initialPayload(1);
+  result.commands=measured.commands;
+  result.coverage='none'; // controlled semantic defect after a real verified recipe
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+  const file=path.join(f.root,'controlled-refusal-tool.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+  const foreign=path.join(f.root,'foreign-refusal-tool.json');
+  await fs.writeFile(foreign,JSON.stringify({agentId:'foreign-agent',status:'completed',finalResponse})+'\n');
+  await assert.rejects(captureNative(started.handle,foreign),error=>error.code==='OWNER_MISMATCH');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.captureClass,'initial-rejection');
+  assert.equal(captured.rawResponseSha256,digest(Buffer.from(finalResponse)));
+  assert.equal((await captureNative(started.handle,file)).replayed,true);
+  const different=path.join(f.root,'different-refusal-tool.json');
+  await fs.writeFile(different,JSON.stringify({agentId,status:'completed',finalResponse:finalResponse+' '})+'\n');
+  await assert.rejects(captureNative(started.handle,different),error=>error.code==='OWNER_MISMATCH');
+  const owned=path.dirname(dispatch.originFile);
+  const rawBefore=await fs.readFile(path.join(owned,'round-1.response.json'));
+  const observationBefore=await fs.readFile(path.join(owned,'round-1.observation.json'));
+  assert.equal(digest(rawBefore),captured.rawResponseSha256);
+  let fault=false;
+  await assert.rejects(publish(started.handle,{checkpoint:phase=>{
+    if(phase==='after-candidate-file') {fault=true;throw new Error('controlled partial candidate');}
+  }}),/controlled partial candidate/u);
+  assert.equal(fault,true);
+  const handleFile=path.join(f.root,'controlled-refusal-handle.json');
+  await fs.writeFile(handleFile,JSON.stringify(started.handle)+'\n');
+  const cli=async command=>JSON.parse((await run(process.execPath,[operationCli,command,'--handle',handleFile])).stdout);
+  const resumed=await cli('resume');
+  assert.equal(resumed.nextAction,'normalize');
+  assert.equal(resumed.responseSha256,captured.rawResponseSha256);
+  const normalized=await cli('normalize');
+  assert.equal(normalized.rawResponseSha256,captured.rawResponseSha256);
+  const published=await cli('publish');
+  assert.equal(published.publication,'confirmed');
+  assert.equal(published.cleanup,'complete');
+  assert.equal(published.transition.outcome,'rejected');
+  assert.equal(digest(await fs.readFile(path.join(owned,'round-1.response.json'))),captured.rawResponseSha256);
+  assert.deepEqual(await fs.readFile(path.join(owned,'round-1.observation.json')),observationBefore);
+  await assert.rejects(fs.lstat(path.join(owned,'round-2.origin.json')),error=>error.code==='ENOENT');
+  const a=await inspectCurrentExecution(f.specPath),b=await inspectQualityExecution(f.specPath);
+  assert.deepEqual(a,b);
+  assert.equal(a.state,'MATERIALIZED_PRISTINE');
+  assert.equal(a.normalHandoff.operation,'EXECUTE_SLICE');
+  assert.equal(a.deliveries[0].persistedValidation,'revalidation-required');
+  assert.deepEqual(a.deliveries[0].counters,
+    {implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0});
+  assert.deepEqual(a.deliveries[1].counters,
+    {implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0});
+  await assert.rejects(()=>begin({specPath:f.specPath,slice:'slice-01',
+    expectedActivationId:a.activationId,operation:'EXECUTE_SLICE'}));
+  const successor=await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:a.activationId});
+  assert.notEqual(successor.owner.operationAttemptId,started.owner.operationAttemptId);
+  const next=await reserveDispatch(successor.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal(JSON.parse(await fs.readFile(next.requestFile)).round,2);
+});
+
+test('Initial valid BLOCKED is distinct from semantic refusal and remains outside recovery scope',async()=>{
+  const f=await fixture();
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const agentId='controlled-initial-blocked';
+  await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=initialPayload(1,'BLOCKED');
+  result.commands=measured.commands;
+  result.blockers='The inspected authority has an unresolved external dependency.';
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+  const file=path.join(f.root,'controlled-blocked-tool.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.captureClass,'formal-response');
+  assert.equal(captured.status,'BLOCKED');
+  await assert.rejects(publish(started.handle),error=>error.code==='UNSUPPORTED_FORMAT'
+    && /Initial BLOCKED requires operational recovery outside quiet profile/u.test(error.message));
+  assert.equal((await captureNative(started.handle,file)).replayed,true);
+});
+
+for(const malformedHistory of [false,true])test(`Initial failed check then proved missing test ${malformedHistory?'rejects invalid round history':'uses only the existing third invocation'}`,async t=>{
+  const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');
+  const responses=[];
+  async function conclude(dispatch,round,status,omissions) {
+    const agentId=`controlled-coverage-round-${round}`;await bindNative(started.handle,agentId);
+    const measured=await verifyNative(dispatch.originFile);
+    const {head,...result}=initialPayload(round,status);result.commands=measured.commands;
+    result.blockers=status==='BLOCKED'?'The approved zero-amount assertion is missing.':'none';
+    if(omissions)result.testCoverageOmissions=omissions;
+    if(malformedHistory&&round===2){result.priorRoundFailure='none';result.correctionApplied='none; runner is read-only.';}
+    const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+    const file=path.join(f.root,`coverage-result-${round}.json`);await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+    const captured=await captureNative(started.handle,file);responses.push({file,bytes:await fs.readFile(file),finalResponse});return captured;
+  }
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"broken";\n');
+  assert.equal((await conclude(first,1,'TESTS_FAIL')).nextAction,'reserve-dispatch');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=(amount=1)=>amount===0?"declined":"paid";\n');
+  const second=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const omission={obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),
+    evidence:'The prepared assertion checks paid but never invokes pay(0), required by AC-001.',expectedCorrection:'Add the zero-amount declined assertion to this prepared test.'};
+  const captured=await conclude(second,2,'BLOCKED',[omission]);
+  if(malformedHistory) {
+    assert.equal(captured.captureClass,'initial-rejection');assert.equal(captured.nextAction,'publish');
+    const root=path.dirname(second.originFile),responseFile=path.join(root,'round-2.response.json');
+    const raw=await fs.readFile(responseFile),observation=await fs.readFile(path.join(root,'round-2.observation.json'));
+    assert.equal((await captureNative(started.handle,responses[1].file)).replayed,true);
+    assert.equal((await resume(started.handle)).nextAction,'publish');
+    const receiptFile=path.join(root,'round-2.receipt.json'),receiptBefore=await fs.readFile(receiptFile);
+    const changed=JSON.parse(receiptBefore);changed.semanticResponseStatus='TESTS_PASS';await fs.writeFile(receiptFile,JSON.stringify(changed));
+    await assert.rejects(publish(started.handle),{code:'OWNER_UNCERTAIN'},'a genuine receipt/payload status mismatch remains fatal');
+    await fs.writeFile(receiptFile,receiptBefore);
+    const published=await publish(started.handle);assert.equal(published.transition.outcome,'rejected');
+    const image=await inspectCurrentExecution(f.specPath);assert.deepEqual(image,await inspectQualityExecution(f.specPath));
+    assert.equal(image.state,'MATERIALIZED_PRISTINE');assert.equal(image.deliveries[0].counters.implementationChecks,1,'the preceding valid failed check remains counted');
+    assert.deepEqual(await fs.readFile(responseFile),raw);assert.deepEqual(await fs.readFile(path.join(root,'round-2.observation.json')),observation);
+    for(const response of responses)assert.deepEqual(await fs.readFile(response.file),response.bytes);
+    await assert.rejects(fs.stat(path.join(root,'round-3.observation.json')),{code:'ENOENT'});
+    const retained=await captureCurrentExecution(f.specPath);
+    const current=JSON.parse(Buffer.from(retained.files.get('continuity.json'))).deliveries.find(item=>item.slice==='slice-01');
+    assert.match(current.lastDiagnostic.reason,/priorRoundFailure is required for automatic check rounds after 1\/3/u);
+    const bundle=JSON.parse(Buffer.from(retained.files.get(current.evidence.path)));
+    const rejection=bundle.support.find(item=>item.kind==='rejection');
+    assert.equal(rejection.diagnostic,current.lastDiagnostic.reason,'the public handoff retains the complete parser diagnostic');
+    const objects=new Map(bundle.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')]));
+    assert.deepEqual(objects.get(rejection.sources.rawResponse),Buffer.from(responses[1].finalResponse));
+    const successor=await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:retained.inspection.activationId});
+    const next=await reserveDispatch(successor.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+    const nextRequest=JSON.parse(await fs.readFile(next.requestFile)),nextOrigin=JSON.parse(await fs.readFile(next.originFile));
+    assert.equal(nextRequest.round,3);assert.equal(nextRequest.previousCheck,null);
+    assert.equal(nextOrigin.admission.binding.normalization.sourceEvidenceSha256,current.evidence.sha256,
+      'the next producer is bound to the retained feedback sources, not an invented corrected verdict');
+    return;
+  }
+  assert.equal(captured.status,'BLOCKED');assert.equal(captured.nextAction,'reserve-dispatch');
+  assert.equal((await resume(started.handle)).nextAction,'reserve-dispatch');
+  await assert.rejects(publish(started.handle),error=>error.code==='EVIDENCE_INCOMPLETE');
+  await fs.appendFile(path.join(f.root,'src/pay.test.mjs'),'test("AC-001 zero amount",()=>assert.equal(pay(0),"declined"));\n');
+  const third=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal((await conclude(third,3,'TESTS_PASS')).nextAction,'publish');
+  await publish(started.handle);
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'IMPLEMENTED_AWAITING_VALIDATION');
+  for(const response of responses)assert.ok(response.bytes.equals(await fs.readFile(response.file)),'each original response remains unchanged');
+  await assert.rejects(reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+});
+
+test('Coverage omission proof is closed, EXECUTE-only and never converts green commands to failure',()=>{
+  const proof={obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:`sha256:${'a'.repeat(64)}`,evidence:'AC-001 zero-amount assertion is absent.',expectedCorrection:'Add the missing assertion.'};
+  const base=initialPayload(1,'BLOCKED');base.testCoverageOmissions=[proof];
+  const parse=r=>parseSemanticExecutionPayload(JSON.stringify(r),'EXECUTE_SLICE');
+  assert.equal(parse(base).status,'BLOCKED');assert.equal(parse(base).commands[0].exit,0);
+  for(const mutate of [r=>{r.status='TESTS_PASS';},r=>{r.status='TESTS_FAIL';},r=>{r.commands[0].exit=1;},r=>{r.commands=[];},r=>{r.testCoverageOmissions=[];},r=>{r.testCoverageOmissions[0].testPath='../outside.test.mjs';},r=>{r.testCoverageOmissions[0].evidence='none';},r=>{r.testCoverageOmissions.push({...proof});},r=>{r.testCoverageOmissions[0].extra=true;}]) {
+    const value=structuredClone(base);mutate(value);assert.throws(()=>parse(value));
+  }
+  assert.throws(()=>parseSemanticExecutionPayload(JSON.stringify({...applyPayload(1,'BLOCKED',0),testCoverageOmissions:[proof]}),'APPLY_FINDINGS'));
+});
+
+async function coveragePrefixFixture(t,{inputTest=false,mutate=null}={}) {
+  const f=await fixture({single:true,coverageOmission:true,inputTest});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=(amount=1)=>amount===0?"declined":"paid";\n');
+  const agentId='controlled-coverage-prefix';await bindNative(started.handle,agentId);const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=initialPayload(1,'BLOCKED');result.commands=measured.commands;
+  result.blockers='Approved zero-amount assertion is missing from the existing test.';
+  result.testCoverageOmissions=[{obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),
+    evidence:'The current test never asserts AC-001 for zero.',expectedCorrection:'Add the required zero-amount assertion to this test.'}];
+  mutate?.(result);
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result}),file=path.join(f.root,'coverage-prefix-result.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+  return {...f,started,dispatch,file,finalResponse,captured:await captureNative(started.handle,file)};
+}
+
+async function coverageClarificationFixture(t,{triageMutation=null,resultMutation=null,beforeCapture=null}={}) {
+  const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=(amount=1)=>amount===0?"declined":"paid";\n');
+  const agentId='same-coverage-proof-producer';await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile),{head,...result}=initialPayload(1,'BLOCKED');
+  result.commands=measured.commands;result.blockers='The approved zero-amount assertion is absent; structured proof was not provided.';
+  resultMutation?.(result);
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+  const file=path.join(f.root,'incomplete-coverage.json');await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse}));
+  const requestBytes=await fs.readFile(dispatch.requestFile),request=JSON.parse(requestBytes);
+  const triage={format:'stnl-formal-review-triage-v1',owner:request.owner,requestSha256:digest(requestBytes),responseSha256:digest(Buffer.from(finalResponse)),
+    category:'incomplete-review',inputsAvailable:true,externalBlockers:[],missingWork:[{obligationId:'obligation-01',
+      evidence:'The approved zero-amount assertion is absent from the selected test, but its authenticated omission proof is missing.',
+      remainingWork:'Provide testCoverageOmissions for this approved obligation only; do not change the product or grant a verdict.'}]};
+  triageMutation?.(triage,result);
+  const triageFile=path.join(f.root,'coverage-triage.json');await fs.writeFile(triageFile,JSON.stringify(triage));
+  await beforeCapture?.({f,started,dispatch,file});
+  return {...f,started,dispatch,file,finalResponse,result,agentId,triage,triageFile};
+}
+
+async function concludeCoverageClarification(f,{mutate=null,agentId=f.agentId,invalidText=null}={}) {
+  const dispatch=await reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(f.started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile),{head,...result}=initialPayload(2,'BLOCKED');
+  result.commands=measured.commands;result.blockers='Only the approved zero-amount assertion is missing.';
+  result.priorRoundFailure='The preceding BLOCKED omitted the structured coverage proof.';
+  result.correctionApplied='Clarified only the missing proof; no product or test changed.';
+  result.inSliceRationale='The same producer authenticates the selected existing test for the approved obligation.';
+  result.testCoverageOmissions=[{obligationId:'obligation-01',testPath:'src/pay.test.mjs',
+    testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),
+    evidence:'AC-001 requires pay(0), which the current selected test never calls.',expectedCorrection:'Add the missing zero-amount assertion.'}];
+  mutate?.(result);
+  const finalResponse=invalidText??JSON.stringify({format:'stnl-current-native-judgment-v1',result}),file=path.join(f.root,'clarified-coverage.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse}));
+  return {dispatch,measured,result,file,finalResponse,captured:await captureNative(f.started.handle,file)};
+}
+
+test('EXECUTE coverage clarification binds the same producer, preserves BLOCKED and admits correction only after proof',async t=>{
+  const f=await coverageClarificationFixture(t,{resultMutation:r=>{r.unexpectedWorkspaceEffects='none observed';}});
+  const first=await captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile});
+  assert.equal(first.nextAction,'reserve-dispatch');assert.ok(first.testCoverageClarification);assert.equal(first.testCoverageCorrection,undefined);
+  assert.equal((await resume(f.started.handle)).testCoverageClarification.agentId,f.agentId);
+  assert.equal((await captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile})).replayed,true);
+  await assert.rejects(captureNative(f.started.handle,f.file),{code:'OWNER_MISMATCH'});
+  await assert.rejects(publish(f.started.handle));
+  const second=await concludeCoverageClarification(f);
+  assert.equal(second.captured.status,'BLOCKED');assert.ok(second.captured.testCoverageCorrection);
+  assert.match(second.measured.correctionFeedback.diagnostic,/testCoverageOmissions/u);
+  assert.equal(second.measured.correctionFeedback.previousResponse,f.finalResponse);
+  await fs.appendFile(path.join(f.root,'src/pay.test.mjs'),'test("zero",()=>assert.equal(pay(0),"declined"));\n');
+  const third=await reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await assert.rejects(bindNative(f.started.handle,f.agentId),{code:'OWNER_MISMATCH'});
+  await bindNative(f.started.handle,'fresh-after-actual-test-correction');
+  const measured=await verifyNative(third.originFile),{head,...result}=initialPayload(3,'TESTS_PASS');result.commands=measured.commands;
+  const final=path.join(f.root,'final-coverage.json');await fs.writeFile(final,JSON.stringify({agentId:'fresh-after-actual-test-correction',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+  await captureNative(f.started.handle,final);await publish(f.started.handle);
+  const view=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(view.files.get('continuity.json'))).deliveries[0];
+  assert.equal(current.counters.implementationChecks,3);assert.equal(view.inspection.state,'IMPLEMENTED_AWAITING_VALIDATION');
+  const bundle=JSON.parse(Buffer.from(view.files.get(current.evidence.path)));
+  assert.ok(bundle.objects.some(x=>Buffer.from(x.bytesBase64,'base64').toString('utf8')===f.finalResponse));
+});
+
+for(const fault of ['external-blocker','wrong-owner','wrong-request','wrong-response','unknown-obligation','no-inputs'])
+test(`EXECUTE coverage clarification refuses triage ${fault}`,async t=>{
+  const f=await coverageClarificationFixture(t,{triageMutation:triage=>{
+    if(fault==='external-blocker')triage.externalBlockers=['Security policy denied required access'];
+    if(fault==='wrong-owner')triage.owner={...triage.owner,ownershipToken:'foreign'};
+    if(fault==='wrong-request')triage.requestSha256='sha256:'+'a'.repeat(64);
+    if(fault==='wrong-response')triage.responseSha256='sha256:'+'a'.repeat(64);
+    if(fault==='unknown-obligation')triage.missingWork[0].obligationId='obligation-999';
+    if(fault==='no-inputs')triage.inputsAvailable=false;
+  }});
+  await assert.rejects(captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile}),{code:'FORMAL_RECOVERY_NOT_ELIGIBLE'});
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+});
+
+for(const fault of ['missing-proof','wrong-hash','untriaged-obligation','PASS','malformed','semantic','different-agent','product-change'])
+test(`EXECUTE coverage clarification cannot authorize ${fault}`,async t=>{
+  const f=await coverageClarificationFixture(t);await captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile});
+  if(fault==='product-change')await fs.appendFile(path.join(f.root,'src/pay.mjs'),'// changed before clarification\n');
+  const conclusion=concludeCoverageClarification(f,{agentId:fault==='different-agent'?'foreign-clarifier':f.agentId,invalidText:fault==='malformed'?'{invalid clarification':null,mutate:result=>{
+    if(fault==='missing-proof')delete result.testCoverageOmissions;
+    if(fault==='wrong-hash')result.testCoverageOmissions[0].testedFileSha256='sha256:'+'a'.repeat(64);
+    if(fault==='untriaged-obligation')result.testCoverageOmissions[0].obligationId='obligation-999';
+    if(fault==='PASS'){result.status='TESTS_PASS';delete result.testCoverageOmissions;}
+    if(fault==='semantic')result.coverage='pending';
+  }});
+  if(['different-agent','product-change'].includes(fault))await assert.rejects(conclusion);
+  else {
+    const refused=await conclusion;assert.equal(refused.captured.nextAction,'blocked');
+    assert.equal(refused.captured.captureClass,'coverage-clarification-rejected');
+    assert.equal((await resume(f.started.handle)).nextAction,'blocked');
+    assert.equal((await captureNative(f.started.handle,refused.file)).replayed,true);
+    const {context}=await resolveCurrentExecutionContext(f.specPath);
+    const activation=JSON.parse(await fs.readFile(path.join(context.logicalExecutionRoot,'activation.json')));
+    await assert.rejects(normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:activation.activationId}));
+    await assert.rejects(fs.stat(path.join(path.dirname(f.dispatch.originFile),'round-3.origin.json')),{code:'ENOENT'});
+  }
+  await assert.rejects(publish(f.started.handle));
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+});
+
+test('EXECUTE coverage clarification never attaches triage to a previously captured response',async t=>{
+  const f=await coverageClarificationFixture(t);await captureNative(f.started.handle,f.file);
+  const receipt=path.join(path.dirname(f.dispatch.originFile),'round-1.receipt.json'),before=await fs.readFile(receipt);
+  await assert.rejects(captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile}),{code:'OWNER_MISMATCH'});
+  assert.deepEqual(await fs.readFile(receipt),before);assert.equal((await resume(f.started.handle)).nextAction,'blocked');
+});
+
+test('EXECUTE coverage clarification refuses an uncertain observation without a second dispatch',async t=>{
+  const f=await coverageClarificationFixture(t,{beforeCapture:async({dispatch})=>{
+    const file=path.join(path.dirname(dispatch.originFile),'round-1.observation.json'),observation=JSON.parse(await fs.readFile(file));
+    observation.status='uncertain';await fs.writeFile(file,JSON.stringify(observation));
+  }});
+  await assert.rejects(captureNative(f.started.handle,f.file,{reviewTriageFile:f.triageFile}),{code:'OWNER_UNCERTAIN'});
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+});
+
+test('EXECUTE coverage clarification shares the last remaining invocation with ordinary corrections',async t=>{
+  const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');
+  let dispatch=first;
+  for(let round=1;round<=5;round++) {
+    if(round<=3)await fs.writeFile(path.join(f.root,'src/pay.mjs'),`export const pay=()=>"broken-${round}";\n`);
+    if(round===4)await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+    if(round>1)dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+    const agentId=round===5?'shared-clarification-4':`shared-clarification-${round}`;await bindNative(started.handle,agentId);
+    const measured=await verifyNative(dispatch.originFile),{head,...result}=initialPayload(round,round<=3?'TESTS_FAIL':'BLOCKED');
+    result.automaticCheckRound=`${round}/5`;result.commands=measured.commands;result.blockers=round<=3?'none':'The approved zero-amount assertion is absent.';
+    if(round===5)result.testCoverageOmissions=[{obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),evidence:'No assertion for pay(0).',expectedCorrection:'Add the approved zero-amount assertion.'}];
+    const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result}),file=path.join(f.root,`shared-${round}.json`);
+    await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse}));
+    let reviewTriageFile=null;
+    if(round===4) {
+      const bytes=await fs.readFile(dispatch.requestFile),request=JSON.parse(bytes);
+      reviewTriageFile=path.join(f.root,'shared-triage.json');await fs.writeFile(reviewTriageFile,JSON.stringify({format:'stnl-formal-review-triage-v1',owner:request.owner,
+        requestSha256:digest(bytes),responseSha256:digest(Buffer.from(finalResponse)),category:'incomplete-review',inputsAvailable:true,externalBlockers:[],
+        missingWork:[{obligationId:'obligation-01',evidence:'Structured proof of the absent zero-amount assertion is missing.',remainingWork:'Provide the authenticated omission proof for the approved requirement.'}]}));
+    }
+    const captured=await captureNative(started.handle,file,{reviewTriageFile});assert.equal(captured.nextAction,round<5?'reserve-dispatch':'blocked');
+  }
+  assert.equal((await resume(started.handle)).nextAction,'blocked');
+  await assert.rejects(reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+  await assert.rejects(publish(started.handle));
+});
+
+for(const defect of ['coverage','discoveryActions'])test(`Rejected BLOCKED ${defect} preserves semantic-refusal publication after resume`,async t=>{
+  const f=await coveragePrefixFixture(t,{mutate:r=>{r[defect]='pending';}});
+  const bytes=await fs.readFile(f.file);
+  assert.equal(f.captured.captureClass,'initial-rejection');assert.equal(f.captured.nextAction,'publish');
+  assert.equal((await resume(f.started.handle)).nextAction,'publish');
+  assert.equal((await publish(f.started.handle)).publication,'confirmed');
+  const state=await inspectCurrentExecution(f.specPath);assert.notEqual(state.normalHandoff?.operation,'VALIDATE_SLICE');
+  assert.ok(bytes.equals(await fs.readFile(f.file)));
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+});
+
+for(const phase of ['reserved','running'])test(`Coverage correction cannot use an unconfirmed ${phase} result`,async t=>{
+  const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started}=await reserved(f,'stnl-current-native-judgment-v1');
+  if(phase==='running')await bindNative(started.handle,'coverage-unconfirmed');
+  assert.notEqual((await resume(started.handle)).nextAction,'reserve-dispatch');
+  await assert.rejects(reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+  await assert.rejects(publish(started.handle));
+});
+
+for(const [name,options] of [
+  ['unproved obligation',{mutate:r=>{r.testCoverageOmissions[0].obligationId='obligation-99';}}],
+  ['unproved hash',{mutate:r=>{r.testCoverageOmissions[0].testedFileSha256=`sha256:${'0'.repeat(64)}`;}}],
+  ['not a selected test',{mutate:r=>{r.testCoverageOmissions[0].testPath='src/pay.mjs';}}],
+  ['immutable input test',{inputTest:true}],
+  ['real external blocker',{mutate:r=>{delete r.testCoverageOmissions;r.blockers='Required external dependency is unavailable.';}}],
+])test(`Initial coverage correction refuses ${name} without publication or a second origin`,async t=>{
+  const f=await coveragePrefixFixture(t,options),before=await fs.readFile(f.file);
+  assert.equal(f.captured.status,'BLOCKED');assert.equal(f.captured.nextAction,'blocked');
+  assert.equal((await resume(f.started.handle)).nextAction,'blocked');
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+  await assert.rejects(publish(f.started.handle));
+  assert.ok(before.equals(await fs.readFile(f.file)));
+  await assert.rejects(fs.stat(path.join(path.dirname(f.dispatch.originFile),'round-2.origin.json')),{code:'ENOENT'});
+});
+
+for(const fault of ['no correction','implementation change','unrelated test','authority drift','changed response'])
+test(`Initial coverage correction rejects ${fault} and preserves its first conclusion`,async t=>{
+  const f=await coveragePrefixFixture(t),before=await fs.readFile(f.file);
+  assert.equal(f.captured.nextAction,'reserve-dispatch');
+  assert.equal((await captureNative(f.started.handle,f.file)).replayed,true);
+  if(fault==='implementation change')await fs.appendFile(path.join(f.root,'src/pay.mjs'),'// unrelated implementation change\n');
+  if(fault==='unrelated test')await fs.writeFile(path.join(f.root,'src/other.test.mjs'),'// not the attested test\n');
+  if(fault==='authority drift')await fs.appendFile(f.specPath,'\nAC-002: changed authority.\n');
+  if(fault==='changed response') {
+    const altered=path.join(f.root,'altered-result.json');await fs.writeFile(altered,JSON.stringify({agentId:'controlled-coverage-prefix',status:'completed',finalResponse:f.finalResponse+' '}));
+    await assert.rejects(captureNative(f.started.handle,altered),error=>error.code==='OWNER_MISMATCH');
+  }
+  await assert.rejects(reserveDispatch(f.started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+  assert.ok(before.equals(await fs.readFile(f.file)));
+  await assert.rejects(fs.stat(path.join(path.dirname(f.dispatch.originFile),'round-2.origin.json')),{code:'ENOENT'});
+});
+
+test('Initial exhausted coverage correction remains BLOCKED after five calls and cannot publish',async t=>{
+  const f=await fixture({single:true,coverageOmission:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);const {started,dispatch:first}=await reserved(f,'stnl-current-native-judgment-v1');let dispatch=first;
+  for(const round of [1,2,3,4,5]) {
+    await fs.writeFile(path.join(f.root,'src/pay.mjs'),round<5?`export const pay=()=>"broken${round}";\n`:'export const pay=()=>"paid";\n');
+    if(round>1)dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+    const agentId=`exhausted-coverage-${round}`;await bindNative(started.handle,agentId);const measured=await verifyNative(dispatch.originFile);
+    const {head,...result}=initialPayload(round,round<5?'TESTS_FAIL':'BLOCKED');result.commands=measured.commands;result.automaticCheckRound=`${round}/5`;
+    if(round===5){result.blockers='Zero-amount assertion remains absent.';result.testCoverageOmissions=[{obligationId:'obligation-01',testPath:'src/pay.test.mjs',testedFileSha256:digest(await fs.readFile(path.join(f.root,'src/pay.test.mjs'))),evidence:'No assertion for the zero-amount requirement.',expectedCorrection:'Add the approved missing test.'}];}
+    const file=path.join(f.root,`exhausted-${round}.json`);await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
+    const captured=await captureNative(started.handle,file);assert.equal(captured.nextAction,round<5?'reserve-dispatch':'blocked');
+  }
+  assert.equal((await resume(started.handle)).nextAction,'blocked');
+  await assert.rejects(reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+  await assert.rejects(publish(started.handle));
+});
+
+test('Initial malformed native response persists a refusal without granting acceptance',async t=>{
+  const f=await fixture();
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f);
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  const agentId='controlled-initial-schema-defect';
+  await bindNative(started.handle,agentId);
+  await verifyNative(dispatch.originFile);
+  const file=path.join(f.root,'controlled-schema-tool.json');
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:'{"invalid":'})+'\n');
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.captureClass,'initial-rejection');
+  assert.equal((await captureNative(started.handle,file)).replayed,true);
+  const published=await publish(started.handle);assert.equal(published.transition.outcome,'rejected');
+  const image=await captureCurrentExecution(f.specPath);
+  assert.equal(image.inspection.deliveries[0].counters.implementationChecks,0);
+  assert.equal(image.inspection.normalHandoff?.operation,'EXECUTE_SLICE');
+  const row=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(image.files.get(row.evidence.path)));
+  assert.ok(bundle.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')==='{"invalid":'));
+});
+
+for(const terminal of [false,true])test(`Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal use one selected variant${terminal?' with terminal request binding':''}`,async()=>{
+  const f=await fixture();
+  await installCurrentInitial(f);
+  let ordinal=0;
+  async function operation(kind,{before=null,after=null,status,findings=[]}={}) {
+    if(before!==null) await fs.writeFile(path.join(f.root,'src/pay.mjs'),before);
+    const inspection=await inspectCurrentExecution(f.specPath);
+    const started=await begin({specPath:f.specPath,slice:'slice-01',
+      expectedActivationId:inspection.activationId,operation:kind});
+    if(after!==null) await fs.writeFile(path.join(f.root,'src/pay.mjs'),after);
+    if(terminal && kind!=='VALIDATE_SLICE')await assert.rejects(
+      reserveDispatch(started.handle,{terminal:true}),error=>error.code==='INVALID_CURRENT_IMAGE');
+    const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',
+      terminal:terminal && kind==='VALIDATE_SLICE'});
+    const agentId=`mechanical-initial-cycle-${++ordinal}`;
+    await bindNative(started.handle,agentId);
+    const measured=await verifyNative(dispatch.originFile);
+    const request=JSON.parse(await fs.readFile(dispatch.requestFile));
+    assert.equal(Object.hasOwn(request,'terminal'),terminal && kind==='VALIDATE_SLICE');
+    let result;
+    if(kind==='EXECUTE_SLICE') {
+      const {head,...semantic}=initialPayload(1);
+      result=semantic;
+      result.commands=measured.commands;
+    } else if(kind==='VALIDATE_SLICE') result={status,
+      commands:measured.commands,evidence:'The prepared pay assertion was executed with its recorded exit.',
+      findingReferences:findings.length?'finding-01':status==='PASS'?'finding-01':'none',
+      findingDispositions:findings.length?'finding-01=active':status==='PASS'?'finding-01=resolved':'none',
+      blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
+    else result={status:'TESTS_PASS',automaticCheckRound:'1/3',
+      discoverySources:'Approved task, source and test.',discoveryActions:'Inspected approved source and test.',
+      verificationTypesConsidered:'Approved Node module test.',nonApplicabilityRationale:'none',
+      noVerificationCommandConfirmation:'An applicable check ran.',commands:measured.commands,
+      resultOfEachCommandAndExitCode:'The approved module test completed.',
+      selectedChecks:'Approved Node module test.',selectionRationale:'AC-001 coverage.',
+      coverage:'The pay export is exercised by the prepared test.',findingsVerified:'finding-01',
+      correctionsCovered:'The pay export now equals paid.',regressionsSelected:'Pay import assertion.',
+      unsupportedActiveFindings:'none',failures:'none',evidenceOrFailureSummary:'The approved test exited zero.',
+      affectedFilesOrBehaviors:'src/pay.mjs',blockers:'none',unexpectedWorkspaceEffects:'none',
+      persistenceSummary:'The native helper retained the reviewed observation; the runner made no product changes.'};
+    const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result,
+      ...(kind==='VALIDATE_SLICE'?{newFindings:findings.map(item=>({...item,originAttempt:request.attemptId}))}:{})});
+    const file=path.join(f.root,`mechanical-initial-cycle-${ordinal}.json`);
+    await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+    const captured=await captureNative(started.handle,file);
+    assert.equal(captured.status,kind==='APPLY_FINDINGS'?'TESTS_PASS':status??'TESTS_PASS');
+    const published=await publish(started.handle);
+    assert.equal(published.publication,'confirmed');
+    const continuity=JSON.parse(await fs.readFile(path.join(f.root,'specs/pay/requirements-execution/continuity.json')));
+    const bundle=JSON.parse(await fs.readFile(path.join(f.root,'specs/pay/requirements-execution',continuity.deliveries[0].evidence.path)));
+    for(const check of [...bundle.implementation,...bundle.findingsChecks])assert.equal(check.contract.terminal,null);
+    if(kind==='VALIDATE_SLICE')assert.deepEqual(bundle.validation.contract.terminal,request.terminal??null);
+    return inspectCurrentExecution(f.specPath);
+  }
+  const paid='export const pay=()=>"paid";\n';
+  const broken='export const pay=()=>"broken";\n';
+  const execute=await operation('EXECUTE_SLICE',{after:paid});
+  assert.equal(execute.normalHandoff.operation,'VALIDATE_SLICE');
+  const finding={id:'finding-01',severity:'blocking',problem:'The pay export returns broken.',
+    evidence:'The prepared assertion fails on the pay result.',impact:'AC-001 is unmet.',
+    relatedAuthority:'AC-001',expectedCorrection:'Restore the pay result to paid.'};
+  const formal=await operation('VALIDATE_SLICE',{before:broken,status:'NEEDS_FIX',findings:[finding]});
+  assert.equal(formal.normalHandoff.operation,'APPLY_FINDINGS');
+  const apply=await operation('APPLY_FINDINGS',{after:paid});
+  assert.equal(apply.normalHandoff.operation,'VALIDATE_SLICE');
+  const final=await operation('VALIDATE_SLICE',{status:'PASS'});
+  assert.equal(final.deliveries[0].formalStatus,'PASS');
+  assert.deepEqual(final.deliveries[0].counters,
+    {implementationChecks:1,findingsChecks:1,validationAttempts:2,findings:1});
+});
+
+test('Initial ingress installs reviewed bytes once and reads back pristine',async()=>{
+  const f=await fixture();
+  const installed=await installCurrentInitial(f);
+  assert.equal(installed.publication,'confirmed');
+  const image=await inspectCurrentExecution(f.specPath);
+  assert.equal(image.state,'MATERIALIZED_PRISTINE');
+  assert.deepEqual(image.normalHandoff.operation,'EXECUTE_SLICE');
+  await assert.rejects(installCurrentInitial(f),error=>error.code==='STALE_BASE');
+  assert.equal((await inspectCurrentExecution(f.specPath)).activationId,image.activationId);
+});
+
+test('U3.15-A shared ancestor file claim has consistent Initial baseline, readback and active capture',async t=>{
+  const f=await fixture({kind:'lifecycle',sharedAncestor:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await fs.writeFile(path.join(f.root,'docs/unrelated.txt'),'protected sibling\n');
+  await fs.symlink('unrelated.txt',path.join(f.root,'docs/unselected-link'));
+  const before=await fs.readFile(f.specPath);
+  const installed=await installCurrentInitial(f);
+  assert.equal(installed.publication,'confirmed');assert.equal(installed.cleanup,'complete');
+  const image=await captureCurrentExecution(f.specPath);
+  assert.equal(image.inspection.state,'MATERIALIZED_PRISTINE');
+  const current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
+  assert.deepEqual(current.baseline,image.observedByDelivery.get(current.deliveryId).manifest);
+  assert.deepEqual(current.baseline.entries.find(x=>x.path==='docs'),{path:'docs',kind:'directory',children:[]});
+  assert.deepEqual(current.baseline.entries.find(x=>x.path==='docs/report.md'),{path:'docs/report.md',kind:'absent'});
+  assert.ok(!current.baseline.entries.some(x=>x.path==='docs/spec'||x.path.includes('unrelated')||x.path.includes('unselected')));
+  const started=await begin({specPath:f.specPath,slice:'slice-01',expectedActivationId:image.inspection.activationId,operation:'EXECUTE_SLICE'});
+  const active=await captureCurrentActiveExecution(f.specPath,started.owner);
+  assert.deepEqual(active.observedByDelivery.get(current.deliveryId).manifest,current.baseline);
+  assert.deepEqual(await fs.readFile(f.specPath),before);
+  assert.equal(await fs.readFile(path.join(f.root,'docs/unrelated.txt'),'utf8'),'protected sibling\n');
+});
+
+test('U3.15-A missing claim ancestor refuses before publication and preserves reviewed bytes',async t=>{
+  const f=await fixture({kind:'lifecycle',sharedAncestor:true,missingAncestor:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const before=await captureExecutionTree(f.preparationRoot);
+  await assert.rejects(installCurrentInitial(f),error=>['EVIDENCE_INCOMPLETE','EVIDENCE_STALE','UNSAFE_PATH'].includes(error.code));
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  assert.deepEqual(await captureExecutionTree(f.preparationRoot),before);
+  assert.equal(await fs.stat(path.join(f.root,'docs/missing')).catch(()=>null),null);
+});
+
+test('U3.15-A CLI installs present file and recovers the same activation from another cwd',async t=>{
+  const f=await fixture({kind:'lifecycle',sharedAncestor:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await fs.writeFile(path.join(f.root,'docs/report.md'),'reviewed product document\n');
+  const reviewFile=path.join(f.root,'review.json');await fs.writeFile(reviewFile,JSON.stringify(f.review));
+  const installer=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs');
+  const installed=JSON.parse((await run(process.execPath,[installer,'--spec-path',f.specPath,
+    '--preparation-root',f.preparationRoot,'--review-file',reviewFile],{cwd:'/tmp'})).stdout);
+  assert.equal(installed.publication,'confirmed');assert.equal(installed.cleanup,'complete');
+  const image=await captureCurrentExecution(f.specPath);
+  const current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
+  assert.deepEqual(current.baseline.entries.find(x=>x.path==='docs'),{path:'docs',kind:'directory',children:['report.md']});
+  assert.equal(current.baseline.entries.find(x=>x.path==='docs/report.md').kind,'file');
+  assert.deepEqual(image.observedByDelivery.get(current.deliveryId).manifest,current.baseline);
+
+  const pending=await fixture({kind:'lifecycle',sharedAncestor:true});
+  t.after(()=>fs.rm(pending.root,{recursive:true,force:true}));
+  let allocation;
+  await assert.rejects(installCurrentInitial({...pending,checkpoint:step=>{
+    if(step==='after-activation')throw Error('controlled shared ancestor interruption');
+  }}),error=>{allocation=error.allocation;return /controlled shared ancestor interruption/u.test(error.message)&&!!allocation;});
+  const before=await captureCurrentExecution(pending.specPath);
+  const {workspace}=await resolveCurrentExecutionContext(pending.specPath);
+  const tree=await captureExecutionTree(workspace.executionRoot);
+  const result=JSON.parse((await run(process.execPath,[installer,'--spec-path',pending.specPath,
+    '--recover-allocation',allocation],{cwd:'/tmp'})).stdout);
+  assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');
+  const after=await captureCurrentExecution(pending.specPath);
+  assert.deepEqual(after.activationBytes,before.activationBytes);assert.deepEqual(after.files,before.files);
+  assert.deepEqual((await captureExecutionTree(workspace.executionRoot)).identity,tree.identity);
+  assert.equal(await fs.lstat(allocation).catch(()=>null),null);
+});
+
+for(const unsafe of ['target-symlink','ancestor-symlink','hardlink','file-kind','recipe-kind'])
+test(`U3.15-A refuses ${unsafe} before Initial writes`,async t=>{
+  const f=await fixture({kind:'lifecycle',sharedAncestor:true,missingAncestor:unsafe==='ancestor-symlink'});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  if(unsafe==='target-symlink')await fs.symlink('../src/pay.test.mjs',path.join(f.root,'docs/report.md'));
+  if(unsafe==='ancestor-symlink')await fs.symlink('../src',path.join(f.root,'docs/missing'));
+  if(unsafe==='hardlink')await fs.link(path.join(f.root,'src/pay.test.mjs'),path.join(f.root,'docs/report.md'));
+  if(unsafe==='file-kind')await fs.mkdir(path.join(f.root,'docs/report.md'));
+  if(unsafe==='recipe-kind'){
+    await fs.unlink(path.join(f.root,'src/pay.test.mjs'));
+    await fs.mkdir(path.join(f.root,'src/pay.test.mjs'));
+  }
+  const before=await captureExecutionTree(f.preparationRoot);
+  await assert.rejects(installCurrentInitial(f),error=>['UNSAFE_PATH','EVIDENCE_STALE'].includes(error.code));
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  assert.deepEqual(await captureExecutionTree(f.preparationRoot),before);
+});
+
+test('U3.15-A full Initial closure survives terminal proof and supported completed publication',async t=>{
+  const f=await fixture({kind:'lifecycle',sharedAncestor:true,single:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const execute=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await fs.writeFile(path.join(f.root,'docs/report.md'),'product evidence\n');
+  const agentId='mechanical-shared-closure';await bindNative(execute.started.handle,agentId);
+  const measured=await verifyNative(execute.dispatch.originFile),{head,...result}=initialPayload(1);
+  result.commands=measured.commands;result.affectedFilesOrBehaviors='src/pay.mjs; docs/report.md';
+  const tool=path.join(f.root,'mechanical-shared-closure.json');
+  await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+  await captureNative(execute.started.handle,tool);await publish(execute.started.handle);
+  const {context}=await resolveCurrentExecutionContext(f.specPath);
+  const {normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  await normalizedFormal({...f,view:{execution:context.logicalExecutionRoot},delivery:{slice:'slice-01'}},
+    {terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+  const source=await captureCurrentExecution(f.specPath);assert.equal(source.inspection.state,'COMPLETE');
+  const prior=JSON.parse(Buffer.from(source.files.get('continuity.json'))).deliveries[0];
+  const {createCurrentNativeValidationCapture}=await import('../skills/workflows/stnl-slice-executor/runtime/current-native-validation-capture.mjs');
+  const contents=await fs.readdir(f.root);
+  await assert.rejects(createCurrentNativeValidationCapture({specPath:f.specPath,deliveryId:prior.deliveryId,captureParent:f.root}),
+    error=>error.code==='UNSUPPORTED_FORMAT'&&/Initial/u.test(error.message));
+  assert.deepEqual(await fs.readdir(f.root),contents,'offline v3 refusal happens before capture allocation');
+  const draft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:[prior.deliveryId]});
+  for(const name of ['plan.md','tasks.md'])await fs.writeFile(path.join(draft.candidateExecutionRoot,name),
+    Buffer.from(Buffer.from(source.files.get(name)).toString('utf8').split('\n').filter(line=>!line.includes('| 01 -')).join('\n')));
+  const {publishPreparationCandidate}=await import('../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs');
+  const options={specPath:f.specPath,candidateExecutionRoot:draft.candidateExecutionRoot};
+  const proposal=await publishPreparationCandidate(options);
+  const approve=request=>({...structuredClone(request),decision:'approved',summary:'Mechanical closure compatibility review.',
+    evidenceDecisions:request.evidenceDecisions.map(item=>({...item,reason:'Retain exact source proof.'}))});
+  const reviewDecision={globalReview:approve(proposal.reviewRequest.globalReview),
+    deliveries:proposal.reviewRequest.deliveries.map(item=>({deliveryId:item.deliveryId,review:approve(item.review)}))};
+  const published=await publishPreparationCandidate({...options,reviewDecision});
+  assert.equal(published.publication,'confirmed');assert.equal(published.cleanup,'complete');
+  const after=await captureCurrentExecution(f.specPath),completed=JSON.parse(Buffer.from(after.files.get('continuity.json'))).completed[0];
+  assert.deepEqual(completed.baseline,prior.baseline);
+  const retained=JSON.parse(Buffer.from(after.files.get(completed.evidence.path)));
+  const original=JSON.parse(Buffer.from(source.files.get(prior.evidence.path)));
+  assert.equal(digest(Buffer.from(JSON.stringify(retained.objects))),digest(Buffer.from(JSON.stringify(original.objects))));
+  assert.equal(digest(Buffer.from(JSON.stringify(retained.validation))),digest(Buffer.from(JSON.stringify(original.validation))));
+  assert.equal(after.inspection.completed[0].observedValidation,'current');
+  assert.equal(after.inspection.completed[0].formalStatus,'PASS');
+});
+
+test('U3.15-A recovery preserves a literal earlier projected baseline without granting EXECUTE',async t=>{
+  const f=await fixture({kind:'lifecycle',sharedAncestor:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const {context,workspace}=await resolveCurrentExecutionContext(f.specPath);
+  const {approveInitialPreparation,validateCurrentPreparation}=await import('../skills/workflows/stnl-execution-planner/runtime/execution-preparation-current.mjs');
+  const {observeCurrentDeliveryWork}=await import('../skills/workflows/stnl-execution-planner/runtime/execution-current-reader.mjs');
+  const {validateCurrentCandidate}=await import('../skills/workflows/stnl-execution-planner/runtime/execution-current.mjs');
+  const {publishExecutionUpdate}=await import('../skills/workflows/stnl-execution-planner/runtime/execution-publication.mjs');
+  const {assertPreparationCandidate}=await import('../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs');
+  const artifacts=new Map();
+  for(const item of (await captureExecutionTree(f.preparationRoot)).files)if(item.type==='file')
+    artifacts.set(item.path,await fs.readFile(path.join(f.preparationRoot,item.path)));
+  const requirementsAuthority=(await inspectCurrentExecution(f.specPath)).requirementsAuthority;
+  const approved=approveInitialPreparation({context,requirementsAuthority,artifacts,review:f.review});
+  const prepared=validateCurrentPreparation({context,requirementsAuthority,snapshotBytes:approved.bytes,artifacts});
+  const deliveries=[];
+  for(const [index,item] of approved.snapshot.deliveries.entries()) {
+    const current={slice:item.slice,deliveryId:item.deliveryId,localRevision:1,authoritySha256:item.review.authoritySha256,
+      validation:'unvalidated',evidence:null,counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},
+      baseline:{format:'stnl-current-work-v1',entries:[]},normalization:null,lastDiagnostic:null};
+    // Author an earlier supported image as test setup, not a native proof or migration.
+    current.baseline=(await observeCurrentDeliveryWork({context,delivery:approved.snapshot.normativeProjection.deliveries[index],
+      sections:prepared.currentArtifacts.deliveries[index].sections,current,bundle:null})).manifest;
+    deliveries.push(current);
+  }
+  assert.ok(deliveries[0].baseline.entries.some(item=>item.path==='docs/report.md'));
+  assert.ok(!deliveries[0].baseline.entries.some(item=>item.path==='docs'));
+  const files=new Map([...artifacts,['approved-preparation.json',Buffer.from(approved.bytes)],
+    ['continuity.json',Buffer.from(JSON.stringify({format:'stnl-delivery-continuity-v2',nextSliceOrdinal:3,deliveries,completed:[]})+'\n')]]);
+  validateCurrentCandidate({files});
+  const draft=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
+  for(const [name,bytes] of files) {
+    const target=path.join(draft.candidateExecutionRoot,name);await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,bytes);
+  }
+  const owned=await assertPreparationCandidate(draft.candidateExecutionRoot,f.specPath);
+  let allocation;
+  await assert.rejects(publishExecutionUpdate({workspace,candidateExecutionRoot:draft.candidateExecutionRoot,
+    expectedTree:null,expectedActivationId:null,currentInitial:true,preparationRecord:owned.marker,
+    authorizeDiff:async()=>{},validateCandidate:async()=>prepared.authority,
+    readActivated:async()=>({activation:JSON.parse(Buffer.from((await captureCurrentExecution(f.specPath)).activationBytes))}),
+    checkpoint:step=>{if(step==='after-activation')throw Error('controlled earlier Initial pending publication');}}),
+    error=>{allocation=error.allocation;return /controlled earlier Initial pending publication/u.test(error.message)&&!!allocation;});
+  const before=await captureCurrentExecution(f.specPath),tree=await captureExecutionTree(workspace.executionRoot);
+  assert.equal(before.inspection.state,'EVIDENCE_STALE');assert.equal(before.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
+  const recovered=await recoverCurrentInitialPublication({specPath:f.specPath,allocation});
+  assert.equal(recovered.publication,'confirmed');assert.equal(recovered.cleanup,'complete');
+  const after=await captureCurrentExecution(f.specPath);
+  assert.deepEqual(after.activationBytes,before.activationBytes);assert.deepEqual(after.files,before.files);
+  assert.deepEqual((await captureExecutionTree(workspace.executionRoot)).identity,tree.identity);
+  assert.deepEqual(JSON.parse(Buffer.from(after.files.get('continuity.json'))).deliveries,deliveries);
+  await assert.rejects(begin({specPath:f.specPath,slice:'slice-01',expectedActivationId:after.inspection.activationId,operation:'EXECUTE_SLICE'}),
+    error=>['UNSUPPORTED_FORMAT','EVIDENCE_STALE'].includes(error.code));
+  await assert.rejects(begin({specPath:f.specPath,slice:'slice-01',expectedActivationId:after.inspection.activationId,operation:'VALIDATE_SLICE'}),
+    error=>error.code==='EVIDENCE_INCOMPLETE');
+});
+
+test('U3.15-A terminal uses the other Initial full closure and retains removed in-domain leaves',async t=>{
+  const f=await fixture({kind:'lifecycle',sharedAncestor:true,independentAreas:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await fs.writeFile(path.join(f.root,'src/retired.mjs'),'export const retired=true;\n');
+  await installCurrentInitial(f);
+  const {context}=await resolveCurrentExecutionContext(f.specPath);
+  const {normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  for(const [index,directory] of ['src','other'].entries()) {
+    const slice=`slice-0${index+1}`,image=await captureCurrentExecution(f.specPath);
+    const current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[index];
+    assert.deepEqual(image.observedByDelivery.get(current.deliveryId).manifest,current.baseline,slice+' pristine');
+    const execute=await reserved(f,'stnl-current-native-judgment-v1');
+    assert.equal(execute.started.owner.slice,slice);
+    await fs.writeFile(path.join(f.root,directory,'pay.mjs'),'export const pay=()=>"paid";\n');
+    if(index===0)await fs.writeFile(path.join(f.root,'docs/report.md'),'nested file\n');
+    const agentId='mechanical-closure-delivery-'+index;await bindNative(execute.started.handle,agentId);
+    const measured=await verifyNative(execute.dispatch.originFile),{head,...result}=initialPayload(1);
+    result.commands=measured.commands;result.affectedFilesOrBehaviors=directory+'/pay.mjs';
+    const tool=path.join(f.root,agentId+'.json');await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',
+      finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+    await captureNative(execute.started.handle,tool);await publish(execute.started.handle);
+    await normalizedFormal({...f,view:{execution:context.logicalExecutionRoot},delivery:{slice}},
+      {terminal:index===1,responseVariant:'stnl-current-native-judgment-v1'});
+  }
+  const source=await captureCurrentExecution(f.specPath);assert.equal(source.inspection.state,'COMPLETE');
+  assert.equal(Object.hasOwn(source.inspection.deliveries[0],'initialObservation'),false);
+  const first=JSON.parse(Buffer.from(source.files.get('continuity.json'))).deliveries[0];
+  assert.ok(source.observedByDelivery.get(first.deliveryId).manifest.entries.some(item=>item.path==='docs'&&item.kind==='directory'));
+  await fs.unlink(path.join(f.root,'src/retired.mjs'));
+  const after=await captureCurrentExecution(f.specPath);
+  assert.notEqual(after.inspection.state,'COMPLETE');
+  assert.deepEqual(after.observedByDelivery.get(first.deliveryId).manifest.entries.find(item=>item.path==='src/retired.mjs'),
+    {path:'src/retired.mjs',kind:'absent'});
+});
+
+test('Initial promotes the same registered PLAN inode and retires only its controls',async()=>{
+  const f=await fixture();
+  const {workspace}=await resolveCurrentExecutionContext(f.specPath);
+  const prepared=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
+  const candidate=prepared.candidateExecutionRoot;
+  await fs.cp(f.preparationRoot,candidate,{recursive:true});
+  const before=await captureExecutionTree(candidate),source=await captureExecutionTree(f.preparationRoot);
+  const installed=await installCurrentInitial({...f,preparationRoot:candidate});
+  assert.equal(installed.publication,'confirmed');assert.equal(installed.cleanup,'complete');
+  assert.equal(installed.candidateRoot,candidate);assert.equal(installed.preparationDisposition,'retired');
+  const live=await captureExecutionTree(workspace.executionRoot);
+  assert.deepEqual(live.identity,before.identity,'Initial must rename the reviewed PLAN, not copy its tree');
+  assert.deepEqual(live.files.filter(item=>!['activation.json','approved-preparation.json','continuity.json'].includes(item.path)),before.files);
+  assert.deepEqual(await captureExecutionTree(f.preparationRoot),source,'external input remains unchanged');
+  assert.equal(await fs.stat(candidate).catch(()=>null),null);
+  assert.equal(await fs.stat(`${candidate}.owner.json`).catch(()=>null),null);
+  assert.equal(await fs.stat(installed.allocation).catch(()=>null),null);
+  const roots=await resolveExecutionFilesystemRoots(workspace);
+  assert.deepEqual(JSON.parse(await fs.readFile(roots.preparationRegistry)).allocations,[]);
+});
+
+for(const point of ['after-install','after-activation-intent'])test(`Initial recovery restores absence and retires its same candidate at ${point}`,async()=>{
+  const f=await fixture(),source=await captureExecutionTree(f.preparationRoot);
+  let allocation;
+  await assert.rejects(installCurrentInitial({...f,checkpoint:step=>{if(step===point)throw new Error('controlled Initial interruption');}}),error=>{
+    allocation=error.allocation;return /controlled Initial interruption/.test(error.message)&&typeof allocation==='string';
+  });
+  const result=await recoverCurrentInitialPublication({specPath:f.specPath,allocation});
+  assert.equal(result.publication,'aborted');assert.equal(result.cleanup,'complete');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  assert.deepEqual(await captureExecutionTree(f.preparationRoot),source);
+});
+
+for(const point of ['before-backup','after-backup'])test(`Initial rejects a byte-identical candidate replacement at ${point} before promotion`,async()=>{
+  const f=await fixture();let candidate,saved;
+  await assert.rejects(installCurrentInitial({...f,checkpoint:async(step,paths)=>{if(step===point){
+    candidate=paths.stage;saved=candidate+'.original';await fs.rename(candidate,saved);await fs.cp(saved,candidate,{recursive:true});
+  }}}),/identity|registered|candidate/i);
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  assert.notDeepEqual((await captureExecutionTree(candidate)).identity,(await captureExecutionTree(saved)).identity);
+  assert.deepEqual((await captureExecutionTree(candidate)).files,(await captureExecutionTree(saved)).files);
+  await fs.access(`${candidate}.owner.json`);
+});
+
+for(const variant of ['rename','sync'])test(`Initial recovery retains its lease on uncertain ${variant} while restoring absence`,async()=>{
+  const f=await fixture();let allocation;
+  await assert.rejects(installCurrentInitial({...f,checkpoint:step=>{if(step==='after-activation-intent')throw new Error('controlled interruption');}}),error=>{allocation=error.allocation;return /controlled interruption/.test(error.message);});
+  const record=JSON.parse(await fs.readFile(allocation)),{workspace}=await resolveCurrentExecutionContext(f.specPath);
+  const rename=fs.rename,open=fs.open;let armed=false,injected=0,caught;
+  fs.rename=async(from,to)=>{if(from===workspace.executionRoot&&to===record.candidate){
+    if(variant==='rename'){injected++;throw Object.assign(Error('controlled rename uncertainty'),{code:'EIO'});}
+    const result=await rename(from,to);armed=true;return result;
+  }return rename(from,to);};
+  fs.open=async(file,...args)=>{if(armed&&file===path.dirname(workspace.executionRoot)){injected++;throw Object.assign(Error('controlled sync uncertainty'),{code:'EIO'});}return open(file,...args);};
+  try{await recoverCurrentInitialPublication({specPath:f.specPath,allocation});}catch(error){caught=error;}finally{fs.rename=rename;fs.open=open;}
+  assert.equal(injected,1);assert.equal(caught?.retainExecutionLock,true);
+  await fs.access(allocation);await fs.access(`${record.candidate}.owner.json`);
+  await fs.access((await executionLockIdentity(workspace)).lockPath);
+});
+
+for(const entry of ['directory','file'])test(`Initial lifecycle ${entry} entry shares its canonical PLAN and authority`,async()=>{
+  const f=await fixture({kind:'lifecycle',entry});
+  const drafted=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
+  await fs.cp(f.preparationRoot,drafted.candidateExecutionRoot,{recursive:true});
+  const marker=JSON.parse(await fs.readFile(`${drafted.candidateExecutionRoot}.owner.json`));
+  assert.equal(path.basename(marker.specPath),'feature_spec.md');
+  const alternate=entry==='directory'?path.join(f.specPath,'feature_spec.md'):path.dirname(f.specPath);
+  assert.equal((await preparePreparationCandidate({specPath:alternate,operation:'REVIEW_PLAN',candidateExecutionRoot:drafted.candidateExecutionRoot})).status,'AWAITING_REVIEW');
+  const installed=await installCurrentInitial({...f,specPath:alternate,preparationRoot:drafted.candidateExecutionRoot});
+  assert.equal(installed.cleanup,'complete');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'MATERIALIZED_PRISTINE');
+});
+
+test('Initial controller seals explicit physical policy through handle and dispatch reentry',async()=>{
+  const f=await fixture();await installCurrentInitial(f);
+  const inspection=await inspectCurrentExecution(f.specPath);
+  const temporaryRoot=path.join(f.root,'tmp','sentinel');
+  const filesystemContext={productRoot:f.root,temporaryRoot,excludedRoots:[temporaryRoot]};
+  const started=await begin({specPath:f.specPath,slice:'slice-01',operation:'EXECUTE_SLICE',expectedActivationId:inspection.activationId,filesystemContext});
+  assert.deepEqual(started.handle.filesystemContext,filesystemContext);
+  assert.equal((await resume(started.handle)).phase,'working');
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal(dispatch.phase,'dispatch-reserved');
+  assert.equal(path.dirname(path.dirname(dispatch.originFile)),path.join(temporaryRoot,createHash('sha256').update(path.join(f.root,'specs/pay/requirements-execution')).digest('hex')));
+  const origin=JSON.parse(await fs.readFile(dispatch.originFile));
+  assert.deepEqual(origin.admission.binding.filesystemContext,filesystemContext);
+  const changedRoot=path.join(f.root,'tmp','another controller');
+  await assert.rejects(resume({...started.handle,filesystemContext:{...filesystemContext,temporaryRoot:changedRoot,excludedRoots:[changedRoot]}}));
+  assert.equal(await fs.stat(changedRoot).catch(()=>null),null);
+});
+
+test('Initial resumes exact deterministic files on its same PLAN after a pre-publisher write failure',async()=>{
+  const f=await fixture();const prepared=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
+  const candidate=prepared.candidateExecutionRoot;await fs.cp(f.preparationRoot,candidate,{recursive:true});
+  const identity=(await captureExecutionTree(candidate)).identity,open=fs.open;let injected=0,caught;
+  fs.open=async(file,...args)=>{if(file===path.join(candidate,'continuity.json')){injected++;throw Object.assign(Error('controlled second generated write'),{code:'EIO'});}return open(file,...args);};
+  try{await installCurrentInitial({...f,preparationRoot:candidate});}catch(error){caught=error;}finally{fs.open=open;}
+  assert.equal(injected,1);assert.equal(caught?.candidateRoot,candidate);assert.equal(caught?.publication,'not-started');
+  const approval=await fs.readFile(path.join(candidate,'approved-preparation.json'));
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  const installed=await installCurrentInitial({...f,preparationRoot:candidate});
+  const {workspace}=await resolveCurrentExecutionContext(f.specPath);
+  assert.deepEqual((await captureExecutionTree(workspace.executionRoot)).identity,identity);
+  assert.deepEqual(await fs.readFile(path.join(workspace.executionRoot,'approved-preparation.json')),approval);
+  assert.equal(installed.cleanup,'complete');
+});
+
+test('Initial refuses stale generated files on a registered PLAN without overwriting them',async()=>{
+  const f=await fixture();const prepared=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
+  await fs.cp(f.preparationRoot,prepared.candidateExecutionRoot,{recursive:true});
+  const file=path.join(prepared.candidateExecutionRoot,'continuity.json');await fs.writeFile(file,'foreign generated bytes\n');
+  const before=await captureExecutionTree(prepared.candidateExecutionRoot);
+  await assert.rejects(installCurrentInitial({...f,preparationRoot:prepared.candidateExecutionRoot}),error=>error.code==='STALE_APPROVAL');
+  assert.deepEqual(await captureExecutionTree(prepared.candidateExecutionRoot),before);
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+});
+
+test('Initial interruption restores absence; explicit own recovery precedes a fresh reviewed install',async()=>{
+  const f=await fixture();let interrupted;
+  await assert.rejects(installCurrentInitial({...f,checkpoint:step=>{
+    if(step==='before-activation') throw new Error('injected before activation');
+  }}),error=>{interrupted=error;return /injected before activation/u.test(error.message);});
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  assert.ok(interrupted.allocation);const source=await captureExecutionTree(f.preparationRoot);
+  await assert.rejects(installCurrentInitial(f),/prior preparation publication or cleanup remains pending/u);
+  assert.deepEqual(await captureExecutionTree(f.preparationRoot),source);
+  const recovered=await recoverCurrentInitialPublication({specPath:f.specPath,allocation:interrupted.allocation});
+  assert.equal(recovered.publication,'aborted');assert.equal(recovered.cleanup,'complete');assert.deepEqual(await captureExecutionTree(f.preparationRoot),source);
+  const installed=await installCurrentInitial(f);
+  assert.equal(installed.publication,'confirmed');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'MATERIALIZED_PRISTINE');
+});
+
+test('Initial rejects a reviewed source changed at before-backup under the publication lock',async()=>{
+  const f=await fixture();
+  await assert.rejects(installCurrentInitial({...f,checkpoint:async step=>{
+    if(step==='before-backup') await fs.appendFile(path.join(f.preparationRoot,'plan.md'),'\nlate edit\n');
+  }}),error=>error.code==='STALE_APPROVAL');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+});
+
+test('Initial rejects requirements changed at before-backup under the publication lock',async()=>{
+  const f=await fixture();
+  await assert.rejects(installCurrentInitial({...f,checkpoint:async step=>{
+    if(step==='before-backup') await fs.appendFile(f.specPath,'\nlate requirement\n');
+  }}),error=>error.code==='STALE_APPROVAL');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+});
+
+test('Initial rejects product input changed at before-backup under the publication lock',async()=>{
+  const f=await fixture();
+  await assert.rejects(installCurrentInitial({...f,checkpoint:async step=>{
+    if(step==='before-backup') await fs.appendFile(path.join(f.root,'src/pay.test.mjs'),'// late input edit\n');
+  }}),error=>error.code==='EVIDENCE_STALE');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+});
+
+test('Initial interruption after activation recovers the exact installed image',async()=>{
+  const f=await fixture();
+  let allocation;
+  await assert.rejects(installCurrentInitial({...f,checkpoint:step=>{
+    if(step==='after-activation') throw new Error('injected after activation');
+  }}),error=>{
+    allocation=error.allocation;
+    return /activation outcome uncertain/u.test(error.message) && typeof allocation==='string';
+  });
+  const before=await inspectCurrentExecution(f.specPath);
+  assert.equal(before.state,'MATERIALIZED_PRISTINE');
+  const recovered=await recoverCurrentInitialPublication({specPath:f.specPath,allocation});
+  assert.equal(recovered.publication,'confirmed');
+  assert.equal(recovered.cleanup,'complete');
+  assert.equal((await inspectCurrentExecution(f.specPath)).activationId,before.activationId);
+});
+
+test('Initial recovery refuses another execution allocation',async()=>{
+  const first=await fixture();
+  const second=await fixture();
+  const installed=await installCurrentInitial({...first,checkpoint:step=>{if(step==='cleanup')throw new Error('retain pending publisher');}});
+  assert.equal(installed.cleanup,'pending');
+  const markerBefore=await fs.readFile(installed.allocation);
+  await installCurrentInitial(second);
+  await assert.rejects(recoverCurrentInitialPublication({specPath:second.specPath,
+    allocation:installed.allocation}),/another execution/u);
+  assert.deepEqual(await fs.readFile(installed.allocation),markerBefore);
+});
+
+test('Initial native recipe permits absent approved output after admission',async()=>{
+  const f=await fixture();
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f);
+  assert.equal(dispatch.round,1);
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await bindNative(started.handle,'mechanical-initial-runner');
+  const verified=await verifyNative(dispatch.originFile);
+  assert.equal(verified.status,'completed');
+  assert.deepEqual(verified.commands.map(item=>item.exit),[0]);
+});
+
+test('Initial native preflight blocks a changed Existing Input test before recipe',async()=>{
+  const f=await fixture({inputTest:true});
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f);
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await fs.appendFile(path.join(f.root,'src/pay.test.mjs'),'// foreign input edit\n');
+  await bindNative(started.handle,'mechanical-initial-input-drift');
+  await assert.rejects(verifyNative(dispatch.originFile),error=>error.code==='EVIDENCE_STALE');
+  const verification=path.join(path.dirname(dispatch.originFile),'round-1.verification.json');
+  await assert.rejects(fs.lstat(verification),error=>error.code==='ENOENT');
+});
+
+test('Initial native preflight blocks another delivery input change',async()=>{
+  const f=await fixture({otherInput:true});
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f);
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await fs.writeFile(path.join(f.root,'src/other.txt'),'changed independent input\n');
+  await bindNative(started.handle,'mechanical-initial-other-drift');
+  await assert.rejects(verifyNative(dispatch.originFile),error=>error.code==='EVIDENCE_STALE');
+  const verification=path.join(path.dirname(dispatch.originFile),'round-1.verification.json');
+  await assert.rejects(fs.lstat(verification),error=>error.code==='ENOENT');
+});
+
+for(const secondInvalid of [false,true])test(`D1 Initial formal refusal preserves bounded corrections (${secondInvalid?'two corrections exhausted':'PASS'})`,async()=>{
+  const f=await fixture();await installCurrentInitial(f);
+  const implementation=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await bindNative(implementation.started.handle,'mechanical-D1-Initial-implementation');
+  const measured=await verifyNative(implementation.dispatch.originFile),{head,...result}=initialPayload(1);result.commands=measured.commands;
+  const tool=path.join(f.root,'mechanical-D1-Initial-implementation.json');await fs.writeFile(tool,JSON.stringify({agentId:'mechanical-D1-Initial-implementation',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+  await captureNative(implementation.started.handle,tool);await publish(implementation.started.handle);
+  const {context}=await resolveCurrentExecutionContext(f.specPath);
+  const carrier={...f,head:(await run('git',['-C',f.root,'rev-parse','HEAD'])).stdout.trim(),
+    delivery:{slice:'slice-01'},view:{execution:context.logicalExecutionRoot}};
+  const{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  await normalizedFormal(carrier,{invalid:true,responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff?.operation,'VALIDATE_SLICE');
+  await normalizedFormal(carrier,{successor:true,invalid:secondInvalid,responseVariant:'stnl-current-native-judgment-v1'});
+  if(secondInvalid) {
+    assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff?.operation,'VALIDATE_SLICE');
+    await normalizedFormal(carrier,{successor:true,invalid:true,responseVariant:'stnl-current-native-judgment-v1'});
+  }
+  const image=await inspectCurrentExecution(f.specPath),current=image.deliveries.find(item=>item.slice==='slice-01');
+  assert.equal(current.counters.validationAttempts,secondInvalid?0:1);
+  if(secondInvalid)assert.equal(image.normalHandoff,null);else assert.equal(current.formalStatus,'PASS');
+});
+
+async function formalRecoveryFixture() {
+  const f=await fixture();await installCurrentInitial(f);
+  const implementation=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await bindNative(implementation.started.handle,'mechanical-recovery-implementation');
+  const measured=await verifyNative(implementation.dispatch.originFile),{head,...result}=initialPayload(1);result.commands=measured.commands;
+  const tool=path.join(f.root,'implementation.json');await fs.writeFile(tool,JSON.stringify({agentId:'mechanical-recovery-implementation',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+  await captureNative(implementation.started.handle,tool);await publish(implementation.started.handle);
+  const {context}=await resolveCurrentExecutionContext(f.specPath);
+  return {...f,head:(await run('git',['-C',f.root,'rev-parse','HEAD'])).stdout.trim(),delivery:{slice:'slice-01'},view:{execution:context.logicalExecutionRoot}};
+}
+const incompleteReviewTriage=({request,requestBytes,finalResponse})=>({
+  format:'stnl-formal-review-triage-v1',owner:request.owner,requestSha256:digest(requestBytes),responseSha256:digest(Buffer.from(finalResponse)),
+  category:'incomplete-review',inputsAvailable:true,externalBlockers:[],
+  missingWork:[{obligationId:request.authority.delivery.obligations[0].id,evidence:'The reviewer explicitly states it did not inspect the prepared AC-001 assertions.',remainingWork:'Independently inspect the prepared assertions against the AC-001 behavior.'}]});
+
+test('formal recovery budget is shared by initialization and successor with no identity reset',()=>{
+  const inherited={operation:'VALIDATE_SLICE',status:'settled',round:1,consumedInvocations:1};
+  assert.deepEqual(formalRecoveryBudget(1),{consumedInvocations:1,resumable:true});
+  assert.deepEqual(formalRecoveryBudget(2),{consumedInvocations:2,resumable:true});
+  assert.deepEqual(formalRecoveryBudget(1,inherited),{consumedInvocations:2,resumable:true});
+  assert.deepEqual(formalRecoveryBudget(2,inherited),{consumedInvocations:3,resumable:true});
+  assert.deepEqual(formalRecoveryBudget(1,{...inherited,round:4,consumedInvocations:4}),{consumedInvocations:5,resumable:false});
+  assert.deepEqual(formalRecoveryBudget(2,{...inherited,round:3,consumedInvocations:3}),{consumedInvocations:5,resumable:false});
+  for(const [turns,lineage] of [[2,{...inherited,round:4,consumedInvocations:4}],
+    [1,{...inherited,consumedInvocations:5}],[1,{...inherited,round:2}],
+    [1,{...inherited,status:'exhausted'}],[3,null],[0,null]])
+    assert.throws(()=>formalRecoveryBudget(turns,lineage),e=>e.code==='FORMAL_RECOVERY_NOT_ELIGIBLE');
+});
+
+test('formal recovery rejects foreign model metadata as content, preserving bytes and admitting one successor',async()=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  const response=JSON.stringify({format:'stnl-current-native-judgment-v1',head:'unknown',result:{status:'BLOCKED',newFindings:[]}});
+  const first=await normalizedFormal(f,{invalid:true,invalidText:response,responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal(first.captured.captureClass,'formal-rejection');
+  assert.equal(first.finalResponse,response);
+  assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff.operation,'VALIDATE_SLICE');
+  await normalizedFormal(f,{successor:true,responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal((await inspectCurrentExecution(f.specPath)).deliveries[0].formalStatus,'PASS');
+});
+
+test('formal recovery cannot use invalid model content to hide actual Git HEAD drift',async()=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  const first=await normalizedFormal(f,{invalid:true,captureOnly:true,responseVariant:'stnl-current-native-judgment-v1',
+    beforeCapture:async()=>{await run('git',['-C',f.root,'-c','user.name=Mechanical fixture','-c','user.email=fixture@example.invalid','commit','--allow-empty','-qm','Unrelated HEAD drift']);}});
+  assert.equal(first.captureError?.code,'RUNNER_RESULT_REJECTED');
+  assert.equal((await resume(first.start.handle)).nextAction,'stop-and-diagnose');
+  await assert.rejects(publish(first.start.handle));
+});
+
+test('formal recovery explicitly triages an incomplete valid review without changing its BLOCKED response',async()=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  const first=await normalizedFormal(f,{status:'BLOCKED',blockers:'Independent inspection of the AC-001 test assertions was not completed.',reviewTriage:incompleteReviewTriage,responseVariant:'stnl-current-native-judgment-v1',
+    beforePublish:async({start,dispatch,tool,reviewTriageFile})=>{
+      const observed=await fs.readFile(path.join(path.dirname(dispatch.originFile),'round-1.observation.json'));
+      assert.equal((await captureNative(start.handle,tool,{reviewTriageFile})).replayed,true);
+      const wrong=path.join(f.root,'foreign-triage.json');await fs.writeFile(wrong,'{}');
+      await assert.rejects(captureNative(start.handle,tool,{reviewTriageFile:wrong}),e=>e.code==='OWNER_MISMATCH');
+      assert.deepEqual(await fs.readFile(path.join(path.dirname(dispatch.originFile),'round-1.observation.json')),observed);
+    }});
+  assert.equal(first.captured.captureClass,'formal-review-incomplete');
+  assert.equal(JSON.parse(first.finalResponse).result.status,'BLOCKED');
+  assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff.operation,'VALIDATE_SLICE');
+  await normalizedFormal(f,{successor:true,responseVariant:'stnl-current-native-judgment-v1'});
+  assert.equal((await inspectCurrentExecution(f.specPath)).deliveries[0].formalStatus,'PASS');
+});
+
+for(const fault of ['missing-work','unknown-obligation','no-inputs','external-blocker','wrong-owner','wrong-response','wrong-request','PASS','NEEDS_FIX','invalid-content'])test(`formal recovery refuses unsupported triage: ${fault}`,async()=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  const first=await normalizedFormal(f,{captureOnly:true,status:['PASS','NEEDS_FIX'].includes(fault)?fault:'BLOCKED',
+    blockers:'Review remains incomplete.',invalid:fault==='invalid-content',responseVariant:'stnl-current-native-judgment-v1',
+    reviewTriage:input=>{
+      const triage=incompleteReviewTriage(input);
+      if(fault==='missing-work')triage.missingWork=[];
+      if(fault==='unknown-obligation')triage.missingWork[0].obligationId='obligation-999';
+      if(fault==='no-inputs')triage.inputsAvailable=false;
+      if(fault==='external-blocker')triage.externalBlockers=['Access denied'];
+      if(fault==='wrong-owner')triage.owner={...triage.owner,operationAttemptId:'foreign'};
+      if(fault==='wrong-response')triage.responseSha256='sha256:'+'a'.repeat(64);
+      if(fault==='wrong-request')triage.requestSha256='sha256:'+'a'.repeat(64);
+      return triage;
+    }});
+  assert.equal(first.captureError?.code,'FORMAL_RECOVERY_NOT_ELIGIBLE');
+  await assert.rejects(publish(first.start.handle));
+});
+
+test('formal recovery preserves three incomplete refusals and exhausts after two corrections across owners',async()=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  const options={status:'BLOCKED',blockers:'Inspection of the prepared AC-001 assertions remains incomplete.',reviewTriage:incompleteReviewTriage,responseVariant:'stnl-current-native-judgment-v1'};
+  const first=await normalizedFormal(f,options),second=await normalizedFormal(f,{...options,successor:true});
+  const third=await normalizedFormal(f,{...options,successor:true});
+  assert.notEqual(first.start.owner.operationAttemptId,second.start.owner.operationAttemptId);
+  const image=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
+  assert.equal(image.inspection.normalHandoff,null);assert.equal(current.normalization.status,'exhausted');assert.equal(current.normalization.consumedInvocations,3);
+  const bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path)));
+  assert.deepEqual(bundle.support.filter(x=>x.kind==='rejection').map(x=>x.diagnostic.startsWith('FORMAL_REVIEW_INCOMPLETE:')),[true,true,true]);
+  for(const response of [first.finalResponse,second.finalResponse,third.finalResponse])assert.ok(bundle.objects.some(x=>Buffer.from(x.bytesBase64,'base64').toString('utf8')===response));
+  await assert.rejects(normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:image.inspection.activationId}));
+});
+
+for(const exhausted of [false,true])test(`formal recovery keeps terminal scope, identity and shared continuation margin (${exhausted?'last producer':'eligible correction'})`,async t=>{
+  const f=await formalRecoveryFixture(),{normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  let first;
+  for(let i=0;i<(exhausted?4:1);i++) {
+    first=await normalizedFormal(f,{successor:i>0,responseVariant:'stnl-current-native-judgment-v1',responseMutation:value=>{
+      const [key,replacement]=[['status','INVALID'],['commands',[]],['evidence',0],['findingReferences',{}]][i];
+      value.result[key]=replacement;return value;
+    }});
+  }
+  const image=await inspectCurrentExecution(f.specPath),next=await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:image.activationId});
+  await assert.rejects(reserveDispatch(next.handle,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'}),e=>e.code==='FORMAL_RECOVERY_NOT_ELIGIBLE');
+  const dispatch=await reserveDispatch(next.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  const source=JSON.parse(await fs.readFile(first.dispatch.originFile));
+  const agent=JSON.parse(await fs.readFile(path.join(path.dirname(first.dispatch.originFile),'round-1.agent.json')));
+  assert.notEqual(source.owner.operationAttemptId,next.owner.operationAttemptId);
+  await assert.rejects(bindNative(next.handle,agent.agentId),e=>e.code==='OWNER_MISMATCH');
+  await bindNative(next.handle,'fresh-independent-successor');
+  const initialization=path.join(f.root,'successor-initialization.json');
+  await fs.writeFile(initialization,JSON.stringify({agentId:'fresh-independent-successor',status:'completed',finalResponse:'Initialization only'}));
+  const binding={parentThreadId:'mechanical-parent-thread',parentTurnId:'mechanical-parent-turn',
+    agentPath:'fresh-independent-successor',agentThreadId:'mechanical-successor-thread',model:'gpt-6-luna',effort:'medium'};
+  const options={toolResultFile:initialization,firstTurnId:'second-owner-initial-turn',binding};
+  if(exhausted) {
+    assert.equal(await prepareNativeContinuation(next.handle,options),null,'new owner cannot reset the four consumed producer turns');
+  } else {
+    await assert.rejects(prepareNativeContinuation(next.handle,{...options,binding:{}}),error=>{
+      assert.equal(error.code,'INVALID_CURRENT_IMAGE');assert.match(error.message,/continuation public binding/u);return true;
+    });
+    assert.deepEqual(await prepareNativeContinuation(next.handle,{...options,commit:false}),{eligible:true});
+    const admitted=await prepareNativeContinuation(next.handle,options);
+    assert.equal(admitted.replayed,false);assert.deepEqual(admitted.grant.binding,binding);
+    assert.equal(admitted.grant.firstToolResultSha256,digest(await fs.readFile(initialization)));
+    const replay=await prepareNativeContinuation(next.handle,options);
+    assert.equal(replay.replayed,true);assert.deepEqual(replay.grant,admitted.grant);
+  }
+  await assert.rejects(fs.stat(path.join(path.dirname(dispatch.originFile),'round-1.verification.json')),{code:'ENOENT'},'initialization observation must not execute the recipe');
+});
+
+for(const kind of ['standalone','lifecycle'])test(`Initial ${kind} pending cleanup excludes every fresh family until its own recovery finishes`,async()=>{
+ const f=await fixture({kind});try{
+  const result=await installCurrentInitial({...f,checkpoint:step=>{if(step==='cleanup')throw new Error('controlled pending cleanup');}});
+  assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'pending');
+  const image=await inspectCurrentExecution(f.specPath),{context}=await resolveCurrentExecutionContext(f.specPath),activationFile=path.join(context.logicalExecutionRoot,'activation.json'),before=await fs.readFile(activationFile);
+  await assert.rejects(begin({specPath:f.specPath,slice:image.normalHandoff.slice,operation:'EXECUTE_SLICE',expectedActivationId:image.activationId}),/publication or cleanup remains pending/u);
+  assert.deepEqual(await fs.readFile(activationFile),before);
+  const {workspace}=await resolveCurrentExecutionContext(f.specPath),roots=await resolveExecutionFilesystemRoots(workspace),names=await fs.readdir(roots.materialRoot);
+  const members=JSON.parse(await fs.readFile(path.join(context.logicalExecutionRoot,'continuity.json'))).deliveries.map(x=>x.deliveryId);
+  await assert.rejects(preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:members}),/publication or cleanup remains pending/u);
+  const {allocateCurrentLocalReviewCandidate}=await import('../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
+  await assert.rejects(allocateCurrentLocalReviewCandidate(context),/publication or cleanup remains pending/u);
+  const {publishExecutionUpdate}=await import('../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs');
+  await assert.rejects(publishExecutionUpdate({workspace,candidateExecutionRoot:f.preparationRoot,expectedTree:await captureExecutionTree(context.logicalExecutionRoot),expectedActivationId:image.activationId,currentReplacement:true,recheckRequirements:async()=>{},readActivated:async()=>{throw Error('must not read a new publisher base');}}),/publication or cleanup remains pending/u);
+  if(kind==='lifecycle'){
+   const {publishCandidate}=await import('../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs');
+   const manifest=path.join(f.root,'blocked-resume-input.json');await fs.writeFile(manifest,'{}');
+   await assert.rejects(publishCandidate('RESUME',path.dirname(f.specPath),f.preparationRoot,{manifestPath:manifest}),/publication or cleanup remains pending/u);
+  }
+  assert.deepEqual(await fs.readdir(roots.materialRoot),names);assert.deepEqual(await fs.readFile(activationFile),before);
+  const recovered=await recoverCurrentInitialPublication({specPath:f.specPath,allocation:result.allocation});
+  assert.equal(recovered.cleanup,'complete');
+  const next=await reserved(f);assert.equal(next.started.phase,'working');
+ }finally{await fs.rm(f.root,{recursive:true,force:true});}
+});
+
+test('current reservation rejects an actual material-root replacement at common acquire before creating controls',async()=>{
+ const f=await fixture();const open=fs.open;try{
+  await installCurrentInitial(f);
+  const {context,workspace}=await resolveCurrentExecutionContext(f.specPath),roots=await resolveExecutionFilesystemRoots(workspace);
+  const image=await inspectCurrentExecution(f.specPath),activationFile=path.join(context.logicalExecutionRoot,'activation.json'),before=await fs.readFile(activationFile),beforeNames=await fs.readdir(roots.materialRoot);
+  let swapped=false;
+  fs.open=async function(file,...args){
+   if(String(file)===roots.lockPath&&typeof args[0]==='number'&&!swapped){
+    swapped=true;await fs.rename(roots.materialRoot,roots.materialRoot+'.test-original');await fs.mkdir(roots.materialRoot);
+    for(const name of await fs.readdir(roots.materialRoot+'.test-original'))await fs.rename(path.join(roots.materialRoot+'.test-original',name),path.join(roots.materialRoot,name));
+   }
+   return open.call(this,file,...args);
+  };
+  await assert.rejects(begin({specPath:f.specPath,slice:image.normalHandoff.slice,operation:'EXECUTE_SLICE',expectedActivationId:image.activationId}),/filesystem binding changed/u);
+  assert.ok(swapped);assert.deepEqual(await fs.readFile(activationFile),before);assert.deepEqual(await fs.readdir(roots.materialRoot),beforeNames);
+ }finally{fs.open=open;await fs.rm(f.root,{recursive:true,force:true});}
+});
+
+test('lifecycle-family common barrier excludes controller with no orphan operation',async()=>{
+ const f=await fixture();try{
+  await installCurrentInitial(f);const {workspace,context}=await resolveCurrentExecutionContext(f.specPath);
+  const roots=await resolveExecutionFilesystemRoots(workspace),beforeNames=await fs.readdir(roots.materialRoot);
+  const {withExecutionPublicationLock}=await import('../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/execution-publication.mjs');
+  const image=await inspectCurrentExecution(f.specPath),activationFile=path.join(context.logicalExecutionRoot,'activation.json'),before=await fs.readFile(activationFile);
+  await withExecutionPublicationLock(workspace,async()=>{
+   await assert.rejects(begin({specPath:f.specPath,slice:image.normalHandoff.slice,operation:'EXECUTE_SLICE',expectedActivationId:image.activationId}),/lock already exists/u);
+   assert.deepEqual(await fs.readdir(roots.materialRoot),beforeNames);assert.deepEqual(await fs.readFile(activationFile),before);
+  });
+  assert.equal((await reserved(f)).started.phase,'working');
+ }finally{await fs.rm(f.root,{recursive:true,force:true});}
+});
+
+
+// These carriers are synthetic mechanical tool results, never native qualification.
+async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResume=false,resolved=false,successor=false,invalid=false}={}) {
+  const image=await inspectCurrentExecution(f.specPath);
+  const start={specPath:f.specPath,slice:'slice-01',expectedActivationId:image.activationId,operation:kind};
+  const started=successor?await normalizeSuccessor(start):await begin(start);
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal});
+  const requestBefore=await fs.readFile(dispatch.requestFile);
+  if(edit)await edit();
+  const agentId='mechanical-u315-b-'+started.handle.operationId;
+  await bindNative(started.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  let result;
+  if(kind==='EXECUTE_SLICE') {const {head,...payload}=initialPayload(1);result={...payload,commands:measured.commands};}
+  else if(kind==='APPLY_FINDINGS'){const {head,...payload}=applyPayload(JSON.parse(requestBefore).round,'TESTS_PASS',0);result={...payload,commands:measured.commands};if(invalid)result.coverage='none';}
+  else result={status,commands:measured.commands,evidence:'The reviewed pay assertion executed.',findingReferences:resolved?'finding-01':'none',
+    findingDispositions:resolved?'finding-01=resolved':'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result,...(kind==='VALIDATE_SLICE'?{newFindings:[]}:{})});
+  const file=path.join(f.root,agentId+'.json');await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+  const captured=await captureNative(started.handle,file);
+  assert.deepEqual(await fs.readFile(dispatch.requestFile),requestBefore,'capture never rewrites its frozen request');
+  let published;
+  if(cliResume) {
+    const handleFile=path.join(f.root,'b-handle.json');await fs.writeFile(handleFile,JSON.stringify(started.handle));
+    const call=async command=>JSON.parse((await run(process.execPath,[operationCli,command,'--handle',handleFile])).stdout);
+    assert.equal((await call('resume')).responseSha256,captured.rawResponseSha256);
+    published=await call('publish');
+  }else published=await publish(started.handle);
+  assert.equal(published.publication,'confirmed');assert.equal(published.cleanup,'complete');
+  assert.equal(digest(await fs.readFile(path.join(path.dirname(dispatch.originFile),'round-1.response.json'))),captured.rawResponseSha256);
+  return {started,dispatch,captured,published,root:path.dirname(dispatch.originFile),image:await captureCurrentExecution(f.specPath)};
+}
+
+for(const change of ['typed-new','typed-edit','unpredicted','still-absent'])test(`U3.15-B output semantics ${change} survives capture and terminal formal`,async t=>{
+  const f=await fixture({single:true,productRefs:change.startsWith('typed-'),futureLeaf:change==='still-absent'});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  if(change==='typed-new')await fs.rm(path.join(f.root,'src/pay.test.mjs'));
+  if(change==='typed-edit')await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"old";\n');
+  await installCurrentInitial(f);
+  const done=await bConclude(f,'EXECUTE_SLICE',{cliResume:true,edit:async()=>{
+    await fs.writeFile(path.join(f.root,'src/pay.mjs'),change==='unpredicted'?'import {value} from "./helper.mjs";export const pay=()=>value;\n':'export const pay=()=>"paid";\n');
+    if(change==='typed-new')await fs.writeFile(path.join(f.root,'src/pay.test.mjs'),'import test from "node:test";import assert from "node:assert/strict";import {pay} from "./pay.mjs";test("pay",()=>assert.equal(pay(),"paid"));\n');
+    if(change==='typed-edit')await fs.appendFile(path.join(f.root,'src/pay.test.mjs'),'// authorized product test edit\n');
+    if(change==='unpredicted')await fs.writeFile(path.join(f.root,'src/helper.mjs'),'export const value="paid";\n');
+  }});
+  const receipt=JSON.parse(await fs.readFile(path.join(done.root,'round-1.receipt.json')));
+  if(change==='unpredicted')assert.ok(receipt.testedState.entries.some(item=>item.path.endsWith('/src/helper.mjs')));
+  if(change==='still-absent')assert.ok(receipt.testedState.entries.every(item=>!item.path.endsWith('/optional.mjs')));
+  const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true});assert.equal(formal.image.inspection.state,'COMPLETE');
+});
+
+for(const mutation of ['none','removed','removal-missing','request','request-missing','observation','verification','preimage','preimage-owner','preimage-round','preimage-path','preimage-mode','extra'])test(`U3.15-B normal Initial controls reach CLOSE (${mutation})`,async t=>{
+  const f=await fixture({kind:'lifecycle',single:true,sharedAncestor:true,productRefs:true,futureLeaf:true,closeReady:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const specRoot=path.dirname(f.specPath);await fs.mkdir(path.join(specRoot,'annex'));await fs.writeFile(path.join(specRoot,'annex/keep.bin'),Buffer.from([0,1,255]));
+  if(['removed','removal-missing'].includes(mutation))await fs.writeFile(path.join(f.root,'src/retired.mjs'),'real preimage\n');
+  await installCurrentInitial(f);
+  const execute=await bConclude(f,'EXECUTE_SLICE',{edit:async()=>{await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');await fs.writeFile(path.join(f.root,'docs/report.md'),'approved documentation\n');if(['removed','removal-missing'].includes(mutation))await fs.rm(path.join(f.root,'src/retired.mjs'));}});
+  const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true});assert.equal(formal.image.inspection.state,'COMPLETE');
+  const baseline=JSON.parse(await fs.readFile(path.join(execute.root,'round-1.baseline.json'))),observation=JSON.parse(await fs.readFile(path.join(execute.root,'round-1.observation.json')));
+  assert.notEqual(digest(Buffer.from(JSON.stringify(baseline.manifest))),digest(Buffer.from(JSON.stringify(observation.before))));
+  if(mutation==='request')await fs.appendFile(execute.dispatch.requestFile,' ');
+  if(mutation==='request-missing')await fs.rm(execute.dispatch.requestFile);
+  if(mutation==='observation'){const file=path.join(execute.root,'round-1.observation.json');const v=JSON.parse(await fs.readFile(file));v.binding.requestSha256='sha256:'+'0'.repeat(64);await fs.writeFile(file,JSON.stringify(v));}
+  if(mutation.startsWith('preimage')){
+    const file=path.join(execute.root,(await fs.readdir(execute.root)).find(name=>name.startsWith('round-1.removal-'))),v=JSON.parse(await fs.readFile(file));
+    if(mutation==='preimage')v.bytesBase64=Buffer.from('unbound preimage').toString('base64');
+    if(mutation==='preimage-owner')v.owner.operationAttemptId='00000000-0000-4000-8000-000000000000';
+    if(mutation==='preimage-round')v.round=2;
+    if(mutation==='preimage-path')v.path='src/foreign.mjs';
+    if(mutation==='preimage-mode')v.mode^=64;
+    await fs.writeFile(file,JSON.stringify(v));
+  }
+  if(mutation==='removal-missing'){
+    const leaf='round-1.removal-'+createHash('sha256').update('src/retired.mjs').digest('hex')+'.json';await fs.rm(path.join(execute.root,leaf));
+  }
+  if(mutation==='verification'){const file=path.join(execute.root,'round-1.verification.json');const v=JSON.parse(await fs.readFile(file));v.workStateSha256=digest(Buffer.from(JSON.stringify(baseline.manifest)));await fs.writeFile(file,JSON.stringify(v)+'\n');}
+  if(mutation==='extra')await fs.writeFile(path.join(execute.root,'sole-source.txt'),'preserve unique diagnostic');
+  const before=await fs.readFile(f.specPath);
+  if(!['none','removed'].includes(mutation)) {await assert.rejects(publishCandidate('CLOSE',specRoot,null),error=>error.code==='ENOENT'||/request|verification|replica|unique|extra|captured bytes|preimage/u.test(error.message));assert.deepEqual(await fs.readFile(f.specPath),before);assert.ok(await fs.lstat(execute.root));return;}
+  const result=await publishCandidate('CLOSE',specRoot,null);assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');assert.equal(validateWorkspace(specRoot).closed,true);
+  assert.deepEqual(await fs.readFile(path.join(specRoot,'annex/keep.bin')),Buffer.from([0,1,255]));
+  assert.equal((await inspectQualityExecution(f.specPath)).state,'SPEC_CLOSED');assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff,null);
+});
+
+
+for(const privateMutation of [false,true])test(`U3.15-B APPLY retains the original EXECUTE capture through CLOSE${privateMutation?' and refuses altered private source':''}`,async t=>{
+  const f=await fixture({kind:'lifecycle',single:true,productRefs:true,futureLeaf:true,closeReady:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  f.initialOnly=true;
+  const annex=path.join(path.dirname(f.specPath),'annex');await fs.mkdir(annex);await fs.writeFile(path.join(annex,'keep.bin'),Buffer.from([0,1,255]));
+  await sealedBlockingFormal(f);
+  const predecessor=await captureCurrentExecution(f.specPath);
+  const predecessorRow=JSON.parse(Buffer.from(predecessor.files.get('continuity.json'))).deliveries[0];
+  const predecessorBundle=JSON.parse(Buffer.from(predecessor.files.get(predecessorRow.evidence.path)));
+  const applied=await bConclude(f,'APPLY_FINDINGS',{edit:async()=>{
+    await fs.writeFile(path.join(f.root,'src/helper.mjs'),'export const value="paid";\n');
+    await fs.writeFile(path.join(f.root,'src/pay.mjs'),'import {value} from "./helper.mjs";export const pay=()=>value;\n');
+  }});
+  const receipt=JSON.parse(await fs.readFile(path.join(applied.root,'round-1.receipt.json')));
+  assert.ok(receipt.testedState.entries.some(item=>item.path.endsWith('/src/helper.mjs')));
+  const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true,resolved:true});assert.equal(formal.image.inspection.state,'COMPLETE');
+  const initial=JSON.parse(Buffer.from(formal.image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(formal.image.files.get(initial.evidence.path)));
+  assert.equal(bundle.implementation.length,1,'the original implementation record remains literal until CLOSE');
+  assert.equal(bundle.implementation[0].origin.operation,'EXECUTE_SLICE');
+  assert.deepEqual(bundle.implementation,predecessorBundle.implementation,'literal original records survive APPLY and terminal judgment');
+  assert.deepEqual(bundle.support.find(record=>record.id==='attempt-01'),predecessorBundle.validation,'first formal anchor remains literal');
+  const refs=new Set(Object.entries(predecessorBundle.implementation[0].sources).flatMap(([key,value])=>
+    key==='transport'||value===null?[]:Array.isArray(value)?value:[value]));
+  for(const object of predecessorBundle.objects.filter(item=>refs.has(item.id)))assert.deepEqual(bundle.objects.find(item=>item.id===object.id),object,'original source object bytes survive');
+  if(!privateMutation) {
+    const authority=JSON.parse(await fs.readFile(formal.dispatch.requestFile)).authority;
+    const validate=(copy,counters=initial.counters)=>inspectCurrentEvidence({context:formal.image.context,authority,
+      bundleBytes:Buffer.from(JSON.stringify(copy)+'\n'),counters,baseline:initial.baseline,
+      observedWork:formal.image.observedByDelivery.get(initial.deliveryId).manifest});
+    assert.ok(!validate(bundle).verifiedCorrections.includes('src/initial-only.mjs'),'retention does not relabel original implementation as APPLY correction');
+    const prune=copy=>{const ids=new Set([...copy.implementation,...copy.findingsChecks,...copy.support,copy.validation].filter(Boolean).flatMap(record=>Object.entries(record.sources).flatMap(([key,value])=>key==='transport'||value===null?[]:Array.isArray(value)?value:[value])));copy.objects=copy.objects.filter(item=>ids.has(item.id));};
+    for(const change of ['missing-object','changed-record','foreign-owner','duplicate-prefix','missing-anchor','rewound-counters','repacked-prefix','repacked-formal-admission'])await t.test(change,()=>{
+      const copy=structuredClone(bundle);let counters=initial.counters;
+      if(change==='missing-object')copy.objects=copy.objects.filter(item=>item.id!==copy.implementation[0].sources.receipt);
+      if(change==='changed-record')copy.implementation[0].recordUtf8+='\nforeign record content';
+      if(change==='foreign-owner')copy.implementation[0].origin.operationAttemptId='00000000-0000-4000-8000-000000000000';
+      if(change==='duplicate-prefix')copy.implementation.push(structuredClone(copy.implementation[0]));
+      if(change==='missing-anchor'){copy.support=copy.support.filter(item=>item.id!=='attempt-01');prune(copy);}
+      if(change==='rewound-counters')counters={...initial.counters,implementationChecks:0};
+      if(change==='repacked-formal-admission') {
+        const record=copy.support.find(item=>item.kind==='validation');
+        const object=copy.objects.find(item=>item.id===record.sources.origin);
+        const capsule=JSON.parse(Buffer.from(object.bytesBase64,'base64'));
+        const origin=JSON.parse(capsule.originUtf8);
+        origin.admission={baseActivation:{artifacts:origin.admission.baseActivation.artifacts,
+          approvedSnapshotSha256:origin.admission.baseActivation.approvedSnapshotSha256}};
+        capsule.originUtf8=JSON.stringify(origin);
+        const bytes=Buffer.from(JSON.stringify(capsule));object.id=digest(bytes);object.bytesBase64=bytes.toString('base64');
+        record.sources.origin=object.id;copy.objects.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
+      }
+      if(change==='repacked-prefix') {
+        const receipt=copy.objects.find(item=>item.id===copy.implementation[0].sources.receipt);
+        const bytes=Buffer.concat([Buffer.from(receipt.bytesBase64,'base64'),Buffer.from(' ')]);
+        receipt.id=digest(bytes);receipt.bytesBase64=bytes.toString('base64');copy.implementation[0].sources.receipt=receipt.id;
+        copy.objects.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0);
+        assert.throws(()=>validate(copy),/retained implementation first formal CAS/u);return;
+      }
+      assert.throws(()=>validate(copy,counters),error=>['EVIDENCE_STALE','OWNER_MISMATCH','EVIDENCE_INCOMPLETE','INVALID_CURRENT_IMAGE','CURRENT_FORMAT_REQUIRED'].includes(error.code));
+    });
+  }
+  if(privateMutation) {
+    const record=bundle.implementation[0];
+    const receipt=JSON.parse(Buffer.from(bundle.objects.find(item=>item.id===record.sources.receipt).bytesBase64,'base64'));
+    const response=receipt.semanticResponseFile;
+    await fs.appendFile(response,' ');const before=await fs.readFile(f.specPath);
+    await assert.rejects(publishCandidate('CLOSE',path.dirname(f.specPath),null),/captured bytes differ/u);
+    assert.deepEqual(await fs.readFile(f.specPath),before);assert.ok(await fs.lstat(response));return;
+  }
+  const result=await publishCandidate('CLOSE',path.dirname(f.specPath),null);
+  assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
+  assert.equal((await inspectQualityExecution(f.specPath)).normalHandoff,null);
+  assert.deepEqual(await fs.readFile(path.join(annex,'keep.bin')),Buffer.from([0,1,255]));
+});
+
+
+test('normalized formal NEEDS_FIX retains its anchor through rejected APPLY, correction and CLOSE',async t=>{
+  const f=await fixture({kind:'lifecycle',single:true,closeReady:true,productRefs:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  f.normalizedFirst=true;
+  await sealedBlockingFormal(f);
+  const rejected=await bConclude(f,'APPLY_FINDINGS',{invalid:true,
+    edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  assert.equal(rejected.published.transition.outcome,'rejected');
+  const responseFile=path.join(rejected.root,'round-1.response.json');
+  const responseBefore=await fs.readFile(responseFile);
+  const row=JSON.parse(Buffer.from(rejected.image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(rejected.image.files.get(row.evidence.path)));
+  assert.equal(bundle.findingsChecks.length,0,'a refused first APPLY is not an accepted check');
+  const authority=JSON.parse(await fs.readFile(rejected.dispatch.requestFile)).authority;
+  const validate=copy=>inspectCurrentEvidence({context:rejected.image.context,authority,
+    bundleBytes:Buffer.from(JSON.stringify(copy)+'\n'),counters:row.counters,baseline:row.baseline,
+    observedWork:rejected.image.observedByDelivery.get(row.deliveryId).manifest});
+  assert.equal(validate(bundle).rejection.origin.operation,'APPLY_FINDINGS');
+  for(const mutation of ['missing-formal-refusal','foreign-formal-owner']) {
+    const copy=structuredClone(bundle);
+    const anchor=copy.support.find(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE');
+    assert.ok(anchor);
+    if(mutation==='missing-formal-refusal')copy.support=copy.support.filter(item=>item!==anchor);
+    else anchor.operationAttemptId=anchor.origin.operationAttemptId='00000000-0000-4000-8000-000000000000';
+    assert.throws(()=>validate(copy),error=>{
+      assert.equal(error.code,'EVIDENCE_INCOMPLETE',error.message);return true;
+    },mutation);
+  }
+  const accepted=await bConclude(f,'APPLY_FINDINGS',{successor:true});
+  assert.equal(accepted.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  assert.deepEqual(await fs.readFile(responseFile),responseBefore,'correction retains the refused literal response');
+  const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true,resolved:true});
+  assert.equal(formal.image.inspection.state,'COMPLETE');
+  assert.equal((await publishCandidate('CLOSE',path.dirname(f.specPath),null)).publication,'confirmed');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
+});
+
+for(const laterNormalized of [false,true])test(`U3.15-B retained EXECUTE preserves a normalized first formal anchor through APPLY and ${laterNormalized?'normalized ':''}terminal PASS`,async t=>{
+  const f=await fixture({single:true,productRefs:true,futureLeaf:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  f.normalizedFirst=true;
+  await sealedBlockingFormal(f);
+  await bConclude(f,'APPLY_FINDINGS',{edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  let formal;
+  if(laterNormalized) {
+    const {context}=await resolveCurrentExecutionContext(f.specPath);
+    const {normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+    const carrier={...f,delivery:{slice:'slice-01'},view:{execution:context.logicalExecutionRoot}};
+    await normalizedFormal(carrier,{invalid:true,responseVariant:'stnl-current-native-judgment-v1',terminal:true});
+    const done=await normalizedFormal(carrier,{successor:true,responseVariant:'stnl-current-native-judgment-v1',terminal:true,references:'finding-01',dispositions:'finding-01=resolved'});
+    formal={...done,image:await captureCurrentExecution(f.specPath)};
+  }else formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true,resolved:true});
+  assert.equal(formal.image.inspection.state,'COMPLETE');
+  const row=JSON.parse(Buffer.from(formal.image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(formal.image.files.get(row.evidence.path)));
+  assert.equal(bundle.implementation.length,1);
+  assert.equal(bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE').length,laterNormalized?2:1);
+  const authority=JSON.parse(await fs.readFile(formal.dispatch.requestFile)).authority;
+  const validate=copy=>inspectCurrentEvidence({context:formal.image.context,authority,bundleBytes:Buffer.from(JSON.stringify(copy)+'\n'),counters:row.counters,baseline:row.baseline,observedWork:formal.image.observedByDelivery.get(row.deliveryId).manifest});
+  assert.equal(validate(bundle).formalStatus,'PASS');
+  const missing=structuredClone(bundle);missing.support=missing.support.filter(item=>item.kind!=='rejection');
+  const ids=new Set([...missing.implementation,...missing.findingsChecks,...missing.support,missing.validation].flatMap(record=>Object.entries(record.sources).flatMap(([key,value])=>key==='transport'||value===null?[]:Array.isArray(value)?value:[value])));missing.objects=missing.objects.filter(item=>ids.has(item.id));
+  assert.throws(()=>validate(missing),error=>error.code==='EVIDENCE_INCOMPLETE');
+});
+
+
+test('bounded normalized EXECUTE retains all public Initial captures through integral CLOSE',async t=>{
+ const f=await fixture({kind:'lifecycle',single:true,closeReady:true,productRefs:true});
+ t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+ await installCurrentInitial(f);
+ const first=await reserved(f,'stnl-current-native-judgment-v1');
+ await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+ await bindNative(first.started.handle,'retirement-initial-refusal');const observed=await verifyNative(first.dispatch.originFile);
+ const {head:ignoredHead,...refusal}=initialPayload(1);refusal.commands=observed.commands;refusal.coverage='none';
+ const rejected=path.join(f.root,'retirement-initial-refusal.json');
+ await fs.writeFile(rejected,JSON.stringify({agentId:'retirement-initial-refusal',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:refusal})})+'\n');
+ const capture=await captureNative(first.started.handle,rejected);assert.equal(capture.captureClass,'initial-rejection');
+ await publish(first.started.handle);
+ const before=await inspectCurrentExecution(f.specPath);
+ const successor=await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',expectedActivationId:before.activationId});
+ const dispatch=await reserveDispatch(successor.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+ await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+ await bindNative(successor.handle,'retirement-initial-successor');const measured=await verifyNative(dispatch.originFile);
+ const {head,...result}=initialPayload(2);result.commands=measured.commands;
+ const accepted=path.join(f.root,'retirement-initial-successor.json');
+ await fs.writeFile(accepted,JSON.stringify({agentId:'retirement-initial-successor',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
+ await captureNative(successor.handle,accepted);await publish(successor.handle);
+ const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true});assert.equal(formal.image.inspection.state,'COMPLETE');
+ const receipt=await publishCandidate('CLOSE',path.dirname(f.specPath),null);
+ assert.equal(receipt.publication,'confirmed');assert.equal(receipt.cleanup,'complete');
+ assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
+});
+
+
+// A concluded tool result here is authored mechanical evidence, not a model
+// conclusion. The live blocked episode is never used or mutated by these tests.
+async function unstartedInitialFormal(t) {
+  const f=await fixture({kind:'lifecycle',single:true,closeReady:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  await bConclude(f,'EXECUTE_SLICE',{edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  const before=await captureCurrentExecution(f.specPath);
+  const start=await begin({specPath:f.specPath,slice:'slice-01',expectedActivationId:before.inspection.activationId,operation:'VALIDATE_SLICE'});
+  const dispatch=await reserveDispatch(start.handle,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+  const agentId='mechanical-unstarted-Initial';await bindNative(start.handle,agentId);
+  const tool=path.join(f.root,'tmp/concluded.json');
+  const finalResponse='BLOCKED: verifier was never invoked. Preserve this first conclusion: Ω "literal".';
+  await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',finalResponse}));
+  return {...f,before,start,dispatch,agentId,tool,finalResponse,operationRoot:path.dirname(dispatch.originFile)};
+}
+
+test('Initial unstarted abort retains EXECUTE and permits a new integral formal through public CLOSE/readers',async t=>{
+  const f=await unstartedInitialFormal(t),base=JSON.parse(Buffer.from(f.before.activationBytes));
+  const priorFiles=new Map(f.before.files),response=await fs.readFile(f.tool);
+  const ended=await abort(f.start.handle,f.tool);
+  assert.equal(ended.cleanup,'complete');assert.equal(ended.activation.lastAttempt.outcome,'aborted');
+  assert.deepEqual(ended.activation.lastAttempt.abort.toolResultUtf8,response.toString());
+  assert.deepEqual(JSON.parse(ended.activation.lastAttempt.abort.originUtf8).admission.baseActivation.lastAttempt,base.lastAttempt);
+  const quiet=await captureCurrentExecution(f.specPath);
+  assert.equal(quiet.inspection.state,'IMPLEMENTED_AWAITING_VALIDATION');
+  assert.equal(quiet.inspection.deliveries[0].formalStatus,null);
+  for(const [name,bytes]of priorFiles)assert.deepEqual(Buffer.from(quiet.files.get(name)),Buffer.from(bytes),name);
+  assert.equal((await abort(f.start.handle,f.tool)).activation.activationId,ended.activation.activationId);
+  await assert.rejects(verifyNative(f.dispatch.originFile));
+  await assert.rejects(captureNative(f.start.handle,f.tool));
+  const renamed=f.operationRoot+'.offline';await fs.rename(f.operationRoot,renamed);
+  assert.equal((await inspectQualityExecution(f.specPath)).state,'IMPLEMENTED_AWAITING_VALIDATION');
+  await fs.rename(renamed,f.operationRoot);
+  const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true});
+  assert.notEqual(formal.started.owner.operationAttemptId,f.start.owner.operationAttemptId);
+  assert.equal(formal.image.inspection.state,'COMPLETE');
+  // Distribution gate for the actual Git-native profile: only the copied
+  // lifecycle skill is available to this CLI, without nonGit path workarounds.
+  const installed=path.join(f.root,'tmp/copied-lifecycle');
+  await fs.cp(path.resolve('skills/workflows/stnl-spec-lifecycle-manager'),installed,{recursive:true});
+  const copiedCli=path.join(installed,'runtime/publish-spec-lifecycle.mjs');
+  const closed=JSON.parse((await run(process.execPath,[copiedCli,'CLOSE',path.dirname(f.specPath)],{cwd:f.root})).stdout);
+  assert.equal(closed.publication,'confirmed');assert.equal(closed.cleanup,'complete');
+  assert.equal((await inspectQualityExecution(f.specPath)).state,'SPEC_CLOSED');
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
+});
+
+for(const mutation of ['active','uncertain','foreign','blank','changed-origin','missing-claim','verification','observation','receipt','capture','candidate','drift','registry','authority','predecessor'])
+test(`Initial unstarted abort refuses ${mutation} without effects`,async t=>{
+  const f=await unstartedInitialFormal(t);
+  if(['active','uncertain','foreign','blank'].includes(mutation)) {
+    const v=JSON.parse(await fs.readFile(f.tool));
+    if(mutation==='active')v.status='running';if(mutation==='uncertain')v.status='uncertain';
+    if(mutation==='foreign')v.agentId='foreign';if(mutation==='blank')v.finalResponse='';
+    await fs.writeFile(f.tool,JSON.stringify(v));
+  } else if(mutation==='changed-origin') {
+    const v=JSON.parse(await fs.readFile(f.dispatch.originFile));v.dispatchId='foreign';await fs.writeFile(f.dispatch.originFile,JSON.stringify(v));
+  } else if(mutation==='missing-claim')await fs.rm(path.join(f.operationRoot,'round-1.claim.json'));
+  else if(mutation==='drift')await fs.appendFile(path.join(f.root,'src/pay.mjs'),'// drift\n');
+  else if(mutation==='registry') {
+    const file=path.join(path.dirname(f.operationRoot),'registry.json'),v=JSON.parse(await fs.readFile(file));v.operations=[];await fs.writeFile(file,JSON.stringify(v));
+  } else if(['authority','predecessor'].includes(mutation)) {
+    const file=f.dispatch.originFile,v=JSON.parse(await fs.readFile(file));
+    if(mutation==='authority')v.admission.baseActivation.normativeSha256='sha256:'+'0'.repeat(64);
+    else v.admission.baseActivation.lastAttempt.outcome='aborted';
+    await fs.writeFile(file,JSON.stringify(v));
+  } else await fs.writeFile(path.join(f.operationRoot,`round-1.${mutation}.json`),'{}');
+  const before=await captureExecutionTree(f.root);
+  await assert.rejects(abort(f.start.handle,f.tool));
+  assert.deepEqual(await captureExecutionTree(f.root),before);
+});
+
+for(const phase of ['after-abort-intent','after-abort-activation','after-abort-readback','before-abort-registry-completion','after-abort-registry-completion'])
+test(`Initial unstarted abort resumes exact bytes after ${phase}`,async t=>{
+  const f=await unstartedInitialFormal(t);let injected=0;
+  try {await abort(f.start.handle,f.tool,{checkpoint:at=>{if(at===phase){injected++;throw Object.assign(Error('controlled Initial abort interruption'),{code:'CONTROLLED_ABORT_FAULT'});}}});}
+  catch(error){assert.equal(error.code,'CONTROLLED_ABORT_FAULT');}
+  assert.equal(injected,1);assert.equal((await resume(f.start.handle)).nextAction,'resume-abort');
+  const handleFile=path.join(f.root,'tmp/abort-handle.json');await fs.writeFile(handleFile,JSON.stringify(f.start.handle));
+  const result=JSON.parse((await run(process.execPath,[operationCli,'abort','--handle',handleFile])).stdout);
+  assert.equal(result.publication,'aborted');assert.equal(result.cleanup,'complete');
+  assert.equal((await abort(f.start.handle,f.tool)).activation.activationId,result.activation.activationId);
+});
+
+test('Initial abort rejects started/completed verification and a second unstarted formal, retaining both episodes',async t=>{
+  const f=await unstartedInitialFormal(t);await abort(f.start.handle,f.tool);
+  const next=await begin({specPath:f.specPath,slice:'slice-01',expectedActivationId:(await inspectCurrentExecution(f.specPath)).activationId,operation:'VALIDATE_SLICE'});
+  const dispatch=await reserveDispatch(next.handle,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(next.handle,f.agentId);
+  const before=await captureExecutionTree(f.root);await assert.rejects(abort(next.handle,f.tool));
+  assert.deepEqual(await captureExecutionTree(f.root),before);
+  await verifyNative(dispatch.originFile);
+  await assert.rejects(abort(next.handle,f.tool));
+});
+
+test('resolved verifier arguments avoid same-invocation shell expansion and preserve literal paths',async t=>{
+  const root=await fs.mkdtemp(path.join(repo,'tmp/verifier quote $ spaces '));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const helper=path.join(root,"helper 'literal.mjs"),origin=path.join(root,"origin 'literal.json"),marker=path.join(root,'observed.json');
+  await fs.writeFile(origin,'{}');
+  await fs.writeFile(helper,'import fs from "node:fs";if(process.argv[2]!=="verify-native"||process.argv[3]!=="--origin-file"||!process.argv[4])process.exit(2);fs.writeFileSync('+JSON.stringify(marker)+',JSON.stringify(process.argv.slice(2)));');
+  const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
+  const env={...process.env};delete env.NATIVE_VERIFICATION_HELPER;delete env.NATIVE_ORIGIN_FILE;
+  const shell=(command)=>new Promise((resolve,reject)=>{const child=execFile('/bin/zsh',['-f','-c',command],{env,timeout:5000},(error,stdout,stderr)=>error?reject(error):resolve({stdout,stderr}));child.stdin.end();});
+  await shell(`NATIVE_VERIFICATION_HELPER=${quote(helper)} NATIVE_ORIGIN_FILE=${quote(origin)} ${quote(process.execPath)} "$NATIVE_VERIFICATION_HELPER" verify-native --origin-file "$NATIVE_ORIGIN_FILE"`);
+  await assert.rejects(fs.readFile(marker),{code:'ENOENT'});
+  await run(process.execPath,[helper,'verify-native','--origin-file',origin],{env});
+  assert.deepEqual(JSON.parse(await fs.readFile(marker)),['verify-native','--origin-file',origin]);
+  await fs.rm(marker);
+  await shell([process.execPath,helper,'verify-native','--origin-file',origin].map(quote).join(' '));
+  assert.deepEqual(JSON.parse(await fs.readFile(marker)),['verify-native','--origin-file',origin]);
+});
+
+
+for(const phase of ['verification','captured','published'])test(`first Initial formal refuses unstarted abort after ${phase}`,async t=>{
+  const f=await unstartedInitialFormal(t),measured=await verifyNative(f.dispatch.originFile);
+  if(phase!=='verification') {
+    const result={status:'PASS',commands:measured.commands,evidence:'Mechanical current AC-001 verification.',
+      findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No writes.'};
+    const tool=path.join(f.root,'tmp/mechanical-PASS.json');
+    await fs.writeFile(tool,JSON.stringify({agentId:f.agentId,status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result,newFindings:[]})}));
+    await captureNative(f.start.handle,tool);
+    if(phase==='published')await publish(f.start.handle);
+  }
+  const before=await captureExecutionTree(f.root);
+  await assert.rejects(abort(f.start.handle,f.tool));
+  assert.deepEqual(await captureExecutionTree(f.root),before);
+});
+
+test('first Initial verification start and abort serialize through the common lease',async t=>{
+  const f=await unstartedInitialFormal(t),open=fs.open;
+  let entered,release;const started=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  const output=path.join(f.operationRoot,'round-1.verification.json');
+  fs.open=async(file,...args)=>{if(file===output&&args[0]==='wx'){entered();await gate;}return open(file,...args);};
+  const verifying=verifyNative(f.dispatch.originFile);
+  try {await started;await assert.rejects(abort(f.start.handle,f.tool));}
+  finally {release();fs.open=open;}
+  assert.equal((await verifying).status,'completed');
+  await assert.rejects(abort(f.start.handle,f.tool));
+});
+
+
+for(const mutation of ['origin','request','baseline','agent','claim','base','confirmation','consumption','identity','lease','extra','missing','registry','replica'])
+test(`Initial abort retirement refuses ${mutation} and preserves unique controls`,async t=>{
+  const f=await unstartedInitialFormal(t);await abort(f.start.handle,f.tool);
+  await bConclude(f,'VALIDATE_SLICE',{terminal:true});
+  const metadata=path.join(f.operationRoot,'owner.json');
+  if(['confirmation','consumption','identity','lease'].includes(mutation)){
+    const v=JSON.parse(await fs.readFile(metadata));
+    if(mutation==='confirmation')v.confirmation.artifactManifestSha256='sha256:'+'0'.repeat(64);
+    if(mutation==='consumption')v.runner.consumedInvocations=0;
+    if(mutation==='identity')v.binding.owner.ownershipToken='00000000-0000-4000-8000-000000000000';
+    if(mutation==='lease')v.commonLease.sha256='sha256:'+'0'.repeat(64);
+    await fs.writeFile(metadata,JSON.stringify(v));
+  } else if(mutation==='extra')await fs.writeFile(path.join(f.operationRoot,'sole-source.txt'),'preserve me');
+  else if(mutation==='missing')await fs.rm(path.join(f.operationRoot,'round-1.claim.json'));
+  else if(mutation==='registry'){
+    const file=path.join(path.dirname(f.operationRoot),'registry.json'),v=JSON.parse(await fs.readFile(file));
+    v.operations=[{operationId:'00000000-0000-4000-8000-000000000000',marker:metadata}];await fs.writeFile(file,JSON.stringify(v));
+  } else if(mutation==='replica'){
+    const current=await captureCurrentExecution(f.specPath),delivery=JSON.parse(Buffer.from(current.files.get('continuity.json'))).deliveries[0];
+    const file=path.join(path.dirname(f.specPath),'execution',delivery.evidence.path),v=JSON.parse(await fs.readFile(file));
+    const object=v.objects.find(item=>item.id===v.validation.sources.origin);
+    const capsule=JSON.parse(Buffer.from(object.bytesBase64,'base64'));const origin=JSON.parse(capsule.originUtf8);
+    delete origin.admission.baseActivation.lastAttempt.abort;capsule.originUtf8=JSON.stringify(origin);object.bytesBase64=Buffer.from(JSON.stringify(capsule)).toString('base64');
+    await fs.writeFile(file,JSON.stringify(v));
+  } else {
+    const file=path.join(f.operationRoot,mutation==='base'?'base.activation.json':`round-1.${mutation}.json`);
+    await fs.appendFile(file,' ');
+  }
+  const before=await captureExecutionTree(f.root);
+  await assert.rejects(publishCandidate('CLOSE',path.dirname(f.specPath),null));
+  const after=await captureExecutionTree(f.root),prior=new Map(before.files.map(row=>[row.path,row]));
+  for(const row of before.files)assert.deepEqual(after.files.find(item=>item.path===row.path),row,'existing source/control retained: '+row.path);
+  // CLOSE may retain its own diagnostic lock when preflight refuses. It must
+  // not alter any preexisting source/control or create a stage/backup/journal.
+  for(const row of after.files.filter(row=>!prior.has(row.path)))assert.match(row.path,/\/lifecycle\.lock$/u);
+});
+
+test('Initial aborted controls survive a CLOSE crash and retire through normal public recovery',async t=>{
+  const f=await unstartedInitialFormal(t);await abort(f.start.handle,f.tool);
+  await bConclude(f,'VALIDATE_SLICE',{terminal:true});
+  const cli=PUBLISHER_CLI;
+  await assert.rejects(run(process.execPath,[cli,'CLOSE',path.dirname(f.specPath)],{
+    timeout:30000,env:{...process.env,[TEST_ONLY_ACK_ENV]:TEST_ONLY_ACK,[TEST_ONLY_CRASH_ENV]:'TERMINAL_WITNESS_DURABLE'}}),e=>e.signal==='SIGKILL');
+  const {recoverIncompletePublication}=await import('../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs');
+  const recovered=await recoverIncompletePublication(path.dirname(f.specPath));
+  assert.equal(recovered.cleanup,'complete');assert.equal((await inspectQualityExecution(f.specPath)).state,'SPEC_CLOSED');
+});

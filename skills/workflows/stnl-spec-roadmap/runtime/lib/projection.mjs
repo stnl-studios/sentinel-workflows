@@ -31,6 +31,7 @@ function lifecycleHandoff(candidate) {
 }
 
 export function projectExecutionDependency(executionState) {
+  if(executionState==='SPEC_CLOSED')return {verdict:'UNKNOWN',detail:'The SPEC is documentarily closed; no retained structured delivery evidence establishes dependency satisfaction.'};
   if (executionState === "COMPLETE") {
     return {
       verdict: "UNKNOWN",

@@ -6,6 +6,7 @@ import {
   LIFECYCLE_DISTRIBUTION_POLICY,
   ROADMAP_DISTRIBUTION_POLICY,
   RUNBOOK_DISTRIBUTION_POLICY,
+  EXECUTION_DISTRIBUTION_POLICY,
 } from "./lib/check-distributable-skill.mjs";
 
 const roots = process.argv.slice(2);
@@ -22,7 +23,8 @@ if (roots.length === 0) {
         ? ROADMAP_DISTRIBUTION_POLICY
       : basename(root) === "stnl-spec-test-runbook"
           ? RUNBOOK_DISTRIBUTION_POLICY
-          : {};
+          : ['stnl-execution-planner','stnl-plan-reviewer','stnl-slice-executor','stnl-slice-quality-manager'].includes(basename(root))
+            ? EXECUTION_DISTRIBUTION_POLICY : {};
     const findings = await checkDistributableSkill(root, policy);
     if (findings.length === 0) {
       process.stdout.write(`PASS: distributable skill is self-contained: ${root}\n`);

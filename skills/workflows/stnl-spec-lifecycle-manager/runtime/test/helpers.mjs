@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import {populateOwnedClosedStage} from '../lib/closed-spec.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,4 +40,11 @@ export function snapshot(root) {
   }
   visit(root);
   return entries;
+}
+
+// Documentary fixture only. This is not CLOSE admission/publication evidence.
+export function closedDocumentFixture(source,candidate) {
+  fs.mkdirSync(candidate,{mode:0o700});const metadata=fs.lstatSync(candidate);
+  populateOwnedClosedStage(source,candidate,{dev:String(metadata.dev),ino:String(metadata.ino)});
+  return fs.realpathSync(candidate);
 }

@@ -26,8 +26,8 @@ export const RUNBOOK_OPTION_DEFAULTS = Object.freeze({
 const RUNBOOK_OPTION_KEYS = new Set(Object.keys(RUNBOOK_OPTION_DEFAULTS));
 const SLICE_FILE = /^slice-[0-9]{2,}\.md$/u;
 const TASK_LABEL = /^[0-9]+\.[0-9]+$/u;
-const EXECUTION_ROOT_FILES = new Set(["plan.md", "tasks.md"]);
-const EXECUTION_ROOT_DIRECTORIES = new Set(["plans", "tasks"]);
+const EXECUTION_ROOT_FILES = new Set(["plan.md", "tasks.md", "approved-preparation.json", "activation.json", "continuity.json"]);
+const EXECUTION_ROOT_DIRECTORIES = new Set(["plans", "tasks", "evidence"]);
 const SECRET_PATH_NAMES = new Set([
   ".env", ".npmrc", ".pypirc", "credentials", "credentials.json", "id_rsa", "id_ed25519",
   "cookies", "cookies.json", "secrets", "secrets.json",
@@ -68,16 +68,6 @@ const CLOSED_CATEGORY_PATHS = new Map([
   ["Relevant Risks", "shared/risks.md"],
   ["Durable Resolved Questions", "shared/questions.md"],
 ]);
-const PLAN_SECTIONS = ["Global Context", "Serial Slice Order", "Global Risks and Integration"];
-const SLICE_PLAN_SECTIONS = [
-  "References", "Objective and Observable Result", "Requirements", "Included Scope", "Out of Scope and Boundaries",
-  "Likely Areas", "Dependencies", "Risks and Strategy", "Expected Tests", "Completion Criterion",
-];
-const SLICE_TASK_SECTIONS = [
-  "References", "Checklist", "Expected Tests", "Changed Areas", "Scope Expansion", "Prior Validation Overlap", "Divergences",
-  "Delegation Blocker", "Implementation Test Evidence", "Findings Test Evidence", "Validation Attempts", "Validation Findings", "Corrections Applied",
-  "Effective Validation Base", "Diff Summary", "Final Result",
-];
 
 export function isIgnoredMetadata(name) {
   return name === ".DS_Store" || name === "__MACOSX" || name.startsWith("._");
@@ -436,18 +426,19 @@ async function validateExecutionArtifact(filePath, kind, slice = null) {
   const label = path.basename(filePath);
   const text = await readBoundedText(filePath, label);
   const header = parsePurposeHeader(text, label);
-  const plan = kind === "plan" || kind === "slice-plan";
-  const expectedOwner = plan ? "stnl-execution-planner" : "stnl-task-materializer";
+  const expectedOwner = "stnl-execution-planner";
+  // inspectExecutionState validates the closed EC-1 preparation and exact
+  // activation manifest before this bounded runbook source selection.
   if (header.values.owner !== expectedOwner || header.values.status !== "ready") {
     throw new Error(`${label} has a non-canonical File Purpose Header owner or status`);
   }
   if (kind === "plan") {
-    requireHeadingContract(header.body, /^Execution Plan$/u, PLAN_SECTIONS, label);
+
     if (!/^- Review state: approved$/gmu.test(header.body)) throw new Error(`${label} is not an approved execution plan`);
     return executionAuthority(header.body, "Global Context", label);
   } else if (kind === "slice-plan") {
     const number = slice.slice("slice-".length);
-    requireHeadingContract(header.body, new RegExp(`^Slice ${number} - .+$`, "u"), SLICE_PLAN_SECTIONS, label);
+
     if (!/^- Review state: approved$/gmu.test(header.body)) throw new Error(`${label} is not an approved slice plan`);
     return executionAuthority(header.body, "References", label);
   } else if (kind === "tasks") {
@@ -455,7 +446,7 @@ async function validateExecutionArtifact(filePath, kind, slice = null) {
     return null;
   } else {
     const number = slice.slice("slice-".length);
-    requireHeadingContract(header.body, new RegExp(`^Slice ${number} Tasks - .+$`, "u"), SLICE_TASK_SECTIONS, label);
+
     return executionAuthority(header.body, "References", label);
   }
 }
@@ -907,7 +898,8 @@ export async function inspectWorkspace(specPath, scopeValue, selectionValue, opt
   const selection = normalizeSelection(scope, selectionValue);
   const mandatorySources = [workspace.authorityPath, ...(await canonicalSharedSources(workspace))];
   if (new Set(["EXECUTION", "SLICE", "TASK", "MULTI_SLICE"]).has(scope)) {
-    await inspectExecutionState(workspace.authorityPath);
+    const execution=await inspectExecutionState(workspace.authorityPath);
+    if(execution.state==='SPEC_CLOSED')throw Object.assign(new Error('SPEC_CLOSED: the closed document has no current execution or historical slice sources for this selection'),{code:'SPEC_CLOSED'});
   }
 
   if (scope === "EXECUTION") {

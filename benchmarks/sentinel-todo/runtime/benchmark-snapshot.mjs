@@ -24,8 +24,9 @@ function git(args) {
   return result.stdout;
 }
 
-async function assertOwnedRun(runRoot) {
-  const runs = await fs.realpath(RUNS_ROOT);
+async function assertOwnedRun(runRoot, runsRoot = RUNS_ROOT) {
+  const runs = await fs.realpath(runsRoot);
+  if (runs !== path.resolve(runsRoot)) throw new Error('run storage root must be canonical');
   const run = await fs.realpath(runRoot);
   if (path.dirname(run) !== runs || !/^[a-z0-9][a-z0-9-]{7,}$/u.test(path.basename(run))) {
     throw new Error('run must be a direct child of benchmark-temp');
@@ -106,22 +107,30 @@ export async function currentFunctionalIdentity() {
   return { sha256: await hashFiles(REPOSITORY_ROOT, files), fileCount: files.length };
 }
 
-export async function copySnapshotDependencies(snapshot, { executionMode, dependencySource } = {}) {
+export async function copySnapshotDependencies(snapshot, { executionMode, dependencySource, offlineSdk } = {}) {
   if (dependencySource !== undefined && executionMode !== 'OFFLINE_TEST_ONLY') {
     throw new Error('external dependency source is restricted to OFFLINE_TEST_ONLY');
   }
+  if (executionMode === 'OFFLINE_TEST_ONLY') {
+    const { assertOfflineSdk } = await import('../../../agents/codex/runtime/offline-provider-context.mjs');
+    if (dependencySource !== undefined) throw new Error('offline dependencies must use a verified shared SDK descriptor');
+    const fixtureRoot = path.resolve(snapshot, '../../..');
+    await assertOfflineSdk(offlineSdk, fixtureRoot);
+    return { sdkVersion: offlineSdk.sdkVersion, cliVersion: offlineSdk.cliVersion, externalSdk: offlineSdk };
+  }
+  if (offlineSdk !== undefined) throw new Error('external SDK is restricted to OFFLINE_TEST_ONLY');
   const source = dependencySource ?? path.join(REPOSITORY_ROOT, 'agents/codex/node_modules');
   if (!path.isAbsolute(source) || await fs.realpath(source) !== source
     || !(await fs.lstat(source)).isDirectory()) throw new Error('dependency source must be a canonical directory');
   const files = await listFiles(source, '', { dependencies: true });
   const sdkVersion = JSON.parse(await fs.readFile(path.join(source, '@openai/codex-sdk/package.json'), 'utf8')).version;
   const cliVersion = JSON.parse(await fs.readFile(path.join(source, '@openai/codex/package.json'), 'utf8')).version;
-  if (sdkVersion !== '0.160.0' || cliVersion !== '0.160.0') throw new Error('local Codex SDK/CLI version differs from the pinned adapter');
+  if (sdkVersion !== '0.163.0' || cliVersion !== '0.163.0') throw new Error('local Codex SDK/CLI version differs from the pinned adapter');
   await copyFiles(source, path.join(snapshot, 'agents/codex/node_modules'), files);
   return { sdkVersion, cliVersion };
 }
 
-export async function createSnapshot(runRoot, { executionMode, dependencySource } = {}) {
+export async function createSnapshot(runRoot, { executionMode, dependencySource, offlineSdk } = {}) {
   if (executionMode !== undefined && executionMode !== 'OFFLINE_TEST_ONLY') throw new Error('invalid snapshot execution provenance');
   if (dependencySource !== undefined && executionMode !== 'OFFLINE_TEST_ONLY') throw new Error('external dependency source is restricted to OFFLINE_TEST_ONLY');
   const run = await assertOwnedRun(runRoot);
@@ -135,10 +144,11 @@ export async function createSnapshot(runRoot, { executionMode, dependencySource 
   const files = await sourceFiles();
   await copyFiles(REPOSITORY_ROOT, snapshot, files);
 
-  const { sdkVersion, cliVersion } = await copySnapshotDependencies(snapshot, { executionMode, dependencySource });
+  const { sdkVersion, cliVersion, externalSdk } = await copySnapshotDependencies(snapshot, { executionMode, dependencySource, offlineSdk });
   const snapshotFiles = await freeze(snapshot);
   const metadata = {
     ...(executionMode === 'OFFLINE_TEST_ONLY' ? { executionMode } : {}),
+    ...(externalSdk ? { externalSdk } : {}),
     protocol: 'sentinel-sdk-context-v1',
     baseSha,
     dirty: gitStatus !== '',
@@ -156,10 +166,16 @@ export async function createSnapshot(runRoot, { executionMode, dependencySource 
   return metadata;
 }
 
-export async function assertSnapshotIntegrity(runRoot, { checkSource = true } = {}) {
-  const run = await assertOwnedRun(runRoot);
+export async function assertSnapshotIntegrity(runRoot, { checkSource = true, runsRoot = RUNS_ROOT } = {}) {
+  if (runsRoot !== RUNS_ROOT && checkSource) throw new Error('external run storage is read-only diagnostic');
+  const run = await assertOwnedRun(runRoot, runsRoot);
   const snapshot = path.join(run, 'snapshot');
   const metadata = JSON.parse(await fs.readFile(path.join(run, 'snapshot.json'), 'utf8'));
+  if (metadata.executionMode === 'OFFLINE_TEST_ONLY') {
+    const { assertOfflineSdk } = await import('../../../agents/codex/runtime/offline-provider-context.mjs');
+    await assertOfflineSdk(metadata.externalSdk, path.resolve(run, '../..'));
+  }
+  else if (metadata.externalSdk !== undefined) throw new Error('external SDK is restricted to OFFLINE_TEST_ONLY');
   const snapshotFiles = await listFiles(snapshot, '', { dependencies: true });
   const actual = await hashFiles(snapshot, snapshotFiles);
   if (actual !== metadata.snapshotSha256 || snapshotFiles.length !== metadata.snapshotFileCount) {

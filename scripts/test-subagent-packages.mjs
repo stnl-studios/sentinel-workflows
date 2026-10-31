@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from 'node:child_process';
 import {
   cp,
   mkdir,
@@ -38,11 +39,9 @@ const PLATFORMS = {
       ".codex/agents/stnl_validation_runner.toml",
       "package.json",
       "package-lock.json",
-      "runtime/isolated-home.mjs",
-      "runtime/managed-runner-bridge.mjs",
-      "runtime/managed-slice-preflight.mjs",
-      "runtime/runner-broker.mjs",
-      "runtime/sdk-transport.mjs",
+      "runtime/app-server-transport.mjs",
+    "runtime/native-provider.mjs",
+    "runtime/offline-provider-context.mjs",
       "runtime/usage-accounting.mjs",
       "runtime/validation-runner.mjs",
     ],
@@ -210,9 +209,10 @@ function assertRunnerContract(contract, label) {
     "Não aplique correções, não implemente findings",
     "Não crie subagentes nem delegue.",
     "Checks nunca emitem `PASS` formal",
-    "Não corrija automaticamente código quando um check falhar.",
-    "Serialização, persistência e validação determinística pertencem ao runtime/producer.",
+    "Não repita nem corrija checks em loop para obter PASS",
   ]) assert.ok(contract.includes(boundary), `${label} lacks harmful-action boundary: ${boundary}`);
+  assert.match(contract, /Serialização, persistência e validação determinística pertencem ao runtime\/producer\.|esses resumos não substituem o receipt do produtor|A observação do produtor pertence à mesma invocação\/owner\. Receipts vinculam receita, argumentos efetivos, estado dos inputs e resultado\./u,
+    `${label} must retain producer-owned evidence authority`);
   assert.doesNotMatch(contract, /(?:você pode|é permitido|you may)[^\n]{0,80}(?:editar|implementar|aplicar correções|criar subagentes|delegar)/iu, `${label} enables a harmful action`);
 }
 
@@ -288,14 +288,9 @@ async function validateClaudePackage(root) {
 async function validateReadme(root) {
   const readme = await readFile(path.join(root, "README.md"), "utf8");
   const required = [
-    "copie somente o conteúdo de `codex/`",
-    ".codex/agents/stnl_validation_runner.toml",
-    ".codex/agents/stnl_spec_context_scout.toml",
-    "copie somente o conteúdo de `claude-code/`",
-    ".claude/agents/stnl-validation-runner.md",
-    ".claude/agents/stnl-spec-context-scout.md",
-    "Uma única cópia instala os dois subagentes da plataforma escolhida.",
-    "Nunca copie os adaptadores das duas plataformas para o mesmo projeto",
+    'npm run sentinel:install', '--preview', '--target codex', '--target claude',
+    '~/.codex/agents', '~/.claude/agents', 'stnl-validation-runner', 'stnl-spec-context-scout',
+    'agents alheios permanecem preservados', 'planejamento completo acontece antes da primeira alteração',
   ];
   for (const marker of required) {
     assert.ok(readme.includes(marker), `subagent README lacks ${JSON.stringify(marker)}`);
@@ -320,7 +315,8 @@ async function validateDistribution(root) {
   await validateReadme(root);
   const codex = await validateCodexPackage(path.join(root, "codex"));
   const claude = await validateClaudePackage(path.join(root, "claude-code"));
-  assert.equal(codex.runner, claude.runner, "runner platform contracts diverge");
+  const scoped = spawnSync(process.execPath, [path.join(SCRIPT_ROOT, 'check-contracts.mjs'), 'subagents', '--root', root, '--platform', 'codex'], { encoding: 'utf8' });
+  assert.equal(scoped.status, 0, scoped.stdout + scoped.stderr);
   assert.equal(codex.scout, claude.scout, "scout platform contracts diverge");
 }
 

@@ -2,37 +2,29 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import test, { after } from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { computeRequirementsAuthority } from '../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
+import { allocateOfflineFixture, finishOfflineFixture } from './fixtures/offline-checkout.mjs';
+import { describeOfflineSdk } from '../agents/codex/runtime/offline-provider-context.mjs';
+import { offlineNativeWorkflow } from './fixtures/native-workflow-provider.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BENCHMARK = path.join(ROOT, 'benchmarks', 'sentinel-todo');
-const RUNTIME = path.join(BENCHMARK, 'runtime', 'benchmark.mjs');
+// The prepare CLI must run from an owned, isolated source checkout.
+// TMPDIR remains inside the real repository; it is not an authorized workspace of ROOT.
+const source = await allocateOfflineFixture(ROOT);
+after(() => finishOfflineFixture(source));
+const CLI_ROOT = source.root;
+const RUNTIME = path.join(CLI_ROOT, 'benchmarks/sentinel-todo/runtime/benchmark.mjs');
 const ENVIRONMENT_RUNTIME = path.join(BENCHMARK, 'runtime', 'benchmark-environment.mjs');
 const SEED = path.join(BENCHMARK, 'seed');
-const CLOSED_SPEC_FIXTURE = path.join(
-  ROOT, 'skills', 'workflows', 'stnl-spec-lifecycle-manager',
-  'examples', 'validator-fixtures', 'closed', 'feature_spec.md',
-);
-const READY_SPEC_FIXTURE = path.join(
-  ROOT, 'skills', 'workflows', 'stnl-spec-lifecycle-manager',
-  'examples', 'validator-fixtures', 'ready',
-);
-const PLAN_TEMPLATE = path.join(ROOT, 'skills', 'workflows', 'stnl-execution-planner', 'templates', 'plan.template.md');
-const SLICE_PLAN_TEMPLATE = path.join(ROOT, 'skills', 'workflows', 'stnl-execution-planner', 'templates', 'slice-plan.template.md');
-const TASKS_TEMPLATE = path.join(ROOT, 'skills', 'workflows', 'stnl-task-materializer', 'templates', 'tasks.template.md');
-const SLICE_TASKS_TEMPLATE = path.join(ROOT, 'skills', 'workflows', 'stnl-task-materializer', 'templates', 'slice-tasks.template.md');
-const SHA = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8', shell: false }).stdout.trim();
+const SHA = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: CLI_ROOT, encoding: 'utf8', shell: false }).stdout.trim();
 const PHASES = ['SPEC', 'PLAN', 'TASKS', 'EXECUTE', 'REVIEW_VALIDATE'];
 const CURRENT_PROFILE = 'production-v3';
-const VALIDATED_CONTENT = 'validated behavior\n';
-const VALIDATED_HASH = createHash('sha256').update(VALIDATED_CONTENT).digest('hex');
 
 function run(command, args, cwd = ROOT) {
   const env = { ...process.env };
@@ -41,7 +33,7 @@ function run(command, args, cwd = ROOT) {
 }
 
 function cli(args) {
-  return run(process.execPath, [RUNTIME, ...args]);
+  return run(process.execPath, [RUNTIME, ...args], CLI_ROOT);
 }
 
 function requireSuccess(result, label) {
@@ -88,186 +80,53 @@ function readinessArgs(scope, hash = `sha256:${'a'.repeat(64)}`) {
   return ['--readiness-scope', scope, '--readiness-snapshot-sha256', hash];
 }
 
-function replaceAll(text, values) {
-  let result = text;
-  for (const [from, to] of values) result = result.replaceAll(from, to);
-  return result;
+// Existing scripted authors/judges exercise public current producers and receipts.
+// This is structural offline evidence, never a claim about real model quality.
+async function currentCase(t, { caseId = 'A', authoredCaseId = caseId, fault = null, maxOperations = null } = {}) {
+  const manager = await import(pathToFileURL(path.join(CLI_ROOT, 'benchmarks/sentinel-todo/runtime/benchmark-manager.mjs')));
+  const { createNativeProvider } = await import(pathToFileURL(path.join(CLI_ROOT, 'agents/codex/runtime/native-provider.mjs')));
+  const sdk = await describeOfflineSdk(await fs.realpath(path.join(ROOT, 'agents/codex/node_modules')), CLI_ROOT);
+  let backend;
+  t.after(async () => { await backend?.settled(); backend = null; });
+  const before = new Set(await fs.readdir(path.join(CLI_ROOT, 'benchmark-temp')).catch(e => { if(e.code === 'ENOENT') return []; throw e; }));
+  const offline = { mode: 'OFFLINE_TEST_ONLY', sdk, createNativeProvider: async args => {
+    backend = offlineNativeWorkflow({ ...args, caseRoot: args.evidenceRoot, caseId: authoredCaseId, fault });
+    return createNativeProvider({ ...args, rpc: backend.rpc, pollMs: 1 });
+  } };
+  const context = process.env.NODE_TEST_CONTEXT; delete process.env.NODE_TEST_CONTEXT;
+  try { await manager.main(['run', '--case', caseId, '--json', ...(maxOperations === null ? [] : ['--max-operations', String(maxOperations)])], { offline }); }
+  finally { if(context !== undefined) process.env.NODE_TEST_CONTEXT = context; }
+  await backend.settled();
+  const names = (await fs.readdir(path.join(CLI_ROOT, 'benchmark-temp'))).filter(n => n.startsWith('run-') && !before.has(n));
+  assert.equal(names.length, 1);
+  const caseRoot = path.join(CLI_ROOT, 'benchmark-temp', names[0], `case-${caseId.toLowerCase()}`);
+  const state = await readJson(path.join(caseRoot, 'case-state.json'));
+  const workspace = path.join(caseRoot, 'workspace'), spec = state.specPath, journal = path.join(caseRoot, 'journal.json');
+  const terminal = path.join(caseRoot, 'terminal-evidence.json');
+  return { caseRoot, state, workspace, spec, journal, raw: await readJson(path.join(caseRoot, 'raw.json')),
+    finalize: (selectedJournal, output, terminalFile = terminal) => cli([
+      'finalize', '--workspace', workspace, '--case', caseId, '--spec', spec,
+      '--journal', selectedJournal, '--output', output, ...(terminalFile === null ? [] : ['--terminal-evidence', terminalFile]),
+    ]) };
 }
 
-function replaceSection(text, heading, content) {
-  const pattern = new RegExp(`(## ${heading}\\n\\n)[\\s\\S]*?(?=\\n## |$)`, 'u');
-  assert.match(text, pattern);
-  return text.replace(pattern, `$1${content}\n`);
+async function changedJournal(root, label, original, mutate) {
+  const value = await readJson(original); mutate(value);
+  value.events.forEach((entry, index) => { entry.index = index + 1; });
+  // Keep native case-state/ledger adjacency: a missing neighbour is not the intended negative.
+  const file = path.join(path.dirname(original), `${label}-journal.json`);
+  await fs.writeFile(file, JSON.stringify(value)); return file;
 }
 
-function readyPlan(text) {
-  return text.replace('status: draft', 'status: ready').replaceAll('Review state: pending', 'Review state: approved');
-}
-
-function omitInitialRecoveryFields(text) {
-  return text.replace(/\nFor revision 1,[\s\S]*?\n## Serial Slice Order/u, '\n## Serial Slice Order');
-}
-
-async function writeCanonicalExecution(workspace, spec, { terminal = true } = {}) {
-  const execution = path.join(spec, 'execution');
-  const plans = path.join(execution, 'plans');
-  const tasks = path.join(execution, 'tasks');
-  await fs.mkdir(plans, { recursive: true });
-  await fs.mkdir(tasks, { recursive: true });
-
-  const authority = await computeRequirementsAuthority(spec);
-  const authorityPath = path.join(spec, 'feature_spec.md');
-  const implementationTarget = path.join(workspace, 'src', 'example.txt');
-  const globalSource = path.relative(execution, authorityPath).split(path.sep).join('/');
-  const detailSource = path.relative(plans, authorityPath).split(path.sep).join('/');
-  const taskSource = path.relative(tasks, authorityPath).split(path.sep).join('/');
-  const globalImplementation = path.relative(execution, implementationTarget).split(path.sep).join('/');
-  const detailImplementation = path.relative(plans, implementationTarget).split(path.sep).join('/');
-  const taskImplementation = path.relative(tasks, implementationTarget).split(path.sep).join('/');
-
-  const planTemplate = await fs.readFile(PLAN_TEMPLATE, 'utf8');
-  const globalPlan = readyPlan(omitInitialRecoveryFields(replaceAll(planTemplate, [
-    ['`<relative path>`', `\`${globalSource}\``], ['sha256:<64hex>', `sha256:${authority}`],
-    ['<positive integer>', '1'], ['<compact objective>', 'Deliver observable behavior'],
-    ['<compact strategy>', 'Implement and validate serially'], ['01 - <name>', '01 - Delivery'],
-    ['<result>', 'observable result'],
-    ['`<artifact-relative path>`; <optional conceptual area>', `\`${globalImplementation}\`; example implementation`],
-  ])));
-  await fs.writeFile(path.join(execution, 'plan.md'), globalPlan, 'utf8');
-
-  const slicePlanTemplate = await fs.readFile(SLICE_PLAN_TEMPLATE, 'utf8');
-  const slicePlan = readyPlan(replaceAll(slicePlanTemplate, [
-    ['<Name>', 'Delivery'], ['`<relative path>`', `\`${detailSource}\``],
-    ['sha256:<64hex>', `sha256:${authority}`], ['<positive integer>', '1'],
-    ['<One coherent delivery and how it is observed.>', 'Deliver observable behavior.'],
-    ['<included work>', 'Implement the approved behavior.'],
-    ['<excluded work and boundary with later slices>', 'No unrelated work.'],
-    ['`<artifact-relative path>` — <optional contract, subsystem, test area, or explanation>', `\`${detailImplementation}\` — example implementation`],
-    ['<earlier slice or none>', 'none'], ['<risk and mitigation>', 'Low risk; focused validation.'],
-    ['<bounded approach>', 'One bounded change.'], ['<test, command, suite, or observable check>', 'node --test'],
-    ['<objective result and preserved boundary>', 'Behavior is observable and bounded.'],
-  ]));
-  await fs.writeFile(path.join(plans, 'slice-01.md'), slicePlan, 'utf8');
-
-  const tasksTemplate = await fs.readFile(TASKS_TEMPLATE, 'utf8');
-  let tasksIndex = replaceAll(tasksTemplate, [
-    ['01 - <name>', '01 - Delivery'], ['<observable delivery>', 'observable result'],
-  ]);
-  const sliceTasksTemplate = await fs.readFile(SLICE_TASKS_TEMPLATE, 'utf8');
-  let task = replaceAll(sliceTasksTemplate, [
-    ['<Name>', 'Delivery'], ['`<relative path>`', `\`${taskSource}\``],
-    ['sha256:<64hex>', `sha256:${authority}`], ['<positive integer>', '1'],
-    ['<task>', 'Implement behavior'], ['<result>', 'observable result'],
-    ['`<artifact-relative path>`; <optional conceptual area>', `\`${taskImplementation}\`; example implementation`],
-    ['<test, command, suite, or observable check>', 'node --test'],
-  ]);
-
-  if (terminal) {
-    await fs.mkdir(path.dirname(implementationTarget), { recursive: true });
-    await fs.writeFile(implementationTarget, VALIDATED_CONTENT, 'utf8');
-    task = task.replace('- [ ] 1.1', '- [x] 1.1');
-    task = replaceSection(task, 'Changed Areas', `- \`${taskImplementation}\``);
-    task = replaceSection(task, 'Validation Attempts', `### attempt-01
-
-- Type: initial
-- Status: PASS
-- HEAD: fixture
-- Verified scope: ${taskImplementation}
-- Commands:
-  - \`node --test\` | exit:0
-- Evidence: Objective PASS evidence.
-- Finding references: none
-- Finding dispositions: none
-- Blockers: none
-- Unexpected workspace effects: none
-- Persistence summary: PASS persisted.`);
-    task = replaceSection(task, 'Effective Validation Base', `- Origin attempt: attempt-01
-- Attempt type: initial
-- HEAD: fixture
-- Result: PASS
-- Files:
-  - \`${taskImplementation}\` | sha256:${VALIDATED_HASH}
-- Authoritative commands:
-  - \`node --test\` | exit:0
-- Evidence summary: Objective PASS evidence.`);
-    task = replaceSection(task, 'Diff Summary', '- Implemented and validated the observable behavior.');
-    task = replaceSection(task, 'Final Result', '- PASS');
-    tasksIndex = tasksIndex.replace(
-      '| [ ] | 01 - Delivery | observable result | - | tasks/slice-01.md | pending | pending |',
-      '| [x] | 01 - Delivery | observable result | - | tasks/slice-01.md | PASS | PASS |',
-    );
-  }
-
-  await fs.writeFile(path.join(execution, 'tasks.md'), tasksIndex, 'utf8');
-  await fs.writeFile(path.join(tasks, 'slice-01.md'), task, 'utf8');
-  return { implementationTarget, taskImplementation };
-}
-
-async function writeSyntheticArtifacts(workspace, caseId = 'A', { closed = true, invalidClosed = false, terminal = true } = {}) {
-  const spec = path.join(workspace, 'specs', `benchmark-case-${caseId.toLowerCase()}`);
-  await fs.mkdir(spec, { recursive: true });
-  if (closed) await fs.copyFile(CLOSED_SPEC_FIXTURE, path.join(spec, 'feature_spec.md'));
-  else if (!closed) {
-    await fs.copyFile(path.join(READY_SPEC_FIXTURE, 'feature_spec.md'), path.join(spec, 'feature_spec.md'));
-    await fs.cp(path.join(READY_SPEC_FIXTURE, 'shared'), path.join(spec, 'shared'), { recursive: true });
-  }
-  const execution = await writeCanonicalExecution(workspace, spec, { terminal });
-  if (invalidClosed) {
-    const featureSpec = path.join(spec, 'feature_spec.md');
-    await fs.writeFile(featureSpec, (await fs.readFile(featureSpec, 'utf8')).replace('status: closed', 'status: invalid'), 'utf8');
-  }
-  return { spec, ...execution };
-}
-
-async function completeJournal(file, {
-  mismatch = false,
-  specModel = 'GPT-6.1-Sol',
-  specCloseModel = specModel,
-  includeInitialReadiness = true,
-  includeTerminalReadiness = true,
-  initialReadinessState = 'GLOBAL_READY',
-  includeComplete = true,
-  regressAfterComplete = false,
-  lateReadiness = false,
-  recoveredBlocked = false,
-  extraAfterClose = false,
-  multipleClose = false,
-} = {}) {
-  requireSuccess(event(file, 'SPEC_INIT', 'SPEC', specModel, 'medium'), 'SPEC_INIT');
-  if (includeInitialReadiness) {
-    const readinessExtra = initialReadinessState === null ? [] : ['--resulting-state', initialReadinessState];
-    requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high', 'PASS', readinessExtra), 'SPEC_READINESS');
-  }
-  requireSuccess(event(file, 'PLAN', 'PLAN', mismatch ? 'GPT-6.1-Sol' : 'GPT-6-Luna', mismatch ? 'xhigh' : 'high'), 'PLAN');
-  requireSuccess(event(file, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high'), 'REVIEW_PLAN');
-  requireSuccess(event(file, 'MATERIALIZE_TASKS', 'TASKS', 'GPT-6-Luna', 'high'), 'MATERIALIZE_TASKS');
-  requireSuccess(event(file, 'REVIEW_TASKS', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high'), 'REVIEW_TASKS');
-  if (recoveredBlocked) {
-    requireSuccess(event(file, 'EXECUTE_SLICE', 'EXECUTE', 'GPT-6-Luna', 'high', 'BLOCKED', ['--slice', 'slice-01']), 'blocked EXECUTE_SLICE');
-  }
-  requireSuccess(event(file, 'EXECUTE_SLICE', 'EXECUTE', 'GPT-6-Luna', 'high', 'PASS', ['--slice', 'slice-01']), 'EXECUTE_SLICE');
-  const validateExtra = ['--slice', 'slice-01'];
-  if (includeComplete) validateExtra.push('--resulting-state', 'COMPLETE');
-  requireSuccess(event(file, 'VALIDATE_SLICE', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high', 'PASS', validateExtra), 'VALIDATE_SLICE');
-  if (regressAfterComplete) {
-    requireSuccess(event(file, 'VALIDATE_SLICE', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high', 'NEEDS_FIX', [
-      '--slice', 'slice-01', '--round', '2', '--resulting-state', 'NEEDS_FIX',
-    ]), 'regressed VALIDATE_SLICE');
-  }
-  if (includeTerminalReadiness) {
-    requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high', 'PASS',
-      ['--resulting-state', 'GLOBAL_READY']), 'terminal SPEC_READINESS');
-  }
-  if (lateReadiness) {
-    requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high'), 'late SPEC_READINESS');
-  }
-  requireSuccess(event(file, 'SPEC_CLOSE', 'SPEC', specCloseModel, 'medium', 'PASS', ['--resulting-state', 'SPEC_CLOSED']), 'SPEC_CLOSE');
-  if (multipleClose) {
-    requireSuccess(event(file, 'SPEC_CLOSE', 'SPEC', 'GPT-5.6-Terra', 'high', 'PASS', ['--resulting-state', 'SPEC_CLOSED']), 'duplicate SPEC_CLOSE');
-  }
-  if (extraAfterClose) {
-    requireSuccess(event(file, 'SPEC_READINESS', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high'), 'post-close SPEC_READINESS');
-  }
+async function refusesFinalization(image, journal, output, terminal) {
+  const result = image.finalize(journal, output, terminal);
+  assert.equal(result.error, undefined, 'spawn failure is not a contract refusal');
+  assert.equal(result.signal, null, 'signal/OOM is not a contract refusal');
+  assert.ok(Number.isInteger(result.status) && result.status !== 0, result.stdout + result.stderr);
+  assert.doesNotMatch(result.stderr, /ENOENT|case state is unreadable|timed out/u, 'fixture failure is not the tested refusal');
+  const document = await readJson(output).catch(e => { if(e.code === 'ENOENT') return null; throw e; });
+  assert.notEqual(document?.status, 'PASS', 'invalid proof cannot create a PASS report');
+  return document;
 }
 
 test('B01 — manifest has bounded cases, profiles, paths, and schemas', async () => {
@@ -308,9 +167,9 @@ test('B09 — production profile v3 is current and dispatch enforcement is deter
     ['GPT-5.6-Sol', 'GPT-5.6-Terra', 'GPT-5.6-Luna', 'GPT-6-Luna', 'GPT-6.1-Sol', 'GPT-6-Astra']);
   assert.deepEqual(configuration.productionProfile.cases.A, {
     SPEC: { model: 'GPT-6.1-Sol', effort: 'medium' },
-    PLAN: { model: 'GPT-6-Luna', effort: 'high' },
+    PLAN: { model: 'GPT-6.1-Sol', effort: 'medium' },
     TASKS: { model: 'GPT-6-Luna', effort: 'high' },
-    EXECUTE: { model: 'GPT-6-Luna', effort: 'high' },
+    EXECUTE: { model: 'GPT-6.1-Sol', effort: 'medium' },
     REVIEW_VALIDATE: { model: 'GPT-6-Luna', effort: 'high' },
   });
   assert.deepEqual(configuration.productionProfile.cases.B, {
@@ -327,11 +186,10 @@ test('B09 — production profile v3 is current and dispatch enforcement is deter
     EXECUTE: { model: 'GPT-6.1-Sol', effort: 'high' },
     REVIEW_VALIDATE: { model: 'GPT-6-Astra', effort: 'high' },
   });
-  assert.deepEqual(configuration.cases.map(({ id, budgets }) => ({ id, budgets })), [
-    { id: 'A', budgets: { maxReviewPlanEvents: 2, maxReviewTasksEvents: 2, maxReplans: 1, maxExecuteSliceAttemptsPerSlice: 3, maxApplyFindingsPerSlice: 2, maxWorkflowEvents: 14 } },
-    { id: 'B', budgets: { maxReviewPlanEvents: 2, maxReviewTasksEvents: 2, maxReplans: 1, maxExecuteSliceAttemptsPerSlice: 3, maxApplyFindingsPerSlice: 2, maxWorkflowEvents: 20 } },
-    { id: 'C', budgets: { maxReviewPlanEvents: 2, maxReviewTasksEvents: 2, maxReplans: 1, maxExecuteSliceAttemptsPerSlice: 3, maxApplyFindingsPerSlice: 2, maxWorkflowEvents: 24 } },
-  ]);
+  for (const { budgets } of configuration.cases) assert.deepEqual(budgets, {
+    maxReviewPlanEvents: 5, maxReviewTasksEvents: 2, maxReplans: 1,
+    maxExecuteSliceAttemptsPerSlice: 5, maxApplyFindingsPerSlice: 4, maxWorkflowEvents: 48,
+  });
   assert.deepEqual(configuration.cases.map(({ id, requirementsHash, fixtureContentHash }) => ({ id, requirementsHash, fixtureContentHash })), [
     { id: 'A', requirementsHash: 'sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24', fixtureContentHash: 'sha256:e0c3233c14356e93accff61b334704a91fb8e4f82a60209768259144d88a10d5' },
     { id: 'B', requirementsHash: 'sha256:0388a84f8c5a9c45fcd5b1d0b59e7d376979e98717d8e028067701f00a16fc57', fixtureContentHash: 'sha256:107d1057e48506a20da4460ee33febca26280dd35c85f645b0de6b81ffb33e10' },
@@ -339,34 +197,19 @@ test('B09 — production profile v3 is current and dispatch enforcement is deter
   ]);
   assert.equal(configuration.integrity.seedContentHash, 'sha256:9d93fbfa52b2e20607452f43d0ecb21e74f1872bb7a2da1b94dc2c814e7552e8');
 
-  const root = await temporaryRoot(t, 'sentinel production profile v2');
-  const workspace = path.join(root, 'workspace');
-  requireSuccess(cli(['prepare', '--case', 'A', '--output', workspace]), 'prepare profile fixture');
-  await fs.copyFile(path.join(ROOT, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
-  const { spec } = await writeSyntheticArtifacts(workspace);
-  const finalize = (journal, output) => cli([
-    'finalize', '--workspace', workspace, '--case', 'A', '--spec', spec,
-    '--journal', journal, '--output', output,
-  ]);
-  const alignedJournal = path.join(root, 'aligned-journal.json');
-  await initJournal(alignedJournal);
-  await completeJournal(alignedJournal);
-  const alignedOutput = path.join(root, 'aligned-result.json');
-  requireSuccess(finalize(alignedJournal, alignedOutput), 'finalize Sol/high profile fixture');
-  const alignedResult = await readJson(alignedOutput);
-  assert.equal(alignedResult.productionProfileId, 'production-v3');
-  assert.deepEqual(alignedResult.modelUse.profileMismatches, []);
-
-  const terraJournal = path.join(root, 'terra-journal.json');
-  await initJournal(terraJournal);
-  await completeJournal(terraJournal, { specModel: 'GPT-5.6-Terra', specCloseModel: 'GPT-5.6-Sol' });
-  const terraOutput = path.join(root, 'terra-result.json');
-  requireSuccess(finalize(terraJournal, terraOutput), 'finalize Terra/high mismatch fixture');
-  const terraResult = await readJson(terraOutput);
-  assert.deepEqual(terraResult.modelUse.profileMismatches.map((entry) => [entry.phase, entry.expectedModel, entry.actualModel]), [
-    ['SPEC', 'GPT-6.1-Sol', 'GPT-5.6-Terra'],
-    ['SPEC', 'GPT-6.1-Sol', 'GPT-5.6-Sol'],
-  ]);
+  const root = await temporaryRoot(t, 'sentinel production profile v3');
+  const image = await currentCase(t);
+  assert.equal(image.state.status, 'PASS');
+  assert.equal(image.raw.productionProfileId, 'production-v3');
+  assert.deepEqual(image.raw.modelUse.profileMismatches, []);
+  const journal = await changedJournal(root, 'mismatch', image.journal, value => {
+    for(const entry of value.events) if(entry.phase === 'SPEC') entry.model = 'GPT-5.6-Terra';
+  });
+  const output = path.join(root, 'mismatch.json');
+  requireSuccess(image.finalize(journal, output), 'profile mismatch is measured, never invented as model use');
+  const result = await readJson(output);
+  assert.ok(result.modelUse.profileMismatches.length >= 2);
+  assert.ok(result.modelUse.profileMismatches.every(entry => entry.actualModel === 'GPT-5.6-Terra'));
 });
 
 test('B10 — v2 maturation lifecycle records global readiness and promotion', async (t) => {
@@ -400,28 +243,64 @@ test('B11 — v2 rejects premature PLAN, LOCAL approval, promotion, terminal rea
   assert.notEqual(event(journal, 'SPEC_CLOSE', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_CLOSED']).status, 0);
 });
 
-test('B12 — v2 finalization requires immediate close and reports maturation cycles', async (t) => {
-  const root = await temporaryRoot(t, 'sentinel-benchmark-v2-finalize');
-  const workspace = path.join(root, 'workspace');
-  requireSuccess(cli(['prepare', '--case', 'A', '--output', workspace]), 'prepare v2 workspace');
-  await fs.copyFile(path.join(ROOT, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
-  const { spec } = await writeSyntheticArtifacts(workspace);
-  const journal = path.join(root, 'v2.json');
-  await initV2Journal(journal, 'A');
-  requireSuccess(event(journal, 'SPEC_INIT', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_READY']), 'v2 init ready');
-  requireSuccess(event(journal, 'PLAN', 'PLAN', 'GPT-5.6-Terra', 'high'), 'v2 plan');
-  requireSuccess(event(journal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'v2 review plan');
-  requireSuccess(event(journal, 'MATERIALIZE_TASKS', 'TASKS', 'GPT-5.6-Terra', 'high'), 'v2 materialize');
-  requireSuccess(event(journal, 'REVIEW_TASKS', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'v2 review tasks');
-  requireSuccess(event(journal, 'EXECUTE_SLICE', 'EXECUTE', 'GPT-5.6-Luna', 'high', 'PASS', ['--slice', 'slice-01']), 'v2 execute');
-  requireSuccess(event(journal, 'VALIDATE_SLICE', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high', 'PASS', ['--slice', 'slice-01', '--resulting-state', 'COMPLETE']), 'v2 complete');
-  requireSuccess(event(journal, 'SPEC_CLOSE', 'SPEC', 'GPT-5.6-Sol', 'high', 'PASS', ['--resulting-state', 'SPEC_CLOSED']), 'v2 close');
-  const output = path.join(root, 'result.json');
-  requireSuccess(cli(['finalize', '--workspace', workspace, '--case', 'A', '--spec', spec, '--journal', journal, '--output', output]), 'finalize v2');
-  const result = await readJson(output);
-  assert.equal(result.schemaVersion, 2);
-  assert.equal(result.operations.maturationCycles, 0);
-  assert.equal(result.status, 'PASS');
+test('v2 journal records only marked Initial handoff re-delivery before independent review',async t=>{
+  const root=await temporaryRoot(t,'sentinel-plan-redelivery-journal'),journal=path.join(root,'journal.json');
+  await initV2Journal(journal);
+  requireSuccess(event(journal,'SPEC_INIT','SPEC','GPT-6.1-Sol','medium','PASS',['--resulting-state','SPEC_READY']),'init');
+  requireSuccess(event(journal,'PLAN','PLAN','GPT-6-Luna','high','NEEDS_FIX',['--resulting-state','NO_EXECUTION']),'missing delivery');
+  const before=await fs.readFile(journal);
+  for(const args of [
+    ['PLAN','PLAN','PASS',['--resulting-state','NO_EXECUTION']],
+    ['REVIEW_PLAN','REVIEW_VALIDATE','PASS',['--resulting-state','MATERIALIZED_PRISTINE']],
+    ['EXECUTE_SLICE','EXECUTE','PASS',['--slice','slice-01']],
+  ])assert.notEqual(event(journal,args[0],args[1],'GPT-6-Luna','high',args[2],args[3]).status,0);
+  assert.deepEqual(await fs.readFile(journal),before,'no acceptance or phase advance from a missing handoff');
+  requireSuccess(event(journal,'PLAN','PLAN','GPT-6-Luna','high','NEEDS_FIX',['--resulting-state','NO_EXECUTION','--retry','true']),'first correction');
+  requireSuccess(event(journal,'PLAN','PLAN','GPT-6-Luna','high','PASS',['--resulting-state','NO_EXECUTION','--retry','true']),'literal delivery');
+  requireSuccess(event(journal,'REVIEW_PLAN','REVIEW_VALIDATE','GPT-6-Luna','high','PASS',['--resulting-state','MATERIALIZED_PRISTINE']),'independent review');
+  const saved=await readJson(journal);assert.equal(saved.events.filter(e=>e.retry===true).length,2);
+  assert.equal(saved.events.filter(e=>e.result==='NEEDS_FIX').length,2);
+});
+
+test('v2 journal admits bounded contiguous refused Initial review corrections', async t => {
+  const root = await temporaryRoot(t, 'sentinel-review-correction-journal'), journal = path.join(root, 'journal.json');
+  await initV2Journal(journal);
+  requireSuccess(event(journal, 'SPEC_INIT', 'SPEC', 'GPT-6.1-Sol', 'medium', 'PASS', ['--resulting-state', 'SPEC_READY']), 'init');
+  requireSuccess(event(journal, 'PLAN', 'PLAN', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'NO_EXECUTION']), 'initial plan');
+  assert.notEqual(event(journal, 'PLAN', 'PLAN', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'NO_EXECUTION']).status, 0,
+    'a repeated PLAN without a refused review remains illegal');
+  requireSuccess(event(journal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high', 'NEEDS_FIX', ['--resulting-state', 'NO_EXECUTION']), 'first refusal');
+  const refusedBytes = await fs.readFile(journal);
+  assert.notEqual(event(journal, 'EXECUTE_SLICE', 'EXECUTE', 'GPT-6-Luna', 'high', 'PASS', ['--slice', 'slice-01']).status, 0);
+  assert.notEqual(event(journal, 'PLAN', 'PLAN', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'EXECUTION_STARTED']).status, 0);
+  assert.ok(refusedBytes.equals(await fs.readFile(journal)), 'invalid transitions preserve prior refusal bytes');
+  requireSuccess(event(journal, 'PLAN', 'PLAN', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'NO_EXECUTION']), 'author correction');
+  for(let correction=2; correction<=4; correction++) {
+    requireSuccess(event(journal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high', 'NEEDS_FIX', ['--resulting-state', 'NO_EXECUTION']), `refusal ${correction}`);
+    requireSuccess(event(journal, 'PLAN', 'PLAN', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'NO_EXECUTION']), `author correction ${correction}`);
+  }
+  requireSuccess(event(journal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'MATERIALIZED_PRISTINE']), 'new review');
+  assert.notEqual(event(journal, 'PLAN', 'PLAN', 'GPT-6-Luna', 'high', 'PASS', ['--resulting-state', 'NO_EXECUTION']).status, 0);
+  assert.equal((await readJson(journal)).events[2].result, 'NEEDS_FIX');
+});
+
+test('B12 — current v2 finalization requires immediate close and reports maturation cycles', async t => {
+  const root = await temporaryRoot(t, 'sentinel-current-finalization');
+  const image = await currentCase(t);
+  assert.equal(image.raw.schemaVersion, 2);
+  assert.equal(image.raw.operations.maturationCycles, 0);
+  assert.equal(image.raw.status, 'PASS');
+  const journal = await readJson(image.journal);
+  assert.deepEqual(journal.events.map(entry => entry.operation),
+    ['SPEC_INIT', 'PLAN', 'REVIEW_PLAN', 'EXECUTE_SLICE', 'VALIDATE_SLICE', 'SPEC_CLOSE']);
+  const bytes = await fs.readFile(image.journal);
+  for (const operation of ['SPEC_CLOSE', 'SPEC_READINESS', 'EXECUTE_SLICE']) {
+    assert.notEqual(event(image.journal, operation, operation === 'SPEC_CLOSE' ? 'SPEC' : operation === 'EXECUTE_SLICE' ? 'EXECUTE' : 'REVIEW_VALIDATE',
+      'GPT-6-Luna', 'high', 'PASS', operation === 'EXECUTE_SLICE' ? ['--slice', 'slice-01'] : ['--resulting-state', 'SPEC_CLOSED']).status, 0);
+    assert.deepEqual(await fs.readFile(image.journal), bytes, 'terminal events cannot be followed or duplicated');
+  }
+  const late = await changedJournal(root, 'late', image.journal, value => value.events.push({ ...value.events[0] }));
+  await refusesFinalization(image, late, path.join(root, 'late.json'));
 });
 
 test('B02 — seed is dependency-free, complete, and green', async () => {
@@ -478,9 +357,11 @@ test('B04 — prepare is reproducible, isolated, locally configured, and clean',
   assert.equal(outputs['A-one'].contentHash, outputs['A-two'].contentHash);
   const seedAfter = await import(`file://${RUNTIME}`).then((module) => module.contentHash(SEED));
   assert.equal(seedBefore, seedAfter);
-  assert.equal(cli(['prepare', '--case', 'A', '--output', path.join(ROOT, 'benchmarks', 'forbidden-workspace')]).status, 2);
-  assert.equal(await fs.lstat(path.join(ROOT, 'benchmarks', 'forbidden-workspace')).catch(() => null), null);
+  assert.equal(cli(['prepare', '--case', 'A', '--output', path.join(CLI_ROOT, 'benchmarks', 'forbidden-workspace')]).status, 2);
+  assert.equal(await fs.lstat(path.join(CLI_ROOT, 'benchmarks', 'forbidden-workspace')).catch(() => null), null);
   assert.equal(cli(['prepare', '--case', 'A', '--output', path.join(root, 'A-one')]).status, 2);
+  assert.equal(cli(['prepare', '--case', 'A', '--output', path.join(CLI_ROOT, 'tmp/unowned-workspace')]).status, 2);
+  assert.equal(await fs.lstat(path.join(CLI_ROOT, 'tmp/unowned-workspace')).catch(() => null), null);
 });
 
 test('B05 — journal persists actual dispatches, optional telemetry, children, and budget aborts', async (t) => {
@@ -516,303 +397,107 @@ test('B05 — journal persists actual dispatches, optional telemetry, children, 
 
   const budgetJournal = path.join(root, 'budget.json');
   await initJournal(budgetJournal);
-  requireSuccess(event(budgetJournal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'review 1');
-  requireSuccess(event(budgetJournal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), 'review 2');
+  for(let round=1; round<=5; round++) requireSuccess(event(budgetJournal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high'), `review ${round}`);
   assert.equal(event(budgetJournal, 'REVIEW_PLAN', 'REVIEW_VALIDATE', 'GPT-5.6-Luna', 'high').status, 3);
   const aborted = await readJson(budgetJournal);
   assert.equal(aborted.status, 'ABORTED_BUDGET');
   assert.equal(aborted.abortReason.budget, 'maxReviewPlanEvents');
-  assert.equal(aborted.events.length, 3);
+  assert.equal(aborted.events.length, 6);
+  assert.equal(aborted.abortReason.limit, 5);
+  assert.equal(aborted.abortReason.observed, 6);
   assert.equal(event(budgetJournal, 'PLAN', 'PLAN', 'GPT-5.6-Terra', 'high').status, 3);
 });
 
-test('B06 — finalize collects raw facts and enforces official terminal semantics', async (t) => {
-  const root = await temporaryRoot(t, 'sentinel benchmark finalize');
-  const workspace = path.join(root, 'workspace');
-  requireSuccess(cli(['prepare', '--case', 'A', '--output', workspace]), 'prepare finalization workspace');
-  const { spec } = await writeSyntheticArtifacts(workspace);
-  const finalize = (journal, output, selectedWorkspace = workspace, selectedSpec = spec) => cli([
-    'finalize', '--workspace', selectedWorkspace, '--case', 'A', '--spec', selectedSpec,
-    '--journal', journal, '--output', output,
-  ]);
-
-  const journal = path.join(root, 'journal.json');
-  await initJournal(journal);
-  await completeJournal(journal, { mismatch: true });
-  const output = path.join(root, 'result.json');
-  const seedOutput = path.join(root, 'seed-false-green.json');
-  assert.equal(finalize(journal, seedOutput).status, 1, 'green candidate tests cannot certify missing list filters');
-  const seedResult = await readJson(seedOutput);
-  assert.equal(seedResult.finalTestsPassed, true);
-  assert.equal(seedResult.finalExecutionState, 'COMPLETE');
-  assert.equal(seedResult.specClosed, true);
-  assert.equal(seedResult.productAcceptance.passed, false);
-  assert.equal(seedResult.status, 'FAIL');
-  await fs.copyFile(path.join(ROOT, 'scripts/fixtures/filtered-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
-  requireSuccess(finalize(journal, output), 'finalize');
-  const result = await readJson(output);
+test('B06 — finalize collects current raw facts and enforces official terminal semantics', async t => {
+  const root = await temporaryRoot(t, 'sentinel-current-terminal');
+  const image = await currentCase(t, { fault: 'findings-cycle' });
+  const result = image.raw;
   assert.equal(result.status, 'PASS');
-  assert.equal(result.decomposition.slices, 1);
-  assert.equal(result.decomposition.tasks, 1);
-  assert.deepEqual(result.decomposition.tasksPerSlice, { 'slice-01': 1 });
-  assert.equal(result.operations.total, 10);
-  assert.deepEqual((await readJson(journal)).events.slice(0, 3).map((entry) => entry.operation), [
-    'SPEC_INIT', 'SPEC_READINESS', 'PLAN',
-  ]);
-  assert.equal(result.operations.executeCalls, 1);
-  assert.equal(result.operations.validateCalls, 1);
-  assert.deepEqual(result.modelUse.profileMismatches.map((entry) => entry.operation), ['PLAN']);
-  assert.deepEqual(result.modelUse.actualModelsByPhase.SPEC, ['GPT-6.1-Sol']);
-  assert.deepEqual(result.modelUse.actualModelsByPhase.REVIEW_VALIDATE, ['GPT-6-Luna']);
-  assert.equal(result.finalExecutionState, 'COMPLETE');
-  assert.equal(result.specClosed, true);
-  assert.equal(result.finalTestsPassed, true);
+  assert.equal(result.finalExecutionState, 'SPEC_CLOSED');
+  assert.equal(result.specClosed, true); assert.equal(result.finalTestsPassed, true);
   assert.equal(result.productAcceptance.passed, true);
+  assert.equal(result.decomposition.slices, 1); assert.equal(result.decomposition.tasks, 1);
+  assert.deepEqual(result.decomposition.tasksPerSlice, { 'slice-01': 1 });
+  assert.equal(result.operations.applyFindingsCalls, 1);
+  assert.equal(result.operations.validateCalls, 2);
   assert.equal(result.contextCost.actualTokenTelemetryAvailable, false);
   assert.equal(result.contextCost.inputTokens, null);
   assert.ok(result.contextCost.planBytes > 0 && result.contextCost.tasksWords > 0);
-
-  const alignedJournal = path.join(root, 'aligned-journal.json');
-  await initJournal(alignedJournal);
-  await completeJournal(alignedJournal);
-  const alignedOutput = path.join(root, 'aligned-result.json');
-  requireSuccess(finalize(alignedJournal, alignedOutput), 'finalize aligned profile');
-  assert.deepEqual((await readJson(alignedOutput)).modelUse.profileMismatches, []);
-
-  const recoveredJournal = path.join(root, 'recovered-blocked.json');
-  await initJournal(recoveredJournal);
-  await completeJournal(recoveredJournal, { recoveredBlocked: true });
-  const recoveredOutput = path.join(root, 'recovered-blocked-result.json');
-  requireSuccess(finalize(recoveredJournal, recoveredOutput), 'finalize recovered BLOCKED');
-  const recoveredResult = await readJson(recoveredOutput);
-  assert.equal(recoveredResult.status, 'PASS');
-  assert.equal(recoveredResult.operations.executeCalls, 2);
-  assert.equal((await readJson(recoveredJournal)).events.some((item) => item.result === 'BLOCKED'), true);
-
-  const unrecoveredJournal = path.join(root, 'unrecovered-blocked.json');
-  await initJournal(unrecoveredJournal);
-  requireSuccess(event(unrecoveredJournal, 'SPEC_INIT', 'SPEC', 'GPT-5.6-Terra', 'high'), 'blocked SPEC_INIT');
-  requireSuccess(event(unrecoveredJournal, 'EXECUTE_SLICE', 'EXECUTE', 'GPT-5.6-Luna', 'high', 'BLOCKED', [
-    '--slice', 'slice-01',
-  ]), 'unrecovered EXECUTE_SLICE');
-  const unrecoveredOutput = path.join(root, 'unrecovered-blocked-result.json');
-  assert.equal(finalize(unrecoveredJournal, unrecoveredOutput).status, 1);
-  assert.equal((await readJson(unrecoveredOutput)).status, 'BLOCKED');
-
-  const budgetJournal = path.join(root, 'terminal-looking-budget.json');
-  await initJournal(budgetJournal);
-  await completeJournal(budgetJournal);
-  const budgetDocument = await readJson(budgetJournal);
-  const reviewPlan = budgetDocument.events.find((item) => item.operation === 'REVIEW_PLAN');
-  budgetDocument.events.splice(reviewPlan.index, 0, { ...reviewPlan, index: 0 }, { ...reviewPlan, index: 0 });
-  budgetDocument.events.forEach((item, index) => { item.index = index + 1; });
-  budgetDocument.status = 'ABORTED_BUDGET';
-  budgetDocument.abortReason = {
-    code: 'BUDGET_EXCEEDED', budget: 'maxReviewPlanEvents', limit: 2, observed: 3, eventIndex: reviewPlan.index + 2,
-  };
-  await fs.writeFile(budgetJournal, `${JSON.stringify(budgetDocument, null, 2)}\n`, 'utf8');
-  const budgetOutput = path.join(root, 'terminal-looking-budget-result.json');
-  assert.equal(finalize(budgetJournal, budgetOutput).status, 1);
-  assert.equal((await readJson(budgetOutput)).status, 'ABORTED_BUDGET');
-
-  const missingComplete = path.join(root, 'missing-complete.json');
-  await initJournal(missingComplete);
-  await completeJournal(missingComplete, { includeComplete: false });
-  const incompleteOutput = path.join(root, 'incomplete-result.json');
-  assert.equal(finalize(missingComplete, incompleteOutput).status, 1);
-  assert.equal((await readJson(incompleteOutput)).status, 'FAIL');
-
-  const missingReadiness = path.join(root, 'missing-readiness.json');
-  await initJournal(missingReadiness);
-  await completeJournal(missingReadiness, { includeInitialReadiness: false });
-  const missingReadinessOutput = path.join(root, 'missing-readiness-result.json');
-  assert.equal(finalize(missingReadiness, missingReadinessOutput).status, 1);
-  assert.equal((await readJson(missingReadinessOutput)).status, 'FAIL');
-  assert.equal((await readJson(missingReadinessOutput)).productAcceptance.passed, true,
-    'correct product cannot replace Sentinel terminal gates');
-
-  const missingTerminalReadiness = path.join(root, 'missing-terminal-readiness.json');
-  await initJournal(missingTerminalReadiness);
-  await completeJournal(missingTerminalReadiness, { includeTerminalReadiness: false });
-  const missingTerminalReadinessOutput = path.join(root, 'missing-terminal-readiness-result.json');
-  assert.equal(finalize(missingTerminalReadiness, missingTerminalReadinessOutput).status, 1);
-  assert.equal((await readJson(missingTerminalReadinessOutput)).status, 'FAIL');
-
-  const lateReadiness = path.join(root, 'late-readiness.json');
-  await initJournal(lateReadiness);
-  await completeJournal(lateReadiness, { includeInitialReadiness: false, lateReadiness: true });
-  const lateReadinessOutput = path.join(root, 'late-readiness-result.json');
-  assert.equal(finalize(lateReadiness, lateReadinessOutput).status, 1);
-  assert.equal((await readJson(lateReadinessOutput)).status, 'FAIL');
-
-  const duplicateReadiness = path.join(root, 'duplicate-readiness.json');
-  await initJournal(duplicateReadiness);
-  await completeJournal(duplicateReadiness, { lateReadiness: true });
-  const duplicateReadinessOutput = path.join(root, 'duplicate-readiness-result.json');
-  assert.equal(finalize(duplicateReadiness, duplicateReadinessOutput).status, 1);
-  assert.equal((await readJson(duplicateReadinessOutput)).status, 'FAIL');
-
-  for (const [name, initialReadinessState] of [['missing-global-state', null], ['wrong-global-state', 'READY']]) {
-    const readinessJournal = path.join(root, `${name}.json`);
-    await initJournal(readinessJournal);
-    await completeJournal(readinessJournal, { initialReadinessState });
-    const readinessOutput = path.join(root, `${name}-result.json`);
-    assert.equal(finalize(readinessJournal, readinessOutput).status, 1);
-    assert.equal((await readJson(readinessOutput)).status, 'FAIL');
+  assert.ok((await readJson(image.journal)).events.some(entry => entry.result === 'NEEDS_FIX'));
+  // A valid product and closed SPEC do not replace the journal/terminal proof.
+  for(const [name, mutate] of [
+    ['missing-complete', value => { value.events.find(entry => entry.operation === 'VALIDATE_SLICE' && entry.result === 'PASS').resultingState = null; }],
+    ['missing-close', value => { value.events.pop(); }],
+    ['regressed-after-complete', value => { const close = value.events.pop(); value.events.push({ ...value.events.at(-1), result: 'NEEDS_FIX', resultingState: 'NEEDS_FIX' }, close); }],
+    ['duplicate-close', value => { value.events.push({ ...value.events.at(-1) }); }],
+    ['late-readiness', value => { value.events.push({ ...value.events[0], operation: 'SPEC_READINESS', phase: 'REVIEW_VALIDATE', resultingState: 'GLOBAL_READY' }); }],
+    ['wrong-sha', value => { value.sentinelSha = '0'.repeat(40); }],
+    ['budget', value => { value.status = 'ABORTED_BUDGET'; value.abortReason = { code: 'BUDGET_EXCEEDED', budget: 'maxReviewPlanEvents', limit: 5, observed: 6, eventIndex: 1 }; }],
+    ['blocked', value => { value.events.at(-1).result = 'BLOCKED'; value.events.at(-1).resultingState = null; }],
+  ]) {
+    const journal = await changedJournal(root, name, image.journal, mutate);
+    await refusesFinalization(image, journal, path.join(root, `${name}.json`));
   }
-
-  const regressedJournal = path.join(root, 'regressed-journal.json');
-  await initJournal(regressedJournal);
-  await completeJournal(regressedJournal, { regressAfterComplete: true });
-  const regressedOutput = path.join(root, 'regressed-result.json');
-  assert.equal(finalize(regressedJournal, regressedOutput).status, 1);
-  const regressedResult = await readJson(regressedOutput);
-  assert.equal(regressedResult.status, 'FAIL');
-  assert.equal(regressedResult.finalExecutionState, 'COMPLETE');
-
-  const extraAfterClose = path.join(root, 'extra-after-close.json');
-  await initJournal(extraAfterClose);
-  await completeJournal(extraAfterClose, { extraAfterClose: true });
-  const extraAfterCloseOutput = path.join(root, 'extra-after-close-result.json');
-  assert.equal(finalize(extraAfterClose, extraAfterCloseOutput).status, 1);
-  assert.equal((await readJson(extraAfterCloseOutput)).status, 'FAIL');
-
-  const multipleClose = path.join(root, 'multiple-close.json');
-  await initJournal(multipleClose);
-  await completeJournal(multipleClose, { multipleClose: true });
-  const multipleCloseOutput = path.join(root, 'multiple-close-result.json');
-  assert.equal(finalize(multipleClose, multipleCloseOutput).status, 1);
-  assert.equal((await readJson(multipleCloseOutput)).status, 'FAIL');
-
-  const incompleteWorkspace = path.join(root, 'non-complete-workspace');
-  requireSuccess(cli(['prepare', '--case', 'A', '--output', incompleteWorkspace]), 'prepare non-COMPLETE workspace');
-  const { spec: incompleteSpec } = await writeSyntheticArtifacts(incompleteWorkspace, 'A', { terminal: false });
-  const nonCompleteJournal = path.join(root, 'non-complete-runtime.json');
-  await initJournal(nonCompleteJournal);
-  await completeJournal(nonCompleteJournal);
-  const nonCompleteOutput = path.join(root, 'non-complete-runtime-result.json');
-  assert.equal(finalize(nonCompleteJournal, nonCompleteOutput, incompleteWorkspace, incompleteSpec).status, 1);
-  const nonCompleteResult = await readJson(nonCompleteOutput);
-  assert.equal(nonCompleteResult.status, 'FAIL');
-  assert.equal(nonCompleteResult.finalExecutionState, 'MATERIALIZED_PRISTINE');
-
-  const driftWorkspace = path.join(root, 'ownership-drift-workspace');
-  requireSuccess(cli(['prepare', '--case', 'A', '--output', driftWorkspace]), 'prepare ownership drift workspace');
-  const driftFixture = await writeSyntheticArtifacts(driftWorkspace);
-  await fs.writeFile(driftFixture.implementationTarget, 'post-PASS drift\n', 'utf8');
-  const driftJournal = path.join(root, 'ownership-drift.json');
-  await initJournal(driftJournal);
-  await completeJournal(driftJournal);
-  const driftOutput = path.join(root, 'ownership-drift-result.json');
-  assert.equal(finalize(driftJournal, driftOutput, driftWorkspace, driftFixture.spec).status, 1);
-  const driftResult = await readJson(driftOutput);
-  assert.equal(driftResult.status, 'BLOCKED');
-  assert.equal(driftResult.finalExecutionState, null);
-
-  const wrongShaJournal = path.join(root, 'wrong-sha-journal.json');
-  await fs.copyFile(journal, wrongShaJournal);
-  const tamperedJournal = await readJson(wrongShaJournal);
-  tamperedJournal.sentinelSha = '0'.repeat(40);
-  await fs.writeFile(wrongShaJournal, `${JSON.stringify(tamperedJournal, null, 2)}\n`, 'utf8');
-  const wrongShaOutput = path.join(root, 'wrong-sha-result.json');
-  assert.equal(finalize(wrongShaJournal, wrongShaOutput).status, 1);
-  assert.equal((await readJson(wrongShaOutput)).workspace.sentinelShaMatchesCheckout, false);
-
-  await fs.appendFile(path.join(workspace, 'requirements.md'), '\nAltered requirement.\n', 'utf8');
-  const alteredOutput = path.join(root, 'altered-requirements-result.json');
-  assert.equal(finalize(journal, alteredOutput).status, 1);
-  assert.equal((await readJson(alteredOutput)).workspace.requirementsHashMatches, false);
-
-  const invalidWorkspace = path.join(root, 'invalid-closed-workspace');
-  requireSuccess(cli(['prepare', '--case', 'A', '--output', invalidWorkspace]), 'prepare invalid closed workspace');
-  const { spec: invalidSpec } = await writeSyntheticArtifacts(invalidWorkspace, 'A', { invalidClosed: true });
-  const invalidJournal = path.join(root, 'invalid-closed-journal.json');
-  await initJournal(invalidJournal);
-  await completeJournal(invalidJournal);
-  const invalidOutput = path.join(root, 'invalid-closed-result.json');
-  assert.equal(finalize(invalidJournal, invalidOutput, invalidWorkspace, invalidSpec).status, 1);
-  assert.equal((await readJson(invalidOutput)).specClosed, false);
-
-  const pathTrapParent = path.join(root, 'status=closed');
-  await fs.mkdir(pathTrapParent);
-  const readyWorkspace = path.join(pathTrapParent, 'ready-workspace');
-  requireSuccess(cli(['prepare', '--case', 'A', '--output', readyWorkspace]), 'prepare ready path-trap workspace');
-  const { spec: readySpec } = await writeSyntheticArtifacts(readyWorkspace, 'A', { closed: false });
-  const readyJournal = path.join(root, 'ready-journal.json');
-  await initJournal(readyJournal);
-  await completeJournal(readyJournal);
-  const readyOutput = path.join(root, 'ready-result.json');
-  assert.equal(finalize(readyJournal, readyOutput, readyWorkspace, readySpec).status, 1);
-  assert.equal((await readJson(readyOutput)).specClosed, false);
+  await refusesFinalization(image, image.journal, path.join(root, 'no-terminal-proof.json'), null);
+  const corrupt = path.join(root, 'corrupt-terminal.json'); await fs.writeFile(corrupt, '{}');
+  await refusesFinalization(image, image.journal, path.join(root, 'corrupt-proof.json'), corrupt);
+  const feature = path.join(image.spec, 'feature_spec.md'), featureBytes = await fs.readFile(feature);
+  try {
+    for(const status of ['ready', 'invalid']) {
+      await fs.writeFile(feature, featureBytes.toString().replace('status: closed', `status: ${status}`));
+      await refusesFinalization(image, image.journal, path.join(root, `not-closed-${status}.json`));
+    }
+  } finally { await fs.writeFile(feature, featureBytes); }
+  const changedFile = path.join(image.workspace, 'src/cli.mjs'), sourceBytes = await fs.readFile(changedFile);
+  try {
+    await fs.appendFile(changedFile, '\n// post-PASS drift\n');
+    await refusesFinalization(image, image.journal, path.join(root, 'post-pass-drift.json'));
+  } finally { await fs.writeFile(changedFile, sourceBytes); }
+  const requirements = path.join(image.workspace, 'requirements.md'), requirementBytes = await fs.readFile(requirements);
+  try {
+    await fs.appendFile(requirements, '\nAltered requirement.\n');
+    const drift = await refusesFinalization(image, image.journal, path.join(root, 'requirements-drift.json'));
+    if(drift) assert.equal(drift.workspace.requirementsHashMatches, false);
+  } finally { await fs.writeFile(requirements, requirementBytes); }
+  const prior = await fs.readFile(path.join(image.caseRoot, 'raw.json'));
+  assert.deepEqual(JSON.parse(prior), result, 'negative exports do not rewrite the accepted report');
 });
 
-test('B13 — independent A/B product evidence complements internal tests and Sentinel gates', async (t) => {
-  const root = await temporaryRoot(t, 'sentinel independent product acceptance');
-  const workspace = path.join(root, 'workspace');
-  requireSuccess(cli(['prepare', '--case', 'B', '--output', workspace]), 'prepare B acceptance workspace');
-  const { spec } = await writeSyntheticArtifacts(workspace, 'B');
-  const journal = path.join(root, 'full.json');
-  await initJournal(journal, 'B', 'full');
-  await completeJournal(journal);
-  const finalize = (selectedJournal, name) => cli(['finalize', '--workspace', workspace, '--case', 'B',
-    '--spec', spec, '--journal', selectedJournal, '--output', path.join(root, `${name}.json`)]);
-
-  // Replacing editable candidate assertions with green tests must not certify missing priority.
-  await fs.rm(path.join(workspace, 'test'), { recursive: true });
-  await fs.mkdir(path.join(workspace, 'test'));
-  await fs.writeFile(path.join(workspace, 'test/green.test.mjs'), "import test from 'node:test'; test('green', () => {});\n");
-  assert.equal(finalize(journal, 'seed').status, 1);
-  const seed = await readJson(path.join(root, 'seed.json'));
-  assert.equal(seed.finalTestsPassed, true);
-  assert.equal(seed.finalExecutionState, 'COMPLETE');
-  assert.equal(seed.specClosed, true);
-  assert.equal(seed.productAcceptance.passed, false);
-  assert.equal(seed.productAcceptance.caseId, 'B');
-  assert.equal(seed.status, 'FAIL');
-
-  const focal = path.join(root, 'focal.json');
-  await initJournal(focal, 'B', 'focal');
-  await completeJournal(focal);
-  requireSuccess(finalize(focal, 'focal-result'), 'partial focal run');
-  assert.equal((await readJson(path.join(root, 'focal-result.json'))).productAcceptance, null);
-
-  await fs.rm(path.join(workspace, 'test'), { recursive: true });
-  await fs.cp(path.join(SEED, 'test'), path.join(workspace, 'test'), { recursive: true });
-  await fs.copyFile(path.join(ROOT, 'scripts/fixtures/prioritized-cli.mjs'), path.join(workspace, 'src/cli.mjs'));
-  requireSuccess(finalize(journal, 'correct'), 'correct B with Sentinel gates and internal tests');
-  const correct = await readJson(path.join(root, 'correct.json'));
-  assert.equal(correct.status, 'PASS');
-  assert.equal(correct.finalTestsPassed, true);
-  assert.equal(correct.productAcceptance.passed, true);
-  const compared = requireSuccess(cli(['compare', '--before', path.join(root, 'seed.json'),
-    '--after', path.join(root, 'correct.json')]), 'compare independent product facts');
+test('B13 — independent A/B product evidence complements internal tests and Sentinel gates', async t => {
+  const root = await temporaryRoot(t, 'sentinel-product-oracle');
+  // Deliberately author A in B: current mechanical receipts and green tests cannot prove B priority.
+  const wrong = await currentCase(t, { caseId: 'B', authoredCaseId: 'A' });
+  assert.equal(wrong.raw.finalTestsPassed, true);
+  assert.equal(wrong.raw.specClosed, true);
+  assert.equal(wrong.raw.productAcceptance.caseId, 'B');
+  assert.equal(wrong.raw.productAcceptance.passed, false);
+  assert.equal(wrong.raw.status, 'FAIL');
+  // A fresh execution proves the correct version; no reuse of a pre-mutation PASS.
+  const correct = await currentCase(t, { caseId: 'B' });
+  assert.equal(correct.raw.status, 'PASS'); assert.equal(correct.raw.productAcceptance.passed, true);
+  const compared = requireSuccess(cli(['compare', '--before', path.join(wrong.caseRoot, 'raw.json'),
+    '--after', path.join(correct.caseRoot, 'raw.json')]), 'independent product facts');
   assert.match(compared.stdout, /\| Product acceptance passed \| false \| true \|/u);
-
-  await fs.writeFile(path.join(workspace, 'test/failing.test.mjs'), "import test from 'node:test'; test('failure', () => { throw new Error('fixture failure'); });\n");
-  assert.equal(finalize(journal, 'internal-failure').status, 1);
-  const failed = await readJson(path.join(root, 'internal-failure.json'));
-  assert.equal(failed.productAcceptance.passed, true);
-  assert.equal(failed.finalTestsPassed, false);
-  assert.equal(failed.status, 'FAIL');
-  await fs.rm(path.join(workspace, 'test/failing.test.mjs'));
-
-  const unclosed = path.join(root, 'missing-close.json');
-  await initJournal(unclosed, 'B', 'full');
-  await completeJournal(unclosed);
-  const missingClose = await readJson(unclosed);
-  assert.equal(missingClose.events.pop().operation, 'SPEC_CLOSE');
-  await fs.writeFile(unclosed, `${JSON.stringify(missingClose, null, 2)}\n`);
-  assert.equal(finalize(unclosed, 'sentinel-failure').status, 1);
-  const gated = await readJson(path.join(root, 'sentinel-failure.json'));
-  assert.equal(gated.finalTestsPassed, true);
-  assert.equal(gated.productAcceptance.passed, true);
-  assert.equal(gated.status, 'FAIL');
-
+  const before = await fs.readFile(path.join(correct.caseRoot, 'raw.json'));
+  const failedTest = path.join(correct.workspace, 'test/failing.test.mjs');
+  try {
+    await fs.writeFile(failedTest, "import test from 'node:test'; test('failure', () => { throw new Error('fixture failure'); });\n");
+    const failed = await refusesFinalization(correct, correct.journal, path.join(root, 'failing-test.json'));
+    if(failed) assert.equal(failed.finalTestsPassed, false);
+  } finally { await fs.rm(failedTest); }
+  const unclosed = await changedJournal(root, 'missing-close', correct.journal, value => value.events.pop());
+  await refusesFinalization(correct, unclosed, path.join(root, 'unclosed.json'));
+  assert.deepEqual(await fs.readFile(path.join(correct.caseRoot, 'raw.json')), before);
+  const partial = await currentCase(t, { caseId: 'B', maxOperations: 3 });
+  assert.equal(partial.state.status, 'FOCAL_STOP');
+  assert.equal(partial.raw.productAcceptance, null);
+  assert.equal(partial.raw.runMode, 'focal');
+  assert.equal(partial.raw.specClosed, false);
   const schema1 = await readJson(path.join(BENCHMARK, 'schemas/result.schema.json'));
   const schema2 = await readJson(path.join(BENCHMARK, 'schemas/result-v2.schema.json'));
   assert.equal(schema1.properties.productAcceptance.$ref, '#/$defs/productAcceptance');
   assert.equal(schema2.properties.productAcceptance.$ref, 'result.schema.json#/$defs/productAcceptance');
-  assert.ok(!schema1.required.includes('productAcceptance'), 'historical measurements stay readable without inventing product evidence');
+  assert.ok(!schema1.required.includes('productAcceptance'), 'historical absence is not positive product evidence');
 });
 
 function syntheticResult(caseId, offset, telemetry) {
@@ -827,7 +512,7 @@ function syntheticResult(caseId, offset, telemetry) {
     runMode: 'case',
     sentinelSha: SHA,
     productionProfileId: 'production-v1',
-    status: 'PASS',
+    status: 'FAIL', // Diagnostic comparison, deliberately unqualified without product evidence.
     finalExecutionState: 'COMPLETE',
     specClosed: true,
     finalTestsPassed: true,
@@ -908,7 +593,7 @@ test('B08 — doctor routing is offline and separate from benchmark definitions'
   assert.equal(cli(['doctor', '--unknown', 'value']).status, 2);
   assert.equal(cli(['doctor', '--scratch-parent']).status, 2);
   assert.equal(cli(['doctor', '--probe-workspace', ROOT]).status, 2);
-  assert.equal(cli(['doctor', '--scratch-parent', path.join(ROOT, 'benchmarks')]).status, 2);
+  assert.equal(cli(['doctor', '--scratch-parent', path.join(CLI_ROOT, 'benchmarks')]).status, 2);
 
   const runtimeSource = await fs.readFile(RUNTIME, 'utf8');
   const source = await fs.readFile(ENVIRONMENT_RUNTIME, 'utf8');

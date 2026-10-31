@@ -8,7 +8,9 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { runDoctor, runProbeDoctor } from './benchmark-environment.mjs';
-import { checkProductAcceptance, PRODUCT_CONTRACT } from './product-acceptance.mjs';
+import { checkProductAcceptance, validateProductAcceptance, productCandidateIdentity } from './product-acceptance.mjs';
+import { validateTerminalEvidence, contextPolicy, validateNativeLedger, operationalCorrectionUsage, operationalStage } from './native-evidence.mjs';
+import { assertDiagnosticDestination } from './benchmark-measurement.mjs';
 
 const RUNTIME_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const BENCHMARK_ROOT = path.resolve(RUNTIME_ROOT, '..');
@@ -113,6 +115,7 @@ async function readJson(file, label) {
 
 async function atomicJson(file, value, { exclusive = false } = {}) {
   const target = path.resolve(file);
+  await assertDiagnosticDestination(target);
   if (exclusive) {
     await fs.writeFile(target, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
       .catch((error) => { throw new CliError(`cannot create output: ${error.message}`); });
@@ -136,6 +139,10 @@ function caseConfig(configuration, caseId) {
 function assertManifest(configuration) {
   if (!Number.isSafeInteger(configuration.campaign?.fullRuns) || configuration.campaign.fullRuns < 1) {
     throw new CliError('campaign.fullRuns must be a positive integer');
+  }
+  const turnLimit = configuration.turnBudget?.maxTurnsPerRun;
+  if (turnLimit !== null && (!Number.isSafeInteger(turnLimit) || turnLimit < 1)) {
+    throw new CliError('turnBudget.maxTurnsPerRun must be null or a positive integer');
   }
   if (configuration.benchmarkId !== 'sentinel-todo' || configuration.benchmarkVersion !== 1) {
     throw new CliError('manifest benchmark identity is invalid');
@@ -282,10 +289,12 @@ async function copyTree(source, destination) {
 }
 
 function run(command, args, cwd, { environment = {}, inheritEnvironment = true, timeout = 60_000 } = {}) {
+  const env = { ...(inheritEnvironment ? process.env : {}), ...environment };
+  delete env.NODE_TEST_CONTEXT; // The candidate's test runner is an independent process.
   const result = spawnSync(command, args, {
     cwd,
     encoding: 'utf8',
-    env: { ...(inheritEnvironment ? process.env : {}), ...environment },
+    env,
     shell: false,
     timeout,
   });
@@ -372,6 +381,9 @@ async function prepare(options) {
       if (command.exitCode !== 0) throw new CliError(`${label} failed: ${command.stderr}`);
     }
     await fs.mkdir(path.join(stage, '.git', 'benchmark-empty-hooks'));
+    // Operational exclusion belongs to this disposable repository only. It is
+    // established before any product publisher and does not change seed bytes.
+    await fs.appendFile(path.join(stage, '.git/info/exclude'), '\n/tmp/\n');
     const indexed = gitRun(['add', '--all'], stage);
     if (indexed.exitCode !== 0) throw new CliError(`git baseline index failed: ${indexed.stderr}`);
     const commit = gitRun(['commit', '-m', `benchmark: seed case ${item.id}`], stage, {
@@ -508,7 +520,44 @@ function assertV2Sequence(events) {
     }
     if (phase === 'READY_FOR_PLAN') {
       if (event.operation !== 'PLAN') throw new CliError('v2 ready SPEC must advance directly to PLAN');
+      phase = event.result==='NEEDS_FIX'&&event.resultingState==='NO_EXECUTION'
+        ? 'EXPECT_HANDOFF_REDELIVERY':'EXECUTION';
+      continue;
+    }
+    if(phase==='EXPECT_HANDOFF_REDELIVERY') {
+      if(event.operation!=='PLAN'||event.retry!==true||event.resultingState!=='NO_EXECUTION'
+        ||!['PASS','NEEDS_FIX'].includes(event.result))throw new CliError('v2 handoff re-delivery requires a marked correction without execution');
+      if(event.result==='PASS')phase='EXPECT_PREPARATION_REVIEW';
+      continue;
+    }
+    if (phase === 'EXPECT_PREPARATION_CORRECTION') {
+      if(event.operation==='PLAN'&&event.result==='NEEDS_FIX'&&event.resultingState==='NO_EXECUTION'&&event.retry===true) {
+        phase='EXPECT_HANDOFF_REDELIVERY';continue;
+      }
+      if (event.operation !== 'PLAN' || event.result !== 'PASS' || event.resultingState !== 'NO_EXECUTION') {
+        throw new CliError('v2 refused Initial review requires one author correction without execution');
+      }
+      phase = 'EXPECT_PREPARATION_REVIEW';
+      continue;
+    }
+    if (phase === 'EXPECT_PREPARATION_REVIEW') {
+      if(event.operation==='REVIEW_PLAN'&&event.result==='NEEDS_FIX'&&event.resultingState==='NO_EXECUTION'){
+        phase='EXPECT_PREPARATION_CORRECTION';continue;
+      }
+      if (event.operation !== 'REVIEW_PLAN' || event.result !== 'PASS' || event.resultingState !== 'MATERIALIZED_PRISTINE') {
+        throw new CliError('v2 author correction requires a fresh concluded Initial review');
+      }
       phase = 'EXECUTION';
+      continue;
+    }
+    if (phase === 'EXECUTION' && event.operation === 'REVIEW_PLAN' && event.result === 'NEEDS_FIX'
+      && event.resultingState === 'NO_EXECUTION') {
+      const previous = events[index - 1];
+      if (previous.operation !== 'PLAN' || previous.result !== 'PASS' || previous.resultingState !== 'NO_EXECUTION'
+) {
+        throw new CliError('v2 refused Initial review must address its current author candidate');
+      }
+      phase = 'EXPECT_PREPARATION_CORRECTION';
       continue;
     }
     if (phase === 'COMPLETE') {
@@ -530,6 +579,7 @@ async function journalInit(options) {
   const configuration = await manifest();
   assertManifest(configuration);
   const output = requireAbsolute(options['--output'], '--output');
+  await assertDiagnosticDestination(output);
   const item = caseConfig(configuration, options['--case']);
   if (!/^[0-9a-f]{40}$/u.test(options['--sentinel-sha'])) throw new CliError('--sentinel-sha must be a lowercase 40-character SHA', 2);
   if (options['--sentinel-sha'] !== currentSentinelSha()) throw new CliError('--sentinel-sha does not match the benchmark checkout HEAD');
@@ -605,7 +655,7 @@ async function journalEvent(options) {
   assertJournal(journal, configuration);
   if (journal.status !== 'ACTIVE') throw new CliError('journal is terminal after budget abort', BUDGET_EXIT);
   const operation = options['--operation'];
-  if (!OPERATIONS.has(operation)) throw new CliError('unsupported operation', 2);
+  if (['MATERIALIZE_TASKS', 'REVIEW_TASKS'].includes(operation) || !OPERATIONS.has(operation)) throw new CliError('unsupported operation', 2);
   if (options['--phase'] !== OPERATION_PHASE.get(operation)) throw new CliError(`phase must be ${OPERATION_PHASE.get(operation)} for ${operation}`, 2);
   if (!MODELS.has(options['--model'])) throw new CliError('unsupported model', 2);
   if (!EFFORTS.has(options['--effort'])) throw new CliError('unsupported effort', 2);
@@ -679,19 +729,26 @@ async function existingFiles(directory, pattern) {
     .sort();
 }
 
-async function artifactMetrics(specPath) {
+export async function artifactMetrics(specPath, retainedFiles = null) {
   const execution = path.join(specPath, 'execution');
-  const planFiles = await existingFiles(path.join(execution, 'plans'), /^slice-[0-9]{2,}\.md$/u);
-  const taskFiles = await existingFiles(path.join(execution, 'tasks'), /^slice-[0-9]{2,}\.md$/u);
+  const list = async kind => retainedFiles === null ? existingFiles(path.join(execution, kind), /^slice-[0-9]{2,}\.md$/u)
+    : [...retainedFiles.keys()].filter(name => new RegExp(`^${kind}/slice-[0-9]{2,}\\.md$`, 'u').test(name)).sort().map(name => path.join(execution, name));
+  const read = file => retainedFiles === null ? fs.readFile(file) : retainedFiles.get(path.relative(execution, file));
+  const present = async file => retainedFiles === null ? (await fs.lstat(file).catch(() => null))?.isFile() : retainedFiles.has(path.relative(execution, file));
+  const totals = async files => {
+    const content = await Promise.all(files.map(read));
+    return { bytes: content.reduce((n, bytes) => n + bytes.length, 0), words: content.reduce((n, bytes) => n + countWords(bytes.toString('utf8')), 0) };
+  };
+  const planFiles = await list('plans'), taskFiles = await list('tasks');
   const rootPlan = path.join(execution, 'plan.md');
   const rootTasks = path.join(execution, 'tasks.md');
-  const planInputs = (await fs.lstat(rootPlan).catch(() => null))?.isFile() ? [rootPlan, ...planFiles] : planFiles;
-  const taskInputs = (await fs.lstat(rootTasks).catch(() => null))?.isFile() ? [rootTasks, ...taskFiles] : taskFiles;
+  const planInputs = await present(rootPlan) ? [rootPlan, ...planFiles] : planFiles;
+  const taskInputs = await present(rootTasks) ? [rootTasks, ...taskFiles] : taskFiles;
   const tasksPerSlice = {};
   let tasks = 0;
   let terminal = taskFiles.length > 0;
   for (const file of taskFiles) {
-    const text = await fs.readFile(file, 'utf8');
+    const text = Buffer.from(await read(file)).toString('utf8');
     const count = [...text.matchAll(/^- \[(?: |x)\] \S.*$/gmu)].length;
     const slice = path.basename(file, '.md');
     tasksPerSlice[slice] = count;
@@ -702,8 +759,8 @@ async function artifactMetrics(specPath) {
     slices: new Set([...planFiles, ...taskFiles].map((file) => path.basename(file, '.md'))).size,
     tasks,
     tasksPerSlice,
-    plan: await readArtifactSet(planInputs),
-    tasksArtifacts: await readArtifactSet(taskInputs),
+    plan: await totals(planInputs),
+    tasksArtifacts: await totals(taskInputs),
     structurallyTerminal: terminal,
   };
 }
@@ -813,7 +870,7 @@ async function sha256File(file) {
   return `sha256:${createHash('sha256').update(await fs.readFile(file)).digest('hex')}`;
 }
 
-function validateResult(value) {
+export function validateResult(value) {
   if (![1, 2].includes(value?.schemaVersion) || value?.benchmarkVersion !== 1 || value?.benchmarkId !== 'sentinel-todo') {
     throw new CliError('result identity is invalid');
   }
@@ -824,6 +881,17 @@ function validateResult(value) {
   ];
   // Historical measurements predate fixed product checks; absence is not product evidence.
   if (Object.hasOwn(value, 'productAcceptance')) topKeys.push('productAcceptance');
+  if (Object.hasOwn(value, 'nativeTerminal')) {
+    topKeys.push('nativeTerminal');
+    const terminal = value.nativeTerminal;
+    if (!terminal || Object.keys(terminal).sort().join() !== ['sourceActivationId', 'transactionId', 'closedSnapshotSha256', 'sourceSha256'].sort().join()
+      || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u.test(terminal.sourceActivationId)
+      || !/^[a-f0-9]{32}$/u.test(terminal.transactionId)
+      || !/^sha256:[a-f0-9]{64}$/u.test(terminal.closedSnapshotSha256)
+      || !/^sha256:[a-f0-9]{64}$/u.test(terminal.sourceSha256)
+      || value.finalExecutionState !== 'SPEC_CLOSED' || !value.specClosed || !Object.hasOwn(value, 'contextPolicy')) throw new CliError('native terminal projection is invalid');
+  }
+  if (Object.hasOwn(value, 'contextPolicy')) { topKeys.push('contextPolicy'); contextPolicy(value); }
   if (value === null || typeof value !== 'object' || Array.isArray(value)
     || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(topKeys.sort())) throw new CliError('result has unknown or missing fields');
   if (!['A', 'B', 'C'].includes(value.caseId) || !RUN_MODES.has(value.runMode)
@@ -890,10 +958,12 @@ function validateResult(value) {
   if (value.contextCost.actualTokenTelemetryAvailable
     ? value.contextCost.inputTokens === null || value.contextCost.outputTokens === null
     : value.contextCost.inputTokens !== null || value.contextCost.outputTokens !== null) throw new CliError('result token telemetry consistency is invalid');
-  if (JSON.stringify(Object.keys(value.workspace).sort()) !== JSON.stringify([
+  const workspaceKeys = [
     'changedFileCount', 'finalDiffBytes', 'observedSentinelSha', 'requirementsHash',
     'requirementsHashMatches', 'seedContentHash', 'sentinelShaMatchesCheckout',
-  ])
+  ];
+  if (Object.hasOwn(value.workspace, 'productRoot')) workspaceKeys.push('productRoot', 'productSha256');
+  if (JSON.stringify(Object.keys(value.workspace).sort()) !== JSON.stringify(workspaceKeys.sort())
     || !Number.isInteger(value.workspace.changedFileCount) || value.workspace.changedFileCount < 0
     || !Number.isInteger(value.workspace.finalDiffBytes) || value.workspace.finalDiffBytes < 0
     || !/^sha256:[0-9a-f]{64}$/u.test(value.workspace.seedContentHash)
@@ -904,19 +974,9 @@ function validateResult(value) {
   if (JSON.stringify(Object.keys(value.finalTests).sort()) !== JSON.stringify(['command', 'exitCode', 'passed'])
     || value.finalTests.command !== 'node --test' || !Number.isInteger(value.finalTests.exitCode)
     || typeof value.finalTests.passed !== 'boolean') throw new CliError('result finalTests is invalid');
-  const acceptance = value.productAcceptance;
-  if (acceptance !== undefined && acceptance !== null) {
-    if (typeof acceptance !== 'object' || Array.isArray(acceptance)
-      || JSON.stringify(Object.keys(acceptance).sort()) !== JSON.stringify([
-        'caseId', 'checks', 'commands', 'contract', 'diagnostic', 'errorCode', 'failedCheck', 'passed',
-      ]) || acceptance.contract !== PRODUCT_CONTRACT || acceptance.caseId !== value.caseId
-      || !['A', 'B'].includes(acceptance.caseId) || typeof acceptance.passed !== 'boolean'
-      || !Array.isArray(acceptance.checks) || acceptance.checks.some((check) => typeof check !== 'string')
-      || !Number.isInteger(acceptance.commands) || acceptance.commands < 0
-      || ['diagnostic', 'errorCode', 'failedCheck'].some((key) => acceptance[key] !== null && typeof acceptance[key] !== 'string')
-      || (acceptance.passed ? acceptance.failedCheck !== null || acceptance.diagnostic !== null || acceptance.errorCode !== null
-        : acceptance.failedCheck === null || acceptance.diagnostic === null)) throw new CliError('result productAcceptance is invalid');
-  }
+  validateProductAcceptance(value.productAcceptance, value.caseId,
+    ['case', 'full'].includes(value.runMode) && value.status === 'PASS', undefined,
+    { root: value.workspace.productRoot, sha256: value.workspace.productSha256 });
 }
 
 async function finalize(options) {
@@ -927,6 +987,7 @@ async function finalize(options) {
   const specPath = requireAbsolute(options['--spec'], '--spec');
   const journalPath = requireAbsolute(options['--journal'], '--journal');
   const output = requireAbsolute(options['--output'], '--output');
+  await assertDiagnosticDestination(output);
   await assertOutsideRepository(workspace, 'workspace');
   const realWorkspace = await fs.realpath(workspace).catch(() => { throw new CliError('workspace must exist'); });
   const expectedSpec = path.join(realWorkspace, ...item.specPath.split('/'));
@@ -944,7 +1005,20 @@ async function finalize(options) {
   const budget = budgetViolation(journal.events, item.budgets);
   if (budget !== null && journal.status !== 'ABORTED_BUDGET') throw new CliError('journal exceeds a budget without terminal abort state');
 
-  const artifacts = await artifactMetrics(realSpec);
+  let terminal = null;
+  if (options['--terminal-evidence']) {
+    terminal = await readJson(requireAbsolute(options['--terminal-evidence'], '--terminal-evidence'), 'terminal evidence');
+    const modules = await Promise.all([
+      'stnl-spec-lifecycle-manager/runtime/lib/lifecycle.mjs',
+      ...['execution-state.mjs', 'execution-current-reader.mjs', 'execution-current.mjs',
+        'execution-preparation-current.mjs', 'current-evidence-state.mjs', 'execution-evidence-proof.mjs']
+        .map(name => `stnl-slice-executor/runtime/${name}`),
+    ].map(name => import(pathToFileURL(path.join(REPOSITORY_ROOT, 'skills/workflows', name)).href)));
+    await validateTerminalEvidence({ product: Object.assign({}, ...modules),
+      evidence: terminal, specPath: realSpec, workspace: realWorkspace });
+  }
+  const artifacts = await artifactMetrics(realSpec, terminal === null ? null
+    : new Map(terminal.source.files.map(item => [item.name, Buffer.from(item.bytesBase64, 'base64')])));
   const operationalEvents = journal.events.filter((event) => !event.operation.startsWith('SPEC_'));
   const reportedExecutionEvents = operationalEvents.filter((event) => event.resultingState !== undefined);
   const reportedExecutionState = reportedExecutionEvents.at(-1)?.resultingState ?? null;
@@ -999,7 +1073,7 @@ async function finalize(options) {
   const tests = run(process.execPath, ['--test'], realWorkspace);
   const finalTestsPassed = tests.exitCode === 0;
   const needsClosure = journal.runMode === 'case' || journal.runMode === 'full';
-  const needsProductAcceptance = needsClosure && ['A', 'B'].includes(item.id);
+  const needsProductAcceptance = needsClosure;
   const productAcceptance = needsProductAcceptance
     ? await checkProductAcceptance(realWorkspace, item.id) : null;
   const executionValidation = needsClosure
@@ -1008,17 +1082,19 @@ async function finalize(options) {
   const officialStateMatch = executionValidation?.exitCode === 0
     ? /^PASS: execution state=([A-Z][A-Z0-9_]*) authority=sha256:[0-9a-f]{64}\n?$/u.exec(executionValidation.stdout)
     : null;
-  const finalExecutionState = needsClosure ? officialStateMatch?.[1] ?? null : reportedExecutionState;
+  const finalExecutionState = terminal !== null ? 'SPEC_CLOSED'
+    : needsClosure ? officialStateMatch?.[1] ?? null : reportedExecutionState;
   const officialExecutionBlocked = needsClosure && executionValidation.exitCode !== 0
     && /^(?:BLOCKED|RECOVERY_TARGETS):/mu.test(executionValidation.stderr);
   const lastOperationalEvent = operationalEvents.at(-1);
   const lastLifecycleEvent = journal.events.filter((event) => event.operation.startsWith('SPEC_')).at(-1);
   const effectiveBlocked = lastOperationalEvent?.result === 'BLOCKED'
     || lastLifecycleEvent?.result === 'BLOCKED'
-    || officialExecutionBlocked;
+    || officialExecutionBlocked
+    || ['PRODUCT_OBSERVATION_UNPROVEN', 'INSTRUMENT_DRIFT', 'PRODUCT_STATE_DRIFT'].includes(productAcceptance?.errorCode);
   const terminalEvidence = terminalSequence
-    && finalExecutionState === 'COMPLETE'
-    && artifacts.structurallyTerminal;
+    && (terminal !== null ? finalExecutionState === 'SPEC_CLOSED' && terminal.source.inspection.state === 'COMPLETE'
+      : finalExecutionState === 'COMPLETE' && artifacts.structurallyTerminal);
   const commonPass = requirementsHashMatches && sentinelShaMatchesCheckout && finalTestsPassed
     && (!needsProductAcceptance || productAcceptance.passed);
   const passed = commonPass && (needsClosure ? terminalEvidence && specClosed : !effectiveBlocked);
@@ -1029,6 +1105,28 @@ async function finalize(options) {
   else if (effectiveBlocked) status = 'BLOCKED';
   else status = 'FAIL';
 
+  const measuredOperations=operationMetrics(journal.events,journal.schemaVersion);
+  const nativeStateFile=path.join(path.dirname(realJournal),'case-state.json');
+  if(await fs.lstat(nativeStateFile).catch(()=>null)) {
+    const nativeState=await readJson(nativeStateFile,'case state');
+    if(nativeState.protocol==='native-app-server-v1') {
+      if(nativeState.caseId!==item.id) throw new CliError('native case state differs from selected case');
+      const ledger=await readJson(path.join(path.dirname(path.dirname(realJournal)),'.turn-ledger.json'),'native ledger');
+      validateNativeLedger(ledger,nativeState,path.basename(path.dirname(path.dirname(realJournal))),{settled:status==='PASS'});
+      const stages=new Map();
+      for(const row of ledger.turns.filter(row=>row.caseId===item.id&&row.role==='main'&&row.state!=='not_dispatched'))
+        stages.set(JSON.stringify([operationalStage(row.operation),row.slice]),{caseId:item.id,slice:row.slice,operation:row.operation});
+      measuredOperations.retries=[...stages.values()].reduce((count,scope)=>count+operationalCorrectionUsage(ledger.turns,scope),0);
+      const refusals=new Set();
+      for(const operation of nativeState.operations) {
+        if(path.dirname(operation.evidencePath)!==path.dirname(realJournal)||await fs.realpath(operation.evidencePath)!==operation.evidencePath)
+          throw new CliError('native metric evidence is outside its owned case');
+        const evidence=await readJson(operation.evidencePath,'native operation evidence');
+        for(const refusal of evidence.captureProof?.rejectedResponses??[])refusals.add(JSON.stringify([refusal.operationAttemptId,refusal.finalResponseSha256]));
+      }
+      measuredOperations.mechanicalRejections=refusals.size;
+    }
+  }
   const workspaceMetrics = await gitWorkspaceMetrics(realWorkspace);
   const result = {
     schemaVersion: journal.schemaVersion,
@@ -1044,11 +1142,12 @@ async function finalize(options) {
     finalTestsPassed,
     productAcceptance,
     decomposition: { slices: artifacts.slices, tasks: artifacts.tasks, tasksPerSlice: artifacts.tasksPerSlice },
-    operations: operationMetrics(journal.events, journal.schemaVersion),
+    operations: measuredOperations,
     modelUse: modelMetrics(journal.events, configuration.productionProfile.cases[item.id]),
     contextCost: contextMetrics(journal.events, artifacts),
     workspace: {
       ...workspaceMetrics,
+      productRoot: realWorkspace, productSha256: await productCandidateIdentity(realWorkspace),
       seedContentHash: await contentHash(path.join(BENCHMARK_ROOT, configuration.seedPath)),
       requirementsHash,
       requirementsHashMatches,
@@ -1056,6 +1155,9 @@ async function finalize(options) {
       sentinelShaMatchesCheckout,
     },
     finalTests: { command: 'node --test', exitCode: tests.exitCode, passed: finalTestsPassed },
+    ...(terminal === null ? {} : { nativeTerminal: { sourceActivationId: terminal.disposition.activationId,
+      transactionId: terminal.receipt.transactionId, closedSnapshotSha256: terminal.closedSnapshotSha256,
+      sourceSha256: terminal.sourceSha256 }, contextPolicy: contextPolicy(await readJson(path.join(path.dirname(realJournal), 'case-state.json'), 'case state')) }),
   };
   validateResult(result);
   await atomicJson(output, result, { exclusive: true });
@@ -1134,6 +1236,8 @@ function compareMarkdown(before, after) {
 }
 
 async function compare(options) {
+  const output = options['--output']===undefined?null:requireAbsolute(options['--output'],'--output');
+  if(output!==null)await assertDiagnosticDestination(output);
   const before = await readJson(requireAbsolute(options['--before'], '--before'), 'before result');
   const after = await readJson(requireAbsolute(options['--after'], '--after'), 'after result');
   const incompatible = [
@@ -1151,8 +1255,7 @@ async function compare(options) {
   validateResult(after);
   const markdown = compareMarkdown(before, after);
   process.stdout.write(markdown);
-  if (options['--output'] !== undefined) {
-    const output = requireAbsolute(options['--output'], '--output');
+  if (output !== null) {
     await fs.writeFile(output, markdown, { encoding: 'utf8', flag: 'wx' })
       .catch((error) => { throw new CliError(`cannot create comparison output: ${error.message}`); });
   }
@@ -1199,7 +1302,7 @@ export async function main(argv) {
   if (command === 'journal-event') return journalEvent(parseOptions(tokens, EVENT_OPTIONS,
     ['--journal', '--operation', '--phase', '--model', '--effort', '--result']));
   if (command === 'finalize') return finalize(parseOptions(tokens,
-    new Set(['--workspace', '--case', '--spec', '--journal', '--output']),
+    new Set(['--workspace', '--case', '--spec', '--journal', '--output', '--terminal-evidence']),
     ['--workspace', '--case', '--spec', '--journal', '--output']));
   if (command === 'compare') return compare(parseOptions(tokens,
     new Set(['--before', '--after', '--output']), ['--before', '--after']));

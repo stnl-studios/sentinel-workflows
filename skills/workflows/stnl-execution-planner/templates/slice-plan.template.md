@@ -15,9 +15,11 @@ update_policy: PLAN or REPLAN creates as draft; REVIEW_PLAN corrects only the mu
 ## References
 
 - Slice: 01
+- Delivery ID: runtime
 - Requirements source: `<relative path>`
 - Requirements authority: sha256:<64hex>
 - Plan revision: <positive integer>
+- Local revision: 1
 - Global plan: `../plan.md`
 - Review state: pending
 
@@ -41,13 +43,25 @@ For a partial contribution, reference the existing requirement ID, describe the 
 
 - <excluded work and boundary with later slices>
 
-## Likely Areas
+## Authorized Areas
 
-- Implementation filesystem path (outside generated execution artifacts): `<artifact-relative path>` — <optional contract, subsystem, test area, or explanation> (plain-text description)
+- directory: `<artifact-relative authorized subtree or exact file>`
+
+## Expected Files
+
+- `<artifact-relative predicted file>`
+
+## Existing Inputs
+
+- none
+
+## Protected Responsibilities
+
+- <auth, persistence and public-contract boundaries requiring semantic review>
 
 ## Dependencies
 
-- <earlier slice or none>
+- none
 
 ## Risks and Strategy
 
@@ -57,6 +71,10 @@ For a partial contribution, reference the existing requirement ID, describe the 
 ## Expected Tests
 
 - <test, command, suite, or observable check>
+
+## Verification Recipe
+
+- Recipe: {"format":"stnl-verification-recipe-v1","base":"workspace","cwd":".","checks":[{"id":"verification-01","executable":{"literal":"node"},"args":[{"literal":"--test"},{"file":{"kind":"product","path":"<verification file>"}}],"inputs":[]}],"dependencyReview":"<reviewed indirect dependencies>"}
 
 ## Completion Criterion
 

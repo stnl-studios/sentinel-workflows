@@ -1,6 +1,7 @@
+import {isDistributedSkillResource} from './skill-registry.mjs';
 import { isBuiltin } from "node:module";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const FORBIDDEN_EXECUTABLE_EXTENSIONS = new Set([
   ".js", ".cjs", ".ts", ".mts", ".cts", ".jsx", ".tsx",
@@ -33,13 +34,20 @@ const DYNAMIC_CODE_IDENTIFIER_PATTERN = new RegExp(
 );
 const DYNAMIC_CODE_MODULES = new Set(["vm", "node:vm"]);
 
+// Explicit current capabilities: reviewed recipe execution, native Git HEAD/ignore
+// checks, and Initial preparation Git ignore check. Other runtimes cannot spawn.
+export const EXECUTION_DISTRIBUTION_POLICY = Object.freeze({
+  externalCommandRuntimes: ['runtime/runner-verification.mjs','runtime/execution-current-operation.mjs','runtime/prepare-task-candidate.mjs'],
+});
+
 export const LIFECYCLE_DISTRIBUTION_POLICY = Object.freeze({
+  gitIgnoreRuntime: "runtime/lib/publisher.mjs",
+  symlinkHardlinkRuntime: "runtime/lib/closed-spec.mjs",
   allowedRuntimeExtensions: [".mjs", ".json"],
   requiredEntrypoints: [
     "validate-spec-lifecycle.mjs",
     "create-readiness-attestation.mjs",
     "readiness-snapshot.mjs",
-    "build-closed-spec.mjs",
     "publish-spec-lifecycle.mjs",
     "prepare-init-candidate.mjs",
   ],
@@ -431,10 +439,58 @@ export function nonliteralDynamicImportCount(source) {
   return count;
 }
 
+// A lexical source contract for one reviewed producer, not a JavaScript sandbox.
+// Reuse scanner offsets: comments cannot supply code, and literal values retain
+// whitespace/escapes rather than being confused with executable tokens.
+function commandProjection(source) {
+  const analysis = analyzeJavaScript(source);
+  let result = '', cursor = 0;
+  for (const token of analysis.strings) {
+    result += analysis.code.slice(cursor, token.start).replace(/\s/gu, '');
+    result += JSON.stringify(token.value);
+    cursor = token.end;
+  }
+  return result + analysis.code.slice(cursor).replace(/\s/gu, '');
+}
+
+function restrictedGitIgnoreProducer(source, specifiers) {
+  const code = executableCode(source);
+  const references = [...code.matchAll(/\bexecFile\b/gu)];
+  if (specifiers.filter(value => value === 'node:child_process').length !== 1
+    || references.length !== 2 || /\\u(?:[0-9a-f]{4}|\{)/iu.test(code)) return false;
+  const projected = commandProjection(source);
+  const importStatement = 'import{execFile}from"node:child_process";';
+  if (projected.split(importStatement).length !== 2) return false;
+  const start = references[1].index;
+  if (/[.\w$]/u.test(code.slice(0, start).trimEnd().slice(-1))) return false;
+  const end = source.indexOf(';', start);
+  if (end < 0) return false;
+  const approved = `execFile('git', ['-C', productRoot, 'check-ignore', '-q', '--', ignoredPath], {
+    shell: false, timeout: 10000, maxBuffer: 16384, encoding: 'utf8', windowsHide: true,
+  }, error => error ? reject(error) : resolve());`;
+  return commandProjection(source.slice(start, end + 1)) === commandProjection(approved);
+}
+
+function restrictedSymlinkHardlinkProducer(source, specifiers) {
+  const code=executableCode(source),references=[...code.matchAll(/\bexecFileSync\b/gu)];
+  if(specifiers.filter(value=>value==='node:child_process').length!==1||references.length!==2
+    ||/\\u(?:[0-9a-f]{4}|\{)/iu.test(code))return false;
+  const projected=commandProjection(source);
+  if(projected.split('import{execFileSync}from"node:child_process";').length!==2)return false;
+  const start=references[1].index;
+  if(/[.\w$]/u.test(code.slice(0,start).trimEnd().slice(-1)))return false;
+  const end=source.indexOf(';',start);if(end<0)return false;
+  const approved=`execFileSync('/bin/ln', ['-P', '-h', '--', first, second], {
+    shell: false, timeout: 2000, maxBuffer: 4096, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+  });`;
+  return commandProjection(source.slice(start,end+1))===commandProjection(approved);
+}
+
 export async function checkDistributableSkill(skillRoot, policy = {}) {
   const root = resolve(skillRoot);
   const findings = [];
-  const files = await regularFiles(root, findings);
+  const skillName=policy.skillName??basename(root);
+  const files = (await regularFiles(root, findings)).filter(file=>isDistributedSkillResource(skillName,normalizedRelative(root,file)));
   const relativeFiles = new Set(files.map((path) => normalizedRelative(root, path)));
   for (const entrypoint of policy.requiredEntrypoints ?? []) {
     if (!relativeFiles.has(`runtime/${entrypoint}`)) {
@@ -514,16 +570,23 @@ export async function checkDistributableSkill(skillRoot, policy = {}) {
         continue;
       }
       const importedMetadata = await stat(importedPath).catch(() => null);
-      if (!importedMetadata?.isFile()) {
+      if (!importedMetadata?.isFile()||!relativeFiles.has(normalizedRelative(root,importedPath))) {
         findings.push(`missing relative import in ${relativePath}: ${specifier}`);
       }
     }
     if (
       relativePath.startsWith("runtime/") &&
       !relativePath.startsWith("runtime/test/") &&
-      specifiers.includes("node:child_process")
+      specifiers.includes("node:child_process") &&
+      !(policy.externalCommandRuntimes ?? []).includes(relativePath)
     ) {
-      findings.push(`operational runtime must not execute external commands: ${relativePath}`);
+      if(relativePath===policy.symlinkHardlinkRuntime){
+        if(!restrictedSymlinkHardlinkProducer(source,specifiers))findings.push(`lifecycle symlink hardlink capability must retain its fixed bounded call: ${relativePath}`);
+      } else if (relativePath !== policy.gitIgnoreRuntime) {
+        findings.push(`operational runtime must not execute external commands: ${relativePath}`);
+      } else if (!restrictedGitIgnoreProducer(source, specifiers)) {
+        findings.push(`lifecycle Git exclusion capability must retain its fixed bounded call: ${relativePath}`);
+      }
     }
   }
   return findings.sort();
