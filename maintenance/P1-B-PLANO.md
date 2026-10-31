@@ -3,18 +3,18 @@
 <a id="painel"></a>
 ## Painel de situação
 
-**Atualizado em 30/10/2026 · planejamento e implementação têm estados separados.**
+**Atualizado em 31/10/2026 · planejamento e implementação têm estados separados.**
 
 | Onde estamos | Situação comprovada |
 | --- | --- |
-| Unidade corrente | **U5.1 — PR #7 aberta em draft; U5.0 concluída no freeze local. U3 — Qualificação e QA — concluída no escopo funcional aceito (§26.104).** U3.17 foi aceita no composto Case A + S2 (§26.56); U3.18 teve aceite funcional A/B/C em 3/3 FULLs. A medição permanece incompleta e foi adiada para depois de P1-B. |
+| Unidade corrente | **P1-B encerrada após U5 concluída.** PR #7 integrada em `main`; merge SHA `2f452961ef0b4b02e33c98f058d7c17ee10ff077` confirmado por leitura de volta. U6 Claude é acompanhamento pós-entrega e segue pendente. |
 | Entrega corrente | **U4.3 concluída no recorte focal Codex.** PLAN, REVIEW_PLAN, EXECUTE_SLICE e VALIDATE_SLICE consultaram e aplicaram orientação da skill global `stnl-backend-node-typescript`; após correção mínima do binding Q20, a captura terminal existente foi publicada e lida de volta como `COMPLETE`, PASS e zero findings. |
 | Última execução nativa aceita | **run-20261025154838-af69004b**,25/10,15:48:38–16:00:06UTC: seis operações PASS,COMPLETE/CLOSE,Case A/oracle,duas respostas formais reobservadas literalmente em novo processo e parecer final sem achados obrigatórios. |
 | Base aceita | U1/U2 com PASS histórico delimitado; U3.5/U3.6 com aceite EC-1 nativo/manual. Nenhuma recertificação global automática. |
-| Foco atual | **U4.3 focal concluída; U5.0 congelada e U5.1 publicada como PR draft #7.** O helper/teste de layout era órfão: exports removidos no EC-1, nenhuma referência ativa em skills, templates, contrato ou installer e nenhum consumidor além do próprio teste; removidos e substituídos no smoke por suites dos contratos EC-1 e limites de filesystem atuais. O smoke e o gate do repositório passaram no candidato publicado. A campanha `campaign-functional-b0edcee7-68c5-4730-8ebb-6462c75c7ee4` teve FULLs 1/3, 2/3 e 3/3 com A/B/C PASS (`FUNCTIONAL_ACCEPTED`). A medição segue incompleta e adiada após P1-B. Relatórios permanecem fora do pacote de produto. |
-| Autorização atual | Aj autorizou U5.0 e depois U5.1 (commits, push e PR draft). A PR #7 está em draft; o GitHub reportou `mergeable=true`, sem status checks ou execuções de Actions na leitura de volta. U5.2 segue para observar revisões/checks concretos. U5.3 (merge) requer autorização expressa separada. Sem campanha, teste nativo Claude, instalação global adicional, publicação de Site ou RECONCILE nesta etapa. |
+| Foco atual | **P1-B concluída.** U3.18 mantém aceite funcional A/B/C em 3/3 FULLs; a medição continua incompleta, não qualificada e adiada. U4.3 segue sendo apenas prova focal Codex `COMPLETE`/`PASS`. U6, teste nativo Claude por Aj, continua pendente e não bloqueia a entrega. |
+| Autorização / próximo passo | A PR #7 foi integrada em `main`; SHA de merge confirmado: `2f452961ef0b4b02e33c98f058d7c17ee10ff077`. Não havia checks remotos reportados; não declarar CI remoto aprovado. Próximo acompanhamento é U6 por Aj. BL-04/05 e melhorias do runbook ficam sob demanda; BL-06 é futuro e BL-07 permanece a última etapa. Nenhuma nova prioridade foi iniciada. |
 
-**Próximo passo imediato:** acompanhar a PR draft #7, registrar findings e checks conforme surgirem e atualizar a base somente se `main` avançar. O candidato publicado está em `1f5ba7616560dcc087516e41cedb9c15704c58ec`; a leitura remota confirmou o mesmo head e a base `main` em `ae711bac2edf6d59536509315fb71f081790826f`. Revisão independente cobriu os grupos de maior risco, sem auditoria linha a linha dos arquivos do delta. A leitura atual não retornou checks ou execuções de Actions; não há workflow de CI nem template de PR versionado no checkout. O GitHub reportou `mergeable=true`; isso não substitui checks ou revisão. U4.3 focal foi concluída após correção restrita e recuperação oficial da captura existente. U6 continua sendo o teste nativo Claude por Aj depois da integração; não será marcado concluído ou usado como gate de P1-B. A medição U3.18 não foi qualificada e não será reiniciada nesta rodada.
+**Pós-entrega:** Aj pode executar o teste nativo Claude (U6) e registrar observações ou propor um ajuste focal se surgir defeito concreto. Esse acompanhamento não reabre automaticamente P1-B. A medição de benchmark continua incompleta e adiada; H2 não foi medido. H1 (`aae1e46`) teve aceite funcional em 3/3. Nenhuma outra prioridade foi iniciada.
 
 ### Índice
 
@@ -51,10 +51,10 @@
 | U2 | Continuidade e recuperação — sem perder trabalho | Entregue e com PASS independente do recorte offline U2; provas posteriores complementam o alcance nativo. | Corrigir a mesma entrega preservando identidade, trabalho, falhas, tentativas e PASS anteriores. |
 | U3 | Qualificação e QA | **Concluída no escopo funcional aceito.** U3.5/U3.6 aceitos no recorte EC-1 nativo/manual; U3.14 aceita local/mecanicamente; U3.15 aceita no recorte nativo; U3.16 concluída offline; U3.17 aceita no composto Case A + S2 (§26.56); U3.18 funcional aceita em 3/3 (§26.104). A medição continua incompleta, não qualificada e adiada para depois de P1-B. | Preservar aceites e limites; não repetir U3.18 nem inferir medição. U4 é o próximo marco. |
 | U4 | Equalização Claude | U4.1 e U4.2 concluídas; U4.3 focal Codex concluída com readback terminal `COMPLETE`. | Teste nativo Claude por Aj fica em U6, depois da integração. |
-| U5 | Entrega revisada | U5.0 concluída; U5.1 PR #7 aberta em draft. | Acompanhar checks e revisões em U5.2; merge/readback somente após gates e aprovação expressa. |
+| U5 | Entrega revisada | **Concluída; P1-B encerrada.** | PR #7 integrada em `main`; merge SHA `2f452961ef0b4b02e33c98f058d7c17ee10ff077` confirmado por leitura de volta. Não havia checks remotos reportados; não declarar CI remoto aprovado. |
 | U6 | Teste Claude por Aj | Pendente; acompanhamento pós-entrega. | Uso nativo de Claude por Aj depois da integração; se houver defeito concreto, abrir ajuste focal. Não bloqueia o fechamento de P1-B. |
 
-**Ordem operacional atual:** U4.1 comparar e delimitar equalização Claude → U4 equalizar/verificar e dispor impacto → U5.0 revisar e congelar localmente o delta integrado → U5.1 publicar branch/abrir PR draft após aprovação (concluída com PR #7) → U5.2 tratar findings concretos e observar CI/revisões (sem checks remotos reportados na leitura atual) → U5.3 fazer merge somente após aprovação expressa e confirmar o readback. O merge/readback fecha P1-B no escopo contratado. U6 acontece depois da entrega e não é gate de U5/P1-B; eventual defeito concreto observado por Aj gera uma proposta de ajuste focal. U3.18 funcional está aceita; medição incompleta segue adiada (§26.104). U1/U2 entram como entregas existentes, com evidências reutilizadas conforme identidade/alcance. Não reabrir esses recortes.
+**Ordem concluída:** U4.1 equalização e avaliação → U5.0 freeze → U5.1 publicação da PR #7 → U5.2 disposição de revisão/checks disponíveis → U5.3 merge/readback em `main` (`2f452961ef0b4b02e33c98f058d7c17ee10ff077`). P1-B está encerrada no escopo contratado. U6 acontece após a entrega e não é gate de P1-B; defeito concreto observado por Aj pode motivar proposta focal à parte. U3.18 funcional está aceita; a medição continua incompleta e adiada (§26.104). U1/U2 permanecem aceitas nos alcances históricos documentados.
 
 <a id="escopo"></a>
 ## 2. Objetivo, experiência e limites
@@ -608,7 +608,7 @@ O payload foi atualizado exclusivamente pelo instalador oficial para Codex: prev
 
 **Decisão de fechamento confirmada por Aj (2026-10-30):** P1-B termina com a entrega revisada integrada em `main`, após cumprir U5.1–U5.3 e confirmar o merge/readback. U6 é acompanhamento pós-entrega, executado por Aj depois de `main`; não bloqueia esse fechamento e não pode ser marcado como feito antes do teste. Se U6 revelar defeito concreto, o próximo trabalho é um ajuste focal decidido à parte; isso não reabre automaticamente todo P1-B. Esta decisão esclarece o limite do aceite e não representa conclusão antecipada de U5/P1-B.
 
-**Situação:** U5.0 concluída e U5.1 executada. Após fetch, `origin/main` permaneceu em `ae711bac2edf6d59536509315fb71f081790826f`, ancestral do candidato; havia zero commits da base ausentes no branch. Os commits locais de U5.0 foram `a884196` (docs), `8b5cfef` (remoção de checks obsoletos) e `1f5ba76` (alinhamento lifecycle/opções). O candidato publicado em `feature/p1b-workflow-redesign` e `origin/feature/p1b-workflow-redesign` é `1f5ba7616560dcc087516e41cedb9c15704c58ec`; a árvore ficou limpa após os commits. O delta de `origin/main` ao candidato contém 372 arquivos, 131.613 linhas adicionadas e 55.053 removidas. A revisão independente percorreu grupos de maior risco e não encontrou outro finding concreto após corrigir as chamadas obsoletas em `scripts/validate.sh`; não foi uma auditoria linha a linha dos 372 arquivos. A prévia global oficial mostrou 32/32 NO-OP e a autocontenção das 28 skills instaladas passou; isso não testa descoberta/invocação nativa no Claude. A PR [#7](https://github.com/stnl-studios/sentinel-workflows/pull/7) foi criada em draft para `main`, lida de volta com o head e base acima, `mergeable=true`, nenhum reviewer solicitado e sem checks/status ou workflow runs reportados nessa consulta. Não há workflow de CI nem template de PR versionado localizado no checkout. Merge segue separado e não foi feito.
+**Situação final:** U5.0–U5.3 concluídas; P1-B encerrada. A PR [#7](https://github.com/stnl-studios/sentinel-workflows/pull/7) foi integrada em `main`; a leitura remota confirmou o estado **Merged** e o merge SHA `2f452961ef0b4b02e33c98f058d7c17ee10ff077` em 31/10/2026. O repositório local ainda aponta para a referência anterior de `main`; esse checkout não foi atualizado nem a branch `main` foi modificada nesta revisão documental. A consulta remota não apresentou checks/status ou execuções de Actions; não declarar CI remoto aprovado. A revisão independente anterior cobriu os grupos de maior risco, não uma auditoria linha a linha dos 372 arquivos. A PR confirmou a integração; essa confirmação não amplia os resultados de U3/U4 nem representa teste Claude.
 
 **Limites:** U5 não reabre U3.18 nem exige completar a medição adiada; não repete a campanha aceita, não chama Claude e não instala globalmente. O aceite focal U4.3 é prova de um percurso Codex e da recuperação terminal Q20, não certificação universal/H2 nem teste Claude. H1/H2 devem ser descritos com esses limites. U6 continua sendo o teste nativo Claude por Aj depois de main; é pós-entrega e não é gate para fechar P1-B. A publicação do ControlCenter/Site, embora exista URL, não faz parte desta entrega e exige decisão/autorização separada.
 
@@ -656,27 +656,26 @@ O payload foi atualizado exclusivamente pelo instalador oficial para Codex: prev
 
 #### U5.2 — Findings e validação do PR
 
-- [ ] Aguardar CI e revisão exigidos pelo repositório; registrar resultados pelos identificadores e commits exatos. Findings são triados por causalidade e escopo, não por contagem.
-- [ ] Corrigir somente findings concretos dentro das responsabilidades aprovadas. Cada correção gera novo SHA; reexecutar os checks diretamente afetados e atualizar o resumo. Pedir revisão nova para o diff alterado, sem transferir aprovação do SHA anterior.
-- [ ] Se nenhum finding existir e os gates passarem, registrar zero findings e manter o candidato. Se surgir expansão de escopo ou uma falha sem causa/disposição clara, pausar para decisão em vez de reduzir asserções ou contornar o gate.
-- [ ] Tornar o PR pronto para revisão/merge somente depois de CI e revisões requeridas aprovadas, diff final revisado e base atualizada ou conflito resolvido de forma revisável.
+- [x] Consultar e dispor o estado da PR #7; a integração foi confirmada em `main` no merge SHA registrado abaixo.
+- [x] Registrar o estado real dos checks: não havia checks/status nem workflow runs remotos reportados. Isso não constitui PASS de CI.
+- [x] Encerrar U5 após a integração confirmada; não ampliar as garantias de U3/U4 nem usar U6 como gate retroativo.
 
-**Aceite U5.2:** checks obrigatórios do commit final passam; findings impeditivos estão resolvidos e revisados ou têm decisão explícita de não prosseguir; estado do PR e SHA final confirmados. Falhas preexistentes só podem ser aceitas se forem identificadas no mesmo baseline, não forem introduzidas/afetadas pelo delta e a política do repositório permitir.
+**Aceite U5.2:** disposição do PR e dos checks disponíveis registrada antes de fechar a entrega. A consulta não apresentou checks remotos, portanto não se atribui aprovação de CI.
 
 #### U5.3 — Merge confirmado
 
-- [ ] Antes de merge, apresentar SHA/PR final, CI, revisões, diff e destino; obter autorização expressa de Aj para merge. Aprovações anteriores de planejamento ou de push/PR não a substituem.
-- [ ] Fazer merge pelo método permitido pelo repositório. Não contornar branch protection, não forçar atualização e não alterar `main` por método alternativo.
-- [ ] Confirmar por leitura de volta o estado merged, SHA incorporado e novo estado da branch principal. Se houver timeout ou resposta ambígua, consultar PR e commits antes de qualquer repetição.
-- [ ] Atualizar este plano e BACKLOG com os SHAs/URL/resultados observados; preparar o handoff U6 com instruções e cenários, sem iniciar teste Claude nem instalar nesse passo.
+- [x] PR #7 integrada em `main`; estado **Merged** e SHA `2f452961ef0b4b02e33c98f058d7c17ee10ff077` confirmados por leitura remota.
+- [x] Atualizar este plano e BACKLOG com o merge/readback e manter U6 claramente pendente como acompanhamento pós-entrega.
 
-**Aceite U5.3:** merge e SHA incorporado confirmados no destino correto; registro e BACKLOG atualizados; handoff U6 pronto e claramente pendente. Ao cumprir esse gate, P1-B é encerrada conforme a decisão de Aj acima; U6 continua acompanhamento posterior, não pendência de aceite.
+**Aceite U5.3:** merge e SHA incorporado confirmados para `main`. P1-B está encerrada; U6 permanece posterior e não é pendência de aceite.
+
+**Resultado U5.2–U5.3 (2026-10-31):** a PR #7 aparece como **Merged** e a página do commit identifica `2f452961ef0b4b02e33c98f058d7c17ee10ff077` como merge da PR #7. Não foram reportados checks/status ou workflow runs; nenhum PASS de CI remoto é alegado. Referências: [PR #7](https://github.com/stnl-studios/sentinel-workflows/pull/7) · [merge commit](https://github.com/stnl-studios/sentinel-workflows/commit/2f452961ef0b4b02e33c98f058d7c17ee10ff077).
 
 **Paradas comuns:** diff sujo ou divergente após freeze; base movida sem revisão; credencial/artefato privado no delta; teste pertinente falhando sem causa conhecida; CI ou política de aprovação indisponível; rejeição automática de publicação; PR aponta à base errada; finding material fora do escopo; operação remota com resultado incerto; pedido de ampliar a entrega para Site, benchmark, Claude ou runtime sem nova decisão. Preservar estado e evidência, consultar o estado remoto antes de retry e não tentar contornar bloqueio.
 
-**Confiança e estimativa:** alta de que a sequência e os limites U3/U4/U6 estão documentados com precisão; alta no estado local congelado e no head/base lidos de volta; média na cobertura mínima de checks locais frente ao delta cumulativo amplo; indeterminada para policy/revisões e findings futuros do PR. A PR #7 abriu como draft, `mergeable=true`, sem status checks ou workflow runs reportados. U5.2 é variável conforme findings e política/revisões efetivamente observadas; U5.3 continua sujeito a autorização expressa e gates. Sem prazo garantido.
+**Estado e limites:** U5 está concluída com PR #7 integrada e merge SHA lido de volta. Não havia checks/status remotos reportados, então não se declara CI aprovado. O aceite continua delimitado: H1 (`aae1e46`) funcional 3/3; H2 não medido; U4.3 focal Codex `COMPLETE`/`PASS`; U6 Claude segue pendente. A medição U3.18 permanece incompleta, não qualificada e adiada.
 
-**Decisões e autorizações necessárias:** U5.0 e U5.1 foram autorizadas por Aj e executadas; a PR #7 permanece draft. Antes de U5.3, é necessária aprovação expressa para merge. Se um finding exigir mudança material de escopo, pedir decisão antes de editar. U6 permanece sob responsabilidade de Aj depois da entrega, sem gate ou autorização de uso antecipados.
+**Decisões e autorizações:** U5.0–U5.3 foram concluídas e P1-B está encerrada. U6 permanece sob responsabilidade de Aj depois da entrega; se revelar defeito concreto, propor ajuste focal à parte. Nenhuma nova prioridade foi iniciada.
 
 <a id="u6"></a>
 ### U6 — Teste Claude por Aj
