@@ -13,7 +13,7 @@ import {completedNativeCase} from './fixtures/current-completed-native.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 const run=promisify(execFile);
-async function fixture(t){const root=await fs.realpath(await temporaryDirectory('u314-terminal-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const target=path.join(root,'target');await copyTree(READY_FIXTURE,target);const workspace={specRoot:target,executionRoot:path.join(target,'execution')};return {root,target,workspace,roots:await resolveExecutionFilesystemRoots(workspace)};}
+async function fixture(t){const root=await fs.realpath(await temporaryDirectory('lifecycle-terminal-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const target=path.join(root,'target');await copyTree(READY_FIXTURE,target);const workspace={specRoot:target,executionRoot:path.join(target,'execution')};return {root,target,workspace,roots:await resolveExecutionFilesystemRoots(workspace)};}
 async function closed(t){const f=await fixture(t);
  await assert.rejects(run(process.execPath,[PUBLISHER_CLI,'CLOSE',f.target],{timeout:30000,env:{...process.env,[TEST_ONLY_ACK_ENV]:TEST_ONLY_ACK,[TEST_ONLY_CRASH_ENV]:'TERMINAL_WITNESS_DURABLE'}}),error=>error.signal==='SIGKILL');
  const owned=await readOwnedFile(f.roots.lockPath),record=JSON.parse(owned.bytes);return {...f,owned,record};}

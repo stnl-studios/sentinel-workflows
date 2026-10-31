@@ -333,7 +333,7 @@ test('EC-1 rejection at global 2 leaves exactly one successor invocation',async 
   error=>['UNSUPPORTED_FORMAT','NORMALIZATION_NOT_ELIGIBLE'].includes(error?.code));
 });
 
-test('EC-1 inherited global round 5 TESTS_FAIL publishes Q13 without round 6',async t=>{
+test('inherited global round five TESTS_FAIL publishes formal validation handoff without round six',async t=>{
   const {fixture,current}=await rejectedFirst(t,{priorFailures:1});
   const successor=await normalizeSuccessor({specPath:fixture.specPath,slice:fixture.delivery.slice,
     expectedActivationId:current.inspection.activationId});
@@ -452,7 +452,7 @@ test('EC-1 quiet readers use no historical auxiliary operation files',async t=>{
   async function prove(stage,operation) {
     for(const name of ['stnl-slice-executor','stnl-slice-quality-manager']) {
       const reader=path.resolve('skills/workflows',name,'runtime/execution-current-reader.mjs');
-      const log=path.join(fixture.root,'tmp',`q22-apply-${stage}-${name}.json`);
+      const log=path.join(fixture.root,'tmp',`apply-recovery-${stage}-${name}.json`);
       await run(process.execPath,[worker,'--worker','canary-caught',
         reader,fixture.specPath,log,fixture.root],{timeout:20000});
       const caught=JSON.parse(await fs.readFile(log,'utf8'));

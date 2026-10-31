@@ -26,7 +26,7 @@ const code = expected => error => error.code === expected;
 async function fixture(t, {git = true} = {}) {
   // Outside this checkout: otherwise its enclosing .git would make the
   // purported non-Git fixture a Git workspace before the intended assertion.
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'u3-locator-offline-')));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'filesystem-locator-')));
   t.after(() => fs.rm(root, {recursive:true, force:true}));
   const productRoot = path.join(root, 'project');
   const specRoot = path.join(productRoot, 'specs', 'feature with spaces');

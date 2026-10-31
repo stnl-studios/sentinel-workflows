@@ -896,7 +896,7 @@ test('Initial ingress installs reviewed bytes once and reads back pristine',asyn
   assert.equal((await inspectCurrentExecution(f.specPath)).activationId,image.activationId);
 });
 
-test('U3.15-A shared ancestor file claim has consistent Initial baseline, readback and active capture',async t=>{
+test('shared ancestor file claim has consistent Initial baseline, readback and active capture',async t=>{
   const f=await fixture({kind:'lifecycle',sharedAncestor:true});
   t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   await fs.writeFile(path.join(f.root,'docs/unrelated.txt'),'protected sibling\n');
@@ -918,7 +918,7 @@ test('U3.15-A shared ancestor file claim has consistent Initial baseline, readba
   assert.equal(await fs.readFile(path.join(f.root,'docs/unrelated.txt'),'utf8'),'protected sibling\n');
 });
 
-test('U3.15-A missing claim ancestor refuses before publication and preserves reviewed bytes',async t=>{
+test('missing claim ancestor refuses before publication and preserves reviewed bytes',async t=>{
   const f=await fixture({kind:'lifecycle',sharedAncestor:true,missingAncestor:true});
   t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   const before=await captureExecutionTree(f.preparationRoot);
@@ -928,7 +928,7 @@ test('U3.15-A missing claim ancestor refuses before publication and preserves re
   assert.equal(await fs.stat(path.join(f.root,'docs/missing')).catch(()=>null),null);
 });
 
-test('U3.15-A CLI installs present file and recovers the same activation from another cwd',async t=>{
+test('CLI installs present file and recovers the same activation from another cwd',async t=>{
   const f=await fixture({kind:'lifecycle',sharedAncestor:true});
   t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   await fs.writeFile(path.join(f.root,'docs/report.md'),'reviewed product document\n');
@@ -962,7 +962,7 @@ test('U3.15-A CLI installs present file and recovers the same activation from an
 });
 
 for(const unsafe of ['target-symlink','ancestor-symlink','hardlink','file-kind','recipe-kind'])
-test(`U3.15-A refuses ${unsafe} before Initial writes`,async t=>{
+test(`refuses ${unsafe} before Initial writes`,async t=>{
   const f=await fixture({kind:'lifecycle',sharedAncestor:true,missingAncestor:unsafe==='ancestor-symlink'});
   t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   if(unsafe==='target-symlink')await fs.symlink('../src/pay.test.mjs',path.join(f.root,'docs/report.md'));
@@ -979,7 +979,7 @@ test(`U3.15-A refuses ${unsafe} before Initial writes`,async t=>{
   assert.deepEqual(await captureExecutionTree(f.preparationRoot),before);
 });
 
-test('U3.15-A full Initial closure survives terminal proof and supported completed publication',async t=>{
+test('full Initial closure survives terminal proof and supported completed publication',async t=>{
   const f=await fixture({kind:'lifecycle',sharedAncestor:true,single:true});
   t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   await installCurrentInitial(f);
@@ -1025,7 +1025,7 @@ test('U3.15-A full Initial closure survives terminal proof and supported complet
   assert.equal(after.inspection.completed[0].formalStatus,'PASS');
 });
 
-test('U3.15-A recovery preserves a literal earlier projected baseline without granting EXECUTE',async t=>{
+test('recovery preserves a literal earlier projected baseline without granting EXECUTE',async t=>{
   const f=await fixture({kind:'lifecycle',sharedAncestor:true});
   t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   const {context,workspace}=await resolveCurrentExecutionContext(f.specPath);
@@ -1081,7 +1081,7 @@ test('U3.15-A recovery preserves a literal earlier projected baseline without gr
     error=>error.code==='EVIDENCE_INCOMPLETE');
 });
 
-test('U3.15-A terminal uses the other Initial full closure and retains removed in-domain leaves',async t=>{
+test('terminal uses the other Initial full closure and retains removed in-domain leaves',async t=>{
   const f=await fixture({kind:'lifecycle',sharedAncestor:true,independentAreas:true});
   t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   await fs.writeFile(path.join(f.root,'src/retired.mjs'),'export const retired=true;\n');
@@ -1338,13 +1338,13 @@ test('Initial native preflight blocks another delivery input change',async()=>{
   await assert.rejects(fs.lstat(verification),error=>error.code==='ENOENT');
 });
 
-for(const secondInvalid of [false,true])test(`D1 Initial formal refusal preserves bounded corrections (${secondInvalid?'two corrections exhausted':'PASS'})`,async()=>{
+for(const secondInvalid of [false,true])test(`formal refusal preserves bounded corrections (${secondInvalid?'two corrections exhausted':'PASS'})`,async()=>{
   const f=await fixture();await installCurrentInitial(f);
   const implementation=await reserved(f,'stnl-current-native-judgment-v1');
   await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
-  await bindNative(implementation.started.handle,'mechanical-D1-Initial-implementation');
+  await bindNative(implementation.started.handle,'mechanical-initial-implementation');
   const measured=await verifyNative(implementation.dispatch.originFile),{head,...result}=initialPayload(1);result.commands=measured.commands;
-  const tool=path.join(f.root,'mechanical-D1-Initial-implementation.json');await fs.writeFile(tool,JSON.stringify({agentId:'mechanical-D1-Initial-implementation',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+  const tool=path.join(f.root,'mechanical-initial-implementation.json');await fs.writeFile(tool,JSON.stringify({agentId:'mechanical-initial-implementation',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
   await captureNative(implementation.started.handle,tool);await publish(implementation.started.handle);
   const {context}=await resolveCurrentExecutionContext(f.specPath);
   const carrier={...f,head:(await run('git',['-C',f.root,'rev-parse','HEAD'])).stdout.trim(),
@@ -1568,7 +1568,7 @@ async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResum
   const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal});
   const requestBefore=await fs.readFile(dispatch.requestFile);
   if(edit)await edit();
-  const agentId='mechanical-u315-b-'+started.handle.operationId;
+  const agentId='mechanical-initial-operation-'+started.handle.operationId;
   await bindNative(started.handle,agentId);
   const measured=await verifyNative(dispatch.originFile);
   let result;
@@ -1592,7 +1592,7 @@ async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResum
   return {started,dispatch,captured,published,root:path.dirname(dispatch.originFile),image:await captureCurrentExecution(f.specPath)};
 }
 
-for(const change of ['typed-new','typed-edit','unpredicted','still-absent'])test(`U3.15-B output semantics ${change} survives capture and terminal formal`,async t=>{
+for(const change of ['typed-new','typed-edit','unpredicted','still-absent'])test(`output semantics ${change} survives capture and terminal formal`,async t=>{
   const f=await fixture({single:true,productRefs:change.startsWith('typed-'),futureLeaf:change==='still-absent'});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   if(change==='typed-new')await fs.rm(path.join(f.root,'src/pay.test.mjs'));
   if(change==='typed-edit')await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"old";\n');
@@ -1609,7 +1609,7 @@ for(const change of ['typed-new','typed-edit','unpredicted','still-absent'])test
   const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true});assert.equal(formal.image.inspection.state,'COMPLETE');
 });
 
-for(const mutation of ['none','removed','removal-missing','request','request-missing','observation','verification','preimage','preimage-owner','preimage-round','preimage-path','preimage-mode','extra'])test(`U3.15-B normal Initial controls reach CLOSE (${mutation})`,async t=>{
+for(const mutation of ['none','removed','removal-missing','request','request-missing','observation','verification','preimage','preimage-owner','preimage-round','preimage-path','preimage-mode','extra'])test(`normal Initial controls reach CLOSE (${mutation})`,async t=>{
   const f=await fixture({kind:'lifecycle',single:true,sharedAncestor:true,productRefs:true,futureLeaf:true,closeReady:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   const specRoot=path.dirname(f.specPath);await fs.mkdir(path.join(specRoot,'annex'));await fs.writeFile(path.join(specRoot,'annex/keep.bin'),Buffer.from([0,1,255]));
   if(['removed','removal-missing'].includes(mutation))await fs.writeFile(path.join(f.root,'src/retired.mjs'),'real preimage\n');
@@ -1643,7 +1643,7 @@ for(const mutation of ['none','removed','removal-missing','request','request-mis
 });
 
 
-for(const privateMutation of [false,true])test(`U3.15-B APPLY retains the original EXECUTE capture through CLOSE${privateMutation?' and refuses altered private source':''}`,async t=>{
+for(const privateMutation of [false,true])test(`APPLY retains the original EXECUTE capture through CLOSE${privateMutation?' and refuses altered private source':''}`,async t=>{
   const f=await fixture({kind:'lifecycle',single:true,productRefs:true,futureLeaf:true,closeReady:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   f.initialOnly=true;
   const annex=path.join(path.dirname(f.specPath),'annex');await fs.mkdir(annex);await fs.writeFile(path.join(annex,'keep.bin'),Buffer.from([0,1,255]));
@@ -1756,7 +1756,7 @@ test('normalized formal NEEDS_FIX retains its anchor through rejected APPLY, cor
   assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
 });
 
-for(const laterNormalized of [false,true])test(`U3.15-B retained EXECUTE preserves a normalized first formal anchor through APPLY and ${laterNormalized?'normalized ':''}terminal PASS`,async t=>{
+for(const laterNormalized of [false,true])test(`retained EXECUTE preserves a normalized first formal anchor through APPLY and ${laterNormalized?'normalized ':''}terminal PASS`,async t=>{
   const f=await fixture({single:true,productRefs:true,futureLeaf:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   f.normalizedFirst=true;
   await sealedBlockingFormal(f);

@@ -10,7 +10,7 @@ import {temporaryDirectory, removeTemporaryDirectory, buildResumeFixture, snapsh
   '../skills/workflows/stnl-spec-lifecycle-manager/runtime/test/publisher-fixtures.mjs';
 
 async function fixture(t) {
-  const root=await fs.realpath(await temporaryDirectory('u314-lifecycle-roles-'));
+  const root=await fs.realpath(await temporaryDirectory('lifecycle-filesystem-roles-'));
   t.after(()=>removeTemporaryDirectory(root));
   const f=await buildResumeFixture(root,{candidateWhitespaceChange:true});
   const workspace={specRoot:f.target,executionRoot:path.join(f.target,'execution')};

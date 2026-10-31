@@ -63,7 +63,7 @@ function expectedSnapshot(artifacts, review) {
       utf8: artifacts.get(item.path).toString('utf8')}))};
 }
 
-function p01(api) {
+function projectsAndApprovesInitialPreparation(api) {
   const artifacts = initialArtifacts(), review = initialReview(artifacts), request = input(artifacts);
   const before = new Map([...artifacts].map(([name, value]) => [name, Buffer.from(value)]));
   const authority = api.projectInitialPreparation(request);
@@ -88,7 +88,7 @@ function p01(api) {
   assert.equal(review.globalReview.summary, 'Fixture reviewer approved the supplied bytes.');
 }
 
-function p02(api) {
+function ignoresPhysicalExecutionRootForAuthority(api) {
   const originalCwd = process.cwd();
   process.chdir(os.tmpdir());
   try {
@@ -114,7 +114,7 @@ function p02(api) {
   } finally { process.chdir(originalCwd); }
 }
 
-function p03(api) {
+function invalidatesReviewWhenApprovedInputsChange(api) {
   const draft = initialArtifacts({status: 'draft'}), draftAuthority = api.projectInitialPreparation(input(draft));
   assert.deepEqual(draftAuthority.normativeProjection, EXPECTED_PROJECTION);
   reject(() => api.approveInitialPreparation({...input(draft), review: initialReview(draft)}), 'STALE_APPROVAL', 'draft approval');
@@ -150,7 +150,7 @@ function p03(api) {
   assert.notEqual(recipeAuthority.normativeSha256, projectedOracle('preparation', PREPARATION_PREIMAGE));
 }
 
-function p04(api) {
+function rejectsInconsistentInitialArtifacts(api) {
   const original = initialArtifacts();
   const cases = [
     ['delivery identity', edit(original, 'tasks/slice-01.md', text => text.replace(DELIVERY_IDS[0], '99999999-9999-4999-8999-999999999999'))],
@@ -169,7 +169,7 @@ function p04(api) {
   for (const [label, artifacts] of cases) reject(() => api.projectInitialPreparation(input(artifacts)), 'INVALID_CURRENT_IMAGE', label);
 }
 
-function p05(api) {
+function rejectsMalformedAndUnsafeInitialInputs(api) {
   const artifacts = initialArtifacts();
   reject(() => api.projectInitialPreparation({...input(artifacts), historical: true}), 'INVALID_CURRENT_IMAGE', 'extra option');
   const duplicate = edit(artifacts, 'plans/slice-01.md', text => text.replace('"format":"stnl-verification-recipe-v1"',
@@ -217,7 +217,7 @@ function p05(api) {
   }
 }
 
-function p06(api) {
+function canonicalizesLineEndingsAndValidatesApprovedSnapshot(api) {
   const lf = initialArtifacts(), crlf = initialArtifacts({newline: '\r\n'});
   const l = api.projectInitialPreparation(input(lf)), c = api.projectInitialPreparation(input(crlf));
   assert.deepEqual(l.normativeProjection, c.normativeProjection);
@@ -257,7 +257,7 @@ function p06(api) {
   reject(() => validateSnapshot(unknownFormat), 'UNSUPPORTED_FORMAT', 'snapshot unknown format');
 }
 
-function p07(api) {
+function validatesActivationEnvelopeWithoutOperationalObjects(api) {
   const artifacts = initialArtifacts(), review = initialReview(artifacts);
   const approved = api.approveInitialPreparation({...input(artifacts), review});
   const envelope = initialEnvelope(approved.bytes, artifacts);
@@ -271,9 +271,17 @@ function p07(api) {
   assert.equal(envelope.files.has('evidence/' + DELIVERY_IDS[0] + '.json'), false);
 }
 
-const checks = [p01, p02, p03, p04, p05, p06, p07];
-for (let index = 0; index < checks.length; index += 1) {
-  test(`P0${index + 1} — initial EC-1 preparation`, () => checks[index](initial));
+const checks = [
+  ['projects and approves initial preparation', projectsAndApprovesInitialPreparation],
+  ['ignores physical execution root for authority', ignoresPhysicalExecutionRootForAuthority],
+  ['invalidates review when approved inputs change', invalidatesReviewWhenApprovedInputsChange],
+  ['rejects inconsistent initial artifacts', rejectsInconsistentInitialArtifacts],
+  ['rejects malformed and unsafe initial inputs', rejectsMalformedAndUnsafeInitialInputs],
+  ['canonicalizes line endings and validates approved snapshot', canonicalizesLineEndingsAndValidatesApprovedSnapshot],
+  ['validates activation envelope without operational objects', validatesActivationEnvelopeWithoutOperationalObjects],
+];
+for (const [name, check] of checks) {
+  test(name, () => check(initial));
 }
 for(const [form,context] of [['lifecycle',LIFECYCLE],['standalone',STANDALONE]]) {
  for(const role of ['input-authority','input-execution','expected-authority','area-authority','area-ancestor','recipe-authority'])
@@ -301,7 +309,7 @@ for(const [form,context] of [['lifecycle',LIFECYCLE],['standalone',STANDALONE]])
    assert.doesNotThrow(()=>initial.projectInitialPreparation(input(initialArtifacts({form}),context)));
   });
 }
-test('P08 — planner/reviewer copies import from their shipped pure evidence closure', async () => {
+test('planner/reviewer copies import from their shipped pure evidence closure', async () => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-initial-isolated-'));
   try {
     const modules = await Promise.all(modulePaths.map(name => fs.readFile(path.join(root, name))));
@@ -319,7 +327,12 @@ test('P08 — planner/reviewer copies import from their shipped pure evidence cl
         'prepareCurrentLocalReview', 'prepareCurrentSetReplacement',
         'projectCurrentPreparation', 'projectInitialPreparation', 'validateCurrentPreparation',
         'validateInitialApprovedPreparation', 'validateReviewedPreparation']);
-      for (const [label, check] of [['P01', p01], ['P03', p03], ['P05', p05], ['P07', p07]]) {
+      for (const [label, check] of [
+        ['initial preparation', projectsAndApprovesInitialPreparation],
+        ['changed-input review', invalidatesReviewWhenApprovedInputsChange],
+        ['malformed inputs', rejectsMalformedAndUnsafeInitialInputs],
+        ['activation envelope', validatesActivationEnvelopeWithoutOperationalObjects],
+      ]) {
         try { check(api); } catch (error) { error.message = `copy ${i + 1}, ${label}: ${error.message}`; throw error; }
       }
     }

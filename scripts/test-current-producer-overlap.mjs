@@ -16,7 +16,7 @@ import {validateCurrentPreparation} from '../skills/workflows/stnl-slice-executo
 const run=promisify(execFile),sha=b=>'sha256:'+createHash('sha256').update(b).digest('hex');
 const body=(text,name)=>text.split(`## ${name}\n\n`)[1].split('\n## ')[0].trim();
 
-test('P01 controlled controller publishes prior overlap, resumes exact bytes, then clears obsolete overlap',async t=>{
+test('controlled controller publishes prior overlap, resumes exact bytes, then clears obsolete overlap',async t=>{
   const fixture=await overlappingPostImage(t,{operationOnly:true});
   const captured=await normalizedFormal(fixture,{captureOnly:true});
   assert.ok(captured.captured&&!captured.captureError);
@@ -123,7 +123,7 @@ async function captureCurrentExecutionAfterAdmission(fixture) {
   return captureCurrentActiveExecution(fixture.specPath,activation.activeAttempt);
 }
 
-test('P02 controlled shared input drift blocks publication and resumes the same captured bytes after restoration',async t=>{
+test('controlled shared input drift blocks publication and resumes the same captured bytes after restoration',async t=>{
   const fixture=await overlappingPostImage(t,{operationOnly:true,sharedInput:true});
   const input=path.join(fixture.root,'shared-config.json'),original=await fs.readFile(input);
   await fs.writeFile(input,'{"mode":"drift"}\n');

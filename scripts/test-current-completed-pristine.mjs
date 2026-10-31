@@ -15,7 +15,7 @@ import {reseal,writeImage} from './fixtures/current-quiet-reader.mjs';
 const run=promisify(execFile),sha=b=>'sha256:'+createHash('sha256').update(b).digest('hex');
 const cli=path.resolve('skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
 
-test('P01 completed pristine with no B decision executes and receives its first formal',async t=>{
+test('completed pristine with no B decision executes and receives its first formal',async t=>{
   const f=await completedPristineCase(t),before=f.image;
   assert.equal(before.inspection.normalHandoff?.operation,'EXECUTE_SLICE');
   const snapshot=JSON.parse(Buffer.from(before.files.get('approved-preparation.json')));
@@ -29,7 +29,7 @@ test('P01 completed pristine with no B decision executes and receives its first 
   assert.deepEqual(Buffer.from(after.files.get('approved-preparation.json')),Buffer.from(before.files.get('approved-preparation.json')));
 });
 
-test('P05 concrete private recipe review with completed revalidates twice without resetting counters',async t=>{
+test('concrete private recipe review with completed revalidates twice without resetting counters',async t=>{
   const f=await completedPristineCase(t),operation=await execute(f);await publish(operation.start.handle);await formal(f);
   const baseline=await captureCurrentExecution(f.specPath);
   for(const round of [1,2]) {
@@ -50,7 +50,7 @@ test('P05 concrete private recipe review with completed revalidates twice withou
   assert.deepEqual(final.inspection.completed,baseline.inspection.completed);
 });
 
-test('P08 private review after EXECUTE preserves historical implementation and admits the first formal',async t=>{
+test('private review after EXECUTE preserves historical implementation and admits the first formal',async t=>{
   const f=await completedPristineCase(t),operation=await execute(f);await publish(operation.start.handle);
   const before=await captureCurrentExecution(f.specPath),input=reviewInput(before,1),proposal=prepareCurrentLocalReview(input);
   const current=JSON.parse(Buffer.from(before.files.get('continuity.json'))).deliveries[0];
@@ -76,7 +76,7 @@ test('P08 private review after EXECUTE preserves historical implementation and a
   assert.deepEqual(final.inspection.completed,before.inspection.completed);
 });
 
-test('P08 inconsistent local-review evidence carrier is refused before live promotion',async t=>{
+test('inconsistent local-review evidence carrier is refused before live promotion',async t=>{
   const f=await completedPristineCase(t),operation=await execute(f);await publish(operation.start.handle);
   const before=await captureCurrentExecution(f.specPath),input=reviewInput(before,1);
   const text=Buffer.from(input.currentTaskBytes).toString('utf8'),changed=text.replace('- Status: TESTS_PASS','- Status: BLOCKED');
@@ -93,7 +93,7 @@ test('P08 inconsistent local-review evidence carrier is refused before live prom
   for(const [name,bytes]of before.files)assert.deepEqual(after.files.get(name),bytes,name);
 });
 
-test('P02 a first operational proof with no decision requires every native source and exact admission',async t=>{
+test('a first operational proof with no decision requires every native source and exact admission',async t=>{
   const f=await completedPristineCase(t),operation=await execute(f);await publish(operation.start.handle);
   const image=await captureCurrentExecution(f.specPath),original=JSON.parse(Buffer.from(image.files.get('continuity.json'))),current=original.deliveries[0];
   const bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path))),record=bundle.implementation[0];
@@ -114,7 +114,7 @@ test('P02 a first operational proof with no decision requires every native sourc
   await t.test('offline family',async()=>{const changed=structuredClone(bundle);changed.implementation[0].origin.transport='managed';await reject(changed,'UNSUPPORTED_FORMAT');});
 });
 
-for(const statuses of [['TESTS_FAIL','TESTS_PASS'],['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL']])test('P03 current implementation budget '+statuses.join('/'),async t=>{
+for(const statuses of [['TESTS_FAIL','TESTS_PASS'],['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL']])test('current implementation budget '+statuses.join('/'),async t=>{
   const f=await completedPristineCase(t),operation=await execute(f,{statuses});
   assert.equal((await resume(operation.start.handle)).nextAction,'publish');
   await assert.rejects(()=>reserveDispatch(operation.start.handle,{responseVariant:'stnl-current-native-judgment-v1'}),error=>error.code==='OWNER_UNCERTAIN');
@@ -122,7 +122,7 @@ for(const statuses of [['TESTS_FAIL','TESTS_PASS'],['TESTS_FAIL','TESTS_FAIL','T
   assert.equal(image.inspection.deliveries[0].counters.implementationChecks,statuses.length);assert.equal(image.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
 });
 
-test('P03 concluded implementation rejection publishes faithfully before its explicit bounded successor',async t=>{
+test('concluded implementation rejection publishes faithfully before its explicit bounded successor',async t=>{
   const f=await completedPristineCase(t),operation=await execute(f,{invalid:true});await publish(operation.start.handle);
   const image=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
   assert.equal(image.inspection.normalHandoff?.operation,'EXECUTE_SLICE');assert.equal(current.normalization.consumedInvocations,1);assert.equal(current.counters.implementationChecks,0);
@@ -132,12 +132,12 @@ test('P03 concluded implementation rejection publishes faithfully before its exp
   assert.notEqual(successor.owner.operationAttemptId,operation.start.owner.operationAttemptId);
 });
 
-test('P03 implementation BLOCKED persists and grants no handoff',async t=>{
+test('implementation BLOCKED persists and grants no handoff',async t=>{
   const f=await completedPristineCase(t),operation=await execute(f,{statuses:['BLOCKED']});await publish(operation.start.handle);
   const image=await captureCurrentExecution(f.specPath);assert.equal(image.inspection.deliveries[0].auxiliaryStatus,'BLOCKED');assert.equal(image.inspection.normalHandoff,null);
 });
 
-test('P04 current implementation recovers identical capture bytes in new processes',async t=>{
+test('current implementation recovers identical capture bytes in new processes',async t=>{
   const f=await completedPristineCase(t),operation=await execute(f),directory=path.dirname(operation.rounds[0].dispatch.originFile),handle=path.join(f.root,'current handle with spaces.json');
   await fs.writeFile(handle,JSON.stringify(operation.start.handle));
   const suffixes=['response','receipt','observation','origin','request','agent','claim','tool-result'];
@@ -154,7 +154,7 @@ test('P04 current implementation recovers identical capture bytes in new process
   const owner=JSON.parse(await fs.readFile(path.join(directory,'owner.json')));assert.equal(owner.cleanup.status,'complete');
 });
 
-test('P05 private review can precede EXECUTE; stale approval and shared-input impact refuse',async t=>{
+test('private review can precede EXECUTE; stale approval and shared-input impact refuse',async t=>{
   const f=await completedPristineCase(t),before=await captureCurrentExecution(f.specPath),input=reviewInput(before,1),proposal=prepareCurrentLocalReview(input);
   const review={...proposal.reviewRequest,decision:'approved',summary:'Controlled independent approval of deterministic private verification reporting before first execution.'};
   const changed=prepareCurrentLocalReview({...input,planBytes:Buffer.from(input.planBytes.toString().replace('--test-reporter=tap','--test-reporter=spec')),
@@ -172,7 +172,7 @@ test('P05 private review can precede EXECUTE; stale approval and shared-input im
   const final=await captureCurrentExecution(f.specPath);assert.equal(final.inspection.deliveries[0].formalStatus,'PASS');
 });
 
-test('P04 captured implementation PASS cannot be published after drift; one episode rechecks within its budget',async t=>{
+test('captured implementation PASS cannot be published after drift; one episode rechecks within its budget',async t=>{
   const f=await completedPristineCase(t),operation=await execute(f);
   await fs.writeFile(path.join(f.root,'other/greeting.mjs'),'export const greeting="hello"; // private drift after captured PASS\n');
   await assert.rejects(()=>publish(operation.start.handle),error=>error.code==='EVIDENCE_STALE');
@@ -184,7 +184,7 @@ test('P04 captured implementation PASS cannot be published after drift; one epis
   await captureNative(operation.start.handle,file);await publish(operation.start.handle);const final=await captureCurrentExecution(f.specPath);assert.equal(final.inspection.deliveries[0].counters.implementationChecks,2);
 });
 
-test('P03 uncertain metadata preserves A1 and cannot reserve a successor',async t=>{
+test('uncertain metadata preserves A1 and cannot reserve a successor',async t=>{
   const f=await completedPristineCase(t),a0=await captureCurrentExecution(f.specPath);
   await assert.rejects(()=>execute(f,{headOverride:'f'.repeat(40)}),error=>error.code==='RUNNER_RESULT_REJECTED');
   const activation=JSON.parse(await fs.readFile(path.join(f.image.context.logicalExecutionRoot,'activation.json')));assert.ok(activation.activeAttempt);assert.equal(activation.previousActivationId,a0.inspection.activationId);
@@ -193,7 +193,7 @@ test('P03 uncertain metadata preserves A1 and cannot reserve a successor',async 
   await assert.rejects(()=>reserveDispatch(handle,{responseVariant:'stnl-current-native-judgment-v1'}),error=>error.code==='OWNER_UNCERTAIN');
 });
 
-test('P03 first formal NEEDS_FIX connects to the already accepted corrective cycle',async t=>{
+test('first formal NEEDS_FIX connects to the already accepted corrective cycle',async t=>{
   const f=await completedPristineCase(t),operation=await execute(f,{statuses:['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL']});await publish(operation.start.handle);
   const finding={id:'finding-01',severity:'blocking',originAttempt:'attempt-01',problem:'The current greeting equals broken instead of hello.',evidence:'other/greeting.mjs exports broken and the prepared strict assertion fails.',impact:'AC-001/obligation-01 is not met.',relatedAuthority:'AC-001; obligation-01',expectedCorrection:'Restore the greeting export in other/greeting.mjs to hello.'};
   await formal(f,{status:'NEEDS_FIX',newFindings:[finding],references:'finding-01',dispositions:'finding-01=active'});
@@ -207,7 +207,7 @@ test('P03 first formal NEEDS_FIX connects to the already accepted corrective cyc
   const after=await captureCurrentExecution(f.specPath);assert.equal(after.inspection.deliveries[0].formalStatus,'PASS');assert.deepEqual(after.inspection.deliveries[0].counters,{implementationChecks:3,validationAttempts:2,findingsChecks:1,findings:1});
 });
 
-test('P02 pristine excludes prior validation, diagnostic, normalization, consumption and active owner',async t=>{
+test('pristine excludes prior validation, diagnostic, normalization, consumption and active owner',async t=>{
   const f=await completedPristineCase(t),original=structuredClone(f.view.continuity);
   const cases={validation:current=>{current.validation='revalidation-required';},
     diagnostic:current=>{current.lastDiagnostic={code:'EVIDENCE_INCOMPLETE',operationAttemptId:null,reason:'A prior operation requires diagnosis.',affectedPaths:[],nextAction:'stop'};},

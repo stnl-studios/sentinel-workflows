@@ -10,7 +10,7 @@ import {completedNativeCase} from './fixtures/current-completed-native.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 
-async function fixture(t){const root=await temporaryDirectory('u314-close-current-');t.after(()=>fs.rm(root,{recursive:true,force:true}));const target=path.join(root,'target');await copyTree(READY_FIXTURE,target);return {root,target};}
+async function fixture(t){const root=await temporaryDirectory('lifecycle-close-current-');t.after(()=>fs.rm(root,{recursive:true,force:true}));const target=path.join(root,'target');await copyTree(READY_FIXTURE,target);return {root,target};}
 
 test('normal CLOSE renders directly into its single existing owned stage and preserves externals',async t=>{
  const f=await fixture(t);await fs.mkdir(path.join(f.target,'assets'));await fs.writeFile(path.join(f.target,'assets','bytes.bin'),Buffer.from([0,1,255]));

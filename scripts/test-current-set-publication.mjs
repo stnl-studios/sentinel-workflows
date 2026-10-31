@@ -14,7 +14,7 @@ import {preparePreparationCandidate} from '../skills/workflows/stnl-execution-pl
 import {publishPreparationCandidate,recoverPreparationPublication} from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
 import {preparationRegistryPath,captureExecutionTree,executionLockIdentity} from '../skills/workflows/stnl-execution-planner/runtime/execution-publication.mjs';
 const decode=bytes=>JSON.parse(Buffer.from(bytes));
-const approve=request=>({...structuredClone(request),decision:'approved',summary:'Controlled B4 implementation test only; not B5 independent approval.',
+const approve=request=>({...structuredClone(request),decision:'approved',summary:'Controlled publication implementation test; not independent approval.',
  evidenceDecisions:request.evidenceDecisions.map(item=>({...item,reason:'Controlled exact retention or revalidation of these captured bytes.'}))});
 async function fixture(t,{reopening=false,sharedInput=false}={}) {
  const f=await completedNativeCase(t,{drift:false,independent:true,retire:!reopening,sharedInput});if(reopening)await retireActive(f.view);
@@ -35,7 +35,7 @@ async function retired(f,allocation){
  await absent(`${f.root}.owner.json`);await absent(f.root);await absent(allocation);
  assert.equal(decode(await fs.readFile(f.registry)).allocations.some(item=>item.candidate===f.root),false);
 }
-test('B4 Q18 controlled publication uses registered candidate, readback and terminal retirement',async t=>{
+test('Q18 controlled publication uses registered candidate, readback and terminal retirement',async t=>{
  const f=await fixture(t),product=await fs.readFile(path.join(f.image.f.root,f.productFile));
  const result=await f.publish();assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');assert.equal(result.preparationDisposition,'retired');
  const after=await captureCurrentExecution(f.specPath),continuity=decode(after.files.get('continuity.json'));
@@ -45,7 +45,7 @@ test('B4 Q18 controlled publication uses registered candidate, readback and term
  await retired(f,result.allocation);assert.deepEqual(await fs.readFile(path.join(f.image.f.root,f.productFile)),product);
 });
 
-test('B4 Q19 controlled publication reopens the same identity with literal A and no new formal',async t=>{
+test('Q19 controlled publication reopens the same identity with literal A and no new formal',async t=>{
  const f=await fixture(t,{reopening:true}),prior=decode(f.source.files.get('continuity.json'));
  const result=await f.publish();assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');
  const image=await captureCurrentExecution(f.specPath),next=decode(image.files.get('continuity.json'));
@@ -58,7 +58,7 @@ test('B4 Q19 controlled publication reopens the same identity with literal A and
 });
 
 for(const phase of ['before-backup','after-backup','after-install','before-activation','after-activation-intent','after-activation'])
- test(`B4 recovers the same registered publication after ${phase}`,async t=>{
+ test(`recovers the same registered publication after ${phase}`,async t=>{
   const f=await fixture(t);let injected=0,error;
   try{await f.publish(async current=>{if(current===phase){injected++;throw Error('controlled '+phase);}});}catch(caught){error=caught;}
   assert.equal(injected,1);assert.ok(error?.allocation);assert.equal(error.candidateRoot,f.root);
@@ -71,7 +71,7 @@ for(const phase of ['before-backup','after-backup','after-install','before-activ
  });
 
 for(const phase of ['after-backup-removal','after-retention-removal','after-preparation-owner-removal','after-preparation-entry-removal','before-publisher-removal','after-publisher-removal'])
- test(`B4 terminal retirement resumes its own roles after ${phase}`,async t=>{
+ test(`terminal retirement resumes its own roles after ${phase}`,async t=>{
   const f=await fixture(t);let injected=0;
   const result=await f.publish(async current=>{if(current===phase){injected++;throw Object.assign(Error('controlled '+phase),{code:'EIO'});}});
   assert.equal(injected,1);assert.equal(result.publication,'confirmed');
@@ -85,7 +85,7 @@ for(const phase of ['after-backup-removal','after-retention-removal','after-prep
   }
  });
 
-test('B4 aborted cleanup resumes after its candidate role is already removed',async t=>{
+test('aborted cleanup resumes after its candidate role is already removed',async t=>{
  const f=await fixture(t);let error;
  try{await f.publish(async phase=>{if(phase==='before-backup')throw Error('controlled unswapped');});}catch(caught){error=caught;}
  let injected=0;
@@ -96,7 +96,7 @@ test('B4 aborted cleanup resumes after its candidate role is already removed',as
  await retired(f,error.allocation);assert.deepEqual((await captureCurrentExecution(f.specPath)).activationBytes,f.source.activationBytes);
 });
 
-test('B4 marker creation failure retains the registered draft and reuses its exact reviewed bytes',async t=>{
+test('marker creation failure retains the registered draft and reuses its exact reviewed bytes',async t=>{
  const f=await fixture(t),open=fs.open;let injected=0,error;
  fs.open=async(file,...args)=>{if(typeof file==='string'&&/\.stnl-execution-publication-[a-f0-9-]+\.json$/u.test(file)){injected++;throw Object.assign(Error('controlled marker creation'),{code:'EIO'});}return open(file,...args);};
  try{await f.publish();}catch(caught){error=caught;}finally{fs.open=open;}
@@ -107,7 +107,7 @@ test('B4 marker creation failure retains the registered draft and reuses its exa
  assert.equal(result.cleanup,'complete');await retired(f,result.allocation);
 });
 
-test('B4 recovery checks the compound association before restoring or deleting material',async t=>{
+test('recovery checks the compound association before restoring or deleting material',async t=>{
  const f=await fixture(t);let error;
  try{await f.publish(async phase=>{if(phase==='after-backup')throw Error('controlled backed up');});}catch(caught){error=caught;}
  // The normal pre-intent handler restores the source. The independent
@@ -121,7 +121,7 @@ test('B4 recovery checks the compound association before restoring or deleting m
  await recoverPreparationPublication({specPath:f.specPath,allocation:error.allocation});await retired(f,error.allocation);
 });
 
-test('B4 retirement preserves unrelated registry bindings and foreign retention bytes',async t=>{
+test('retirement preserves unrelated registry bindings and foreign retention bytes',async t=>{
  const f=await fixture(t),registry=decode(await fs.readFile(f.registry)),foreignRoot=path.join(path.dirname(f.registry),'foreign preparation');
  await fs.mkdir(foreignRoot);await fs.writeFile(path.join(foreignRoot,'keep.txt'),'foreign material');
  const metadata=await fs.lstat(foreignRoot),foreign={...structuredClone(registry.allocations[0]),allocationId:randomUUID(),candidate:foreignRoot,
@@ -136,7 +136,7 @@ test('B4 retirement preserves unrelated registry bindings and foreign retention 
  assert.deepEqual(decode(await fs.readFile(f.registry)).allocations,[foreign]);assert.equal(await fs.readFile(path.join(foreignRoot,'keep.txt'),'utf8'),'foreign material');
 });
 
-for(const removed of [false,true])test(`B4 unlink error ${removed?'after removal does not resurrect':'before removal compensates the same publisher'}`,async t=>{
+for(const removed of [false,true])test(`unlink error ${removed?'after removal does not resurrect':'before removal compensates the same publisher'}`,async t=>{
  const f=await fixture(t),unlink=fs.unlink;let injected=0;
  fs.unlink=async(file,...args)=>{if(typeof file==='string'&&/\.stnl-execution-publication-[a-f0-9-]+\.json$/u.test(file)){
   injected++;if(removed)await unlink(file,...args);throw Object.assign(Error('controlled unlink acknowledgment'),{code:'EIO'});}return unlink(file,...args);};
@@ -147,7 +147,7 @@ for(const removed of [false,true])test(`B4 unlink error ${removed?'after removal
   await recoverPreparationPublication({specPath:f.specPath,allocation:result.allocation});await retired(f,result.allocation);}
 });
 
-test('B4 uncertain sync after final unlink retains the common lease without reinserting the association',async t=>{
+test('uncertain sync after final unlink retains the common lease without reinserting the association',async t=>{
  const f=await fixture(t),open=fs.open;let armed=false,injected=0,error,marker;
  fs.open=async(file,...args)=>{if(armed&&file===path.dirname(marker)){injected++;throw Object.assign(Error('controlled directory sync uncertainty'),{code:'EIO'});}return open(file,...args);};
  try{await f.publish(async(phase,paths)=>{if(phase==='before-publisher-removal'){marker=paths.marker;armed=true;}});}catch(caught){error=caught;}finally{fs.open=open;}
@@ -156,7 +156,7 @@ test('B4 uncertain sync after final unlink retains the common lease without rein
  await fs.access((await executionLockIdentity(f.workspace)).lockPath);
 });
 
-test('B4 uncertain registry readback retains the common lease and publisher',async t=>{
+test('uncertain registry readback retains the common lease and publisher',async t=>{
  const f=await fixture(t),open=fs.open,rename=fs.rename;let armed=false,injected=0,error;
  fs.rename=async(from,to)=>{const result=await rename(from,to);if(to===f.registry)armed=true;return result;};
  fs.open=async(file,...args)=>{if(armed&&file===f.registry){injected++;throw Object.assign(Error('controlled registry readback uncertainty'),{code:'EIO'});}return open(file,...args);};
@@ -165,7 +165,7 @@ test('B4 uncertain registry readback retains the common lease and publisher',asy
  await fs.access((await executionLockIdentity(f.workspace)).lockPath);
 });
 
-test('B4 a foreign publisher after unlink is preserved and cannot authorize compensation',async t=>{
+test('a foreign publisher after unlink is preserved and cannot authorize compensation',async t=>{
  const f=await fixture(t),unlink=fs.unlink;let injected=0,error;
  fs.unlink=async(file,...args)=>{if(typeof file==='string'&&/\.stnl-execution-publication-[a-f0-9-]+\.json$/u.test(file)){
   injected++;await unlink(file,...args);await fs.writeFile(file,'foreign publisher bytes\n');throw Object.assign(Error('controlled replaced publisher'),{code:'EIO'});}return unlink(file,...args);};
@@ -175,7 +175,7 @@ test('B4 a foreign publisher after unlink is preserved and cannot authorize comp
  await fs.access((await executionLockIdentity(f.workspace)).lockPath);
 });
 
-test('B4 crash under the common lease has no automatic takeover or second publication',async t=>{
+test('crash under the common lease has no automatic takeover or second publication',async t=>{
  const f=await fixture(t),harness=path.join(f.image.f.root,'tmp/crash-publication.mjs'),locator=path.join(f.image.f.root,'tmp/crash-locator.json');
  const moduleURL=pathToFileURL(path.resolve('skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs')).href;
  await fs.writeFile(harness,`import fs from 'node:fs/promises';\nimport {publishPreparationCandidate} from ${JSON.stringify(moduleURL)};\nawait publishPreparationCandidate({...${JSON.stringify({...f.options,reviewDecision:f.review})},checkpoint:async(phase,paths)=>{if(phase==='after-backup'){await fs.writeFile(${JSON.stringify(locator)},JSON.stringify(paths));process.exit(77);}}});\n`);
@@ -186,7 +186,7 @@ test('B4 crash under the common lease has no automatic takeover or second public
  assert.deepEqual(await captureExecutionTree(paths.backup),decode(await fs.readFile(paths.marker)).expectedTree);
 });
 
-test('B4 failed compensation retains the publisher and lease instead of releasing a lost reservation',async t=>{
+test('failed compensation retains the publisher and lease instead of releasing a lost reservation',async t=>{
  const f=await fixture(t),rename=fs.rename;let armed=false,injected=0,error;
  fs.rename=async(from,to)=>{if(armed&&to===f.registry){injected++;throw Object.assign(Error('controlled compensation failure'),{code:'EIO'});}return rename(from,to);};
  try{await f.publish(async phase=>{if(phase==='before-publisher-removal'){armed=true;throw Error('controlled tail failure');}});}catch(caught){error=caught;}finally{fs.rename=rename;}
@@ -195,7 +195,7 @@ test('B4 failed compensation retains the publisher and lease instead of releasin
  await fs.access((await executionLockIdentity(f.workspace)).lockPath);
 });
 
-test('B4 recovers an activation whose confirmation persistence did not finish',async t=>{
+test('recovers an activation whose confirmation persistence did not finish',async t=>{
  const f=await fixture(t);let injected=0;
  const result=await f.publish(async phase=>{if(phase==='before-confirmation-persistence'){injected++;throw Error('controlled confirmation loss');}});
  assert.equal(injected,1);assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'pending');
@@ -203,7 +203,7 @@ test('B4 recovers an activation whose confirmation persistence did not finish',a
  await retired(f,result.allocation);
 });
 
-test('B4 absent publisher with pending preparation controls is preserved and blocks a second REPLAN',async t=>{
+test('absent publisher with pending preparation controls is preserved and blocks a second REPLAN',async t=>{
  const f=await fixture(t),result=await f.publish(async phase=>{if(phase==='after-backup-removal')throw Error('controlled pending cleanup');});
  assert.equal(result.cleanup,'pending');await fs.unlink(result.allocation);
  const source=await captureCurrentExecution(f.specPath),registry=await fs.readFile(f.registry),owner=await fs.readFile(`${f.root}.owner.json`);
@@ -214,7 +214,7 @@ test('B4 absent publisher with pending preparation controls is preserved and blo
  assert.deepEqual((await captureCurrentExecution(f.specPath)).activationBytes,source.activationBytes);
 });
 
-test('B4 identical publisher bytes in a different inode do not authorize compensation',async t=>{
+test('identical publisher bytes in a different inode do not authorize compensation',async t=>{
  const f=await fixture(t),unlink=fs.unlink;let injected=0,error;
  fs.unlink=async(file,...args)=>{if(typeof file==='string'&&/\.stnl-execution-publication-[a-f0-9-]+\.json$/u.test(file)){
   injected++;const bytes=await fs.readFile(file),replacement=file+'.foreign';await fs.writeFile(replacement,bytes);
@@ -226,7 +226,7 @@ test('B4 identical publisher bytes in a different inode do not authorize compens
  await fs.access((await executionLockIdentity(f.workspace)).lockPath);
 });
 
-for(const variant of ['rename','sync'])test(`B4 uncertain ${variant} at backup retains its lease and exact roles`,async t=>{
+for(const variant of ['rename','sync'])test(`uncertain ${variant} at backup retains its lease and exact roles`,async t=>{
  const f=await fixture(t),rename=fs.rename,open=fs.open;let directory=null,injected=0,error;
  fs.rename=async(from,to)=>{const result=await rename(from,to);if(from===f.workspace.executionRoot&&path.basename(to)==='previous'){
   directory=path.dirname(to);if(variant==='rename'){injected++;throw Object.assign(Error('controlled rename acknowledgment'),{code:'EIO'});}}return result;};
@@ -237,7 +237,7 @@ for(const variant of ['rename','sync'])test(`B4 uncertain ${variant} at backup r
  await fs.access((await executionLockIdentity(f.workspace)).lockPath);
 });
 
-for(const boundary of ['after-activation','after-backup-removal'])test(`B4 uncertain readback at ${boundary} keeps the publication controls and common lease`,async t=>{
+for(const boundary of ['after-activation','after-backup-removal'])test(`uncertain readback at ${boundary} keeps the publication controls and common lease`,async t=>{
  const f=await fixture(t);let injected=0,error;
  try{await f.publish(async phase=>{if(phase===boundary){injected++;await fs.appendFile(path.join(f.image.f.root,f.productFile),'// drift before installed readback\n');}});}catch(caught){error=caught;}
  assert.equal(injected,1);assert.equal(error?.retainExecutionLock,true);await fs.access(error.allocation);await fs.access(`${f.root}.owner.json`);
@@ -245,19 +245,19 @@ for(const boundary of ['after-activation','after-backup-removal'])test(`B4 uncer
 });
 
 for(const reopening of [false,true])for(const boundary of ['before-backup','after-backup'])for(const domain of ['product','input'])
- test(`B4 P2 ${reopening?'Q19':'Q18'} refuses ${domain} drift at ${boundary} before any activation`,async t=>{
+ test(`${reopening?'Q19':'Q18'} refuses ${domain} drift at ${boundary} before any activation`,async t=>{
   const f=await fixture(t,{reopening,sharedInput:domain==='input'}),before=await captureExecutionTree(f.workspace.executionRoot);
   const target=path.join(f.image.f.root,domain==='input'?'shared-config.json':f.productFile),prior=await fs.readFile(target);
   let injected=0,activationAttempts=0,error;
   try{await f.publish(async phase=>{
-   if(phase===boundary){injected++;await fs.appendFile(target,'// controlled P2 drift\n');}
+   if(phase===boundary){injected++;await fs.appendFile(target,'// controlled drift\n');}
    if(phase==='before-activation')activationAttempts++;
   });}catch(caught){error=caught;}
   assert.equal(injected,1);assert.equal(error?.code,'EVIDENCE_STALE');assert.equal(activationAttempts,0);
   assert.notEqual(error?.retainExecutionLock,true,'known preactivation drift preserves/restores the source');
   assert.deepEqual(await captureExecutionTree(f.workspace.executionRoot),before);
   assert.deepEqual(await fs.readFile(path.join(f.workspace.executionRoot,'activation.json')),Buffer.from(f.source.activationBytes));
-  assert.deepEqual(await fs.readFile(target),Buffer.concat([prior,Buffer.from('// controlled P2 drift\n')]));
+  assert.deepEqual(await fs.readFile(target),Buffer.concat([prior,Buffer.from('// controlled drift\n')]));
   await fs.access(error.allocation);await fs.access(f.root);await fs.access(`${f.root}.owner.json`);
   assert.equal(decode(await fs.readFile(f.registry)).allocations.some(item=>item.candidate===f.root),true);
   await absent((await executionLockIdentity(f.workspace)).lockPath);

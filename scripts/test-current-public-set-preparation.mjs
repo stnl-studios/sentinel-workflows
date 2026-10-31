@@ -23,7 +23,7 @@ function reviewFor(request){
  return {globalReview:approve(request.globalReview),deliveries:request.deliveries.map(item=>({deliveryId:item.deliveryId,review:approve(item.review)}))};
 }
 async function sourceFixture(t,{reopening=false}={}){
- // This predecessor is controlled authored setup. No B4 publication or native
+ // This predecessor is controlled authored setup. No set publication or native
  // acceptance is claimed by these API/CLI preparation checks.
  const f=await completedNativeCase(t,{drift:false,independent:true,retire:!reopening});
  if(reopening)await retireActive(f.view);

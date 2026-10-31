@@ -10,7 +10,7 @@ import {temporaryDirectory,READY_FIXTURE,copyTree,snapshot} from '../skills/work
 import {resolveExecutionFilesystemRoots} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/execution-publication.mjs';
 const run=promisify(execFile),repo=process.cwd(),url=relative=>pathToFileURL(path.join(repo,relative)).href;
 for(const inaccessible of [false,true])test(`new public consumers read closed after cleanup with temporary namespace ${inaccessible?'inaccessible':'absent'}`,async t=>{
- const root=await fs.realpath(await temporaryDirectory('u314-closed-readers-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const target=path.join(root,'target');await copyTree(READY_FIXTURE,target);
+ const root=await fs.realpath(await temporaryDirectory('lifecycle-closed-readers-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));const target=path.join(root,'target');await copyTree(READY_FIXTURE,target);
  assert.equal((await publishCandidate('CLOSE',target,null)).cleanup,'complete');const roots=await resolveExecutionFilesystemRoots({specRoot:target,executionRoot:path.join(target,'execution')});assert.equal(await fs.lstat(roots.materialRoot).catch(()=>null),null);const before=snapshot(root);
  const code=`import assert from 'node:assert/strict';import fs from 'node:fs/promises';import path from 'node:path';import {syncBuiltinESMExports} from 'node:module';
  const target=process.argv[1],temporary=process.argv[2];let temporaryReads=0;

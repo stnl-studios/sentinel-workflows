@@ -34,7 +34,7 @@ process.on('message', async message => { if (message === 'release') { await rele
   } finally { await fs.rm(f.root, { recursive: true, force: true }); }
 });
 
-test('U2-R4-F1 unowned deep standalone authority terminates ancestry traversal in another process',async()=>{
+test('unowned deep standalone authority terminates ancestry traversal in another process',async()=>{
   const f=await fixture(),directory=deepRoot(f.root,40);await fs.mkdir(directory,{recursive:true});
   const authority=path.join(directory,'requirements.md');await fs.writeFile(authority,'# Legitimate deep standalone authority\n');
   const module=pathToFileURL(path.resolve('skills/workflows/stnl-slice-executor/runtime/execution-state.mjs')).href;
@@ -42,7 +42,7 @@ test('U2-R4-F1 unowned deep standalone authority terminates ancestry traversal i
   assert.equal(child.status,0,child.stderr);const resolved=JSON.parse(child.stdout);assert.equal(resolved.authorityPath,authority);assert.equal(resolved.kind,'standalone');
   await fs.rm(f.root,{recursive:true,force:true});
 });
-test('U2-R3 distribution permits only the named recipe producer to execute external commands',async()=>{
+test('distribution permits only the named recipe producer to execute external commands',async()=>{
   const f=await fixture(),root=path.join(f.root,'minimal-distribution'),runtime=path.join(root,'runtime');await fs.mkdir(runtime,{recursive:true});
   for(const file of ['runner-verification.mjs','execution-publication.mjs','execution-current.mjs','unicode-casefold.mjs'])await fs.copyFile(path.resolve('skills/workflows/stnl-slice-executor/runtime',file),path.join(runtime,file));
   assert.deepEqual(await checkDistributableSkill(root,EXECUTION_DISTRIBUTION_POLICY),[]);

@@ -15,7 +15,7 @@ import {READY_FIXTURE} from '../skills/workflows/stnl-spec-lifecycle-manager/run
 const sha=bytes=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
 const product=await loadProduct(path.resolve(import.meta.dirname,'..'));
 
-test('converted retained proof survives Q18/Q20 terminal validation and public CLOSE',async t=>{
+test('converted retained proof survives retirement and terminal reentry validation through public CLOSE',async t=>{
   const cleanups=[];
   t.after(async()=>{for(const cleanup of cleanups)await cleanup();});
   const f=await completedNativeCase({after:cleanup=>cleanups.push(cleanup)},{documentarySource:READY_FIXTURE,drift:false,retire:false});
