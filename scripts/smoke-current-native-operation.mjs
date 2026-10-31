@@ -18,7 +18,7 @@ const sha=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const output=value=>process.stdout.write(JSON.stringify(value)+'\n');
 async function git(root,args) {return run('git',['-C',root,...args],{timeout:30000});}
 async function setup({defect=false}={}) {
-  const runRoot=await fs.mkdtemp(path.join(repo,'tmp/u3-reconstruction/vertical-native-EC1-'));
+  const runRoot=await fs.mkdtemp(path.join(repo,'tmp/native-workflow-smoke-'));
   const image=await currentImage(null,{kind:'managed-s2',behaviorCheck:true});
   const root=image.f.root;
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');

@@ -245,7 +245,7 @@ async function barrier(fixture,target,change,occurrence=2,{abortBeforeGo=false}=
     if(failure) {
       try {
         const observed=await fs.readFile(log,'utf8').catch(()=>null);
-        const report=path.join(repo,'tmp/u3-reconstruction/l25-test-runs',`barrier-failure-${token}.json`);
+        const report=path.join(repo,'tmp/current-quiet-reader/test-runs',`barrier-failure-${token}.json`);
         await fs.writeFile(report,JSON.stringify({parentPid:process.pid,childPid:child?.pid??null,target,occurrence,
           reason:failure.message,phase,readySeen,commandIssued,sendSettled,disconnectSeen,exitResult,closeResult,
           channelAtClose,closed,pendingOperations,signals,events,stderr,fdAtFailure,observed},null,2)+'\n');

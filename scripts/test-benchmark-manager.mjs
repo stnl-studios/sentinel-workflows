@@ -256,7 +256,7 @@ test('historical Case C collaboration events remain detectable as unmeasured del
 });
 
 test('independent synthetic Case C transcript detects unmeasured delegation without claiming historical replay',async t=>{
-  const root=path.join(ROOT,'tmp','u316-synthetic-collaboration-'+randomUUID());await fs.mkdir(root,{recursive:true});
+  const root=path.join(ROOT,'tmp','synthetic-collaboration-'+randomUUID());await fs.mkdir(root,{recursive:true});
   t.after(()=>fs.rm(root,{recursive:true,force:true}));
   const file=path.join(root,'events.jsonl');
   const event=(operationId,tool)=>({operationId,type:'item.completed',item:{id:randomUUID(),type:'collab_tool_call',tool,receiver_thread_ids:['synthetic-child']}});

@@ -29,7 +29,7 @@ async function officialBytes(image) {
 const completeFirstForecast=image=>fs.writeFile(path.join(image.f.root,'src/greeting.mjs'),
   'export const greeting = "hello";\n');
 
-test('P01 BLOCKED em outra delivery recusa factory antes de origin e recipe',async t=>{
+test('BLOCKED em outra delivery recusa factory antes de origin e recipe',async t=>{
   for(const drift of [false,true]) {
     const image=await currentImage(t,{kind:'two-s2',behaviorCheck:true});
     await completeFirstForecast(image);
@@ -51,7 +51,7 @@ test('P01 BLOCKED em outra delivery recusa factory antes de origin e recipe',asy
   }
 });
 
-test('P02 BLOCKED incorporado após bind recusa antes de executar recipe',async t=>{
+test('BLOCKED incorporado após bind recusa antes de executar recipe',async t=>{
   const image=await currentImage(t,{kind:'two-s2',behaviorCheck:true});
   await completeFirstForecast(image);
   let settled=null;
@@ -72,7 +72,7 @@ test('P02 BLOCKED incorporado após bind recusa antes de executar recipe',async 
   assert.deepEqual(await officialBytes(image),settled);
 });
 
-test('P03 outra formal PASS muda activation e recusa sessão antiga antes da recipe',async t=>{
+test('outra formal PASS muda activation e recusa sessão antiga antes da recipe',async t=>{
   const image=await currentImage(t,{kind:'two-s2',behaviorCheck:true});
   await completeFirstForecast(image);
   let settled=null;
@@ -90,7 +90,7 @@ test('P03 outra formal PASS muda activation e recusa sessão antiga antes da rec
   assert.deepEqual(await officialBytes(image),settled);
 });
 
-test('P04 current EC-1 boundaries execute their declared behavior checks',async t=>{
+test('current EC-1 boundaries execute their declared behavior checks',async t=>{
   for(const [kind,modulePath] of [['native-s1',modules[0]],['managed-s2',modules[1]]]) {
     const image=await currentImage(t,{kind,behaviorCheck:true});
     if(kind==='managed-s2') await fs.writeFile(path.join(image.f.root,'src/greeting.mjs'),

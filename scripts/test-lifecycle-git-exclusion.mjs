@@ -21,7 +21,7 @@ const env = () => {
   return result;
 };
 async function fixture(t, {git = true, ignored = true, productName = 'project with spaces'} = {}) {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'u3-lifecycle-git-')));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'lifecycle-git-')));
   t.after(() => fs.rm(root, {recursive:true, force:true}));
   const product = path.join(root, productName);
   await fs.mkdir(product);
@@ -212,7 +212,7 @@ test('restriction binds the actual publisher call and preserves other runtime bo
     ['additional import', s => s + "\nimport {spawn} from 'node:child_process';\n"],
   ];
   for (const [label, mutate] of mutations) await t.test(label, async t => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'u3-git-policy-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'git-policy-'));
     t.after(() => fs.rm(root, {recursive:true, force:true}));
     await fs.cp(skill, root, {recursive:true});
     const changed = mutate(original); assert.notEqual(changed, original);
@@ -221,14 +221,14 @@ test('restriction binds the actual publisher call and preserves other runtime bo
       .some(value => value.includes('fixed bounded call')), label);
   });
   for (const file of ['runtime/lib/execution-publication.mjs', 'runtime/lib/lifecycle.mjs', 'runtime/other.mjs']) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'u3-git-boundary-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'git-boundary-'));
     t.after(() => fs.rm(root, {recursive:true, force:true}));
     await fs.mkdir(path.dirname(path.join(root, file)), {recursive:true});
     await fs.writeFile(path.join(root, file), "import {execFile} from 'node:child_process';\n");
     assert.ok((await checkDistributableSkill(root, LIFECYCLE_DISTRIBUTION_POLICY)).some(value => value.includes('must not execute')));
   }
   for (const policy of [{}, EXECUTION_DISTRIBUTION_POLICY, ROADMAP_DISTRIBUTION_POLICY, RUNBOOK_DISTRIBUTION_POLICY]) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'u3-git-other-policy-'));
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'git-other-policy-'));
     t.after(() => fs.rm(root, {recursive:true, force:true}));
     await fs.mkdir(path.join(root, 'runtime/lib'), {recursive:true});
     await fs.writeFile(path.join(root, 'runtime/lib/publisher.mjs'), original);
@@ -262,18 +262,18 @@ test('Darwin symlink hardlink capability binds its only fixed bounded call and n
     ['additional import',s=>s+"\nimport {spawn} from 'node:child_process';\n"],
   ];
   for(const [label,mutate] of mutations)await t.test(label,async t=>{
-    const root=await fs.mkdtemp(path.join(os.tmpdir(),'u3-link-policy-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+    const root=await fs.mkdtemp(path.join(os.tmpdir(),'link-policy-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
     await fs.cp(skill,root,{recursive:true});const changed=mutate(original);assert.notEqual(changed,original,label);
     await fs.writeFile(path.join(root,relative),changed);
     assert.ok((await checkDistributableSkill(root,LIFECYCLE_DISTRIBUTION_POLICY)).some(value=>value.includes('symlink hardlink capability must retain its fixed bounded call')),label);
   });
   for(const relative of ['runtime/lib/execution-publication.mjs','runtime/lib/lifecycle.mjs','runtime/other.mjs'])await t.test(`other ${relative}`,async t=>{
-    const root=await fs.mkdtemp(path.join(os.tmpdir(),'u3-link-boundary-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+    const root=await fs.mkdtemp(path.join(os.tmpdir(),'link-boundary-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
     await fs.mkdir(path.dirname(path.join(root,relative)),{recursive:true});await fs.writeFile(path.join(root,relative),original);
     assert.ok((await checkDistributableSkill(root,LIFECYCLE_DISTRIBUTION_POLICY)).some(value=>value.includes('must not execute')));
   });
   for(const policy of [{},EXECUTION_DISTRIBUTION_POLICY,ROADMAP_DISTRIBUTION_POLICY,RUNBOOK_DISTRIBUTION_POLICY]){
-    const root=await fs.mkdtemp(path.join(os.tmpdir(),'u3-link-other-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+    const root=await fs.mkdtemp(path.join(os.tmpdir(),'link-other-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
     await fs.mkdir(path.join(root,'runtime/lib'),{recursive:true});await fs.writeFile(path.join(root,relative),original);
     assert.ok((await checkDistributableSkill(root,policy)).some(value=>value.includes('must not execute')));
   }

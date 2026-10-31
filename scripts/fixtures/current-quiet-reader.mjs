@@ -25,7 +25,7 @@ const DELIVERY_IDS=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8
 
 export async function authoredImage({kind='standalone',withExecution=true}={}) {
   const prior=await import('./current-initial-preparation.mjs');
-  const scratch=path.join(repo,'tmp','u3-reconstruction','l25-test-runs');
+  const scratch=path.join(repo,'tmp','current-quiet-reader','test-runs');
   await fsp.mkdir(scratch,{recursive:true});
   const temporary=await fsp.mkdtemp(path.join(scratch,'stnl-quiet-reader-'));
   const project=path.join(temporary,'repo with spaces');

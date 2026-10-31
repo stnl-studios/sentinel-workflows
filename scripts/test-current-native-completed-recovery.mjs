@@ -74,7 +74,7 @@ test('operational APPLY mixed owner preserves its first baseline through FAIL an
   const final=await captureCurrentExecution(f.specPath);assert.equal(final.inspection.normalHandoff.operation,'VALIDATE_SLICE');
 });
 
-test('D1 N1 completed v3 publishes concluded rejection and admits only one inherited successor',async t=>{
+test('completed v3 publishes concluded rejection and admits only one inherited successor',async t=>{
   const f=await completedNativeCase(t),before=await captureCurrentExecution(f.specPath);
   const result=await normalizedFormal(f,{invalid:true});assert.equal(result.published.transition.outcome,'rejected');
   const rejected=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(rejected.files.get('continuity.json'))).deliveries[0];
@@ -88,7 +88,7 @@ test('D1 N1 completed v3 publishes concluded rejection and admits only one inher
   await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:final.inspection.activationId}),error=>error.code==='NORMALIZATION_NOT_ELIGIBLE');
 });
 
-test('D1 N1 completed v3 third concluded rejection exhausts after two corrections',async t=>{
+test('completed v3 third concluded rejection exhausts after two corrections',async t=>{
   const f=await completedNativeCase(t);await normalizedFormal(f,{invalid:true});
   await normalizedFormal(f,{successor:true,invalid:true});
   await normalizedFormal(f,{successor:true,invalid:true});const image=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
@@ -97,7 +97,7 @@ test('D1 N1 completed v3 third concluded rejection exhausts after two correction
 });
 
 
-test('D1 N1 judgment variant preserves malformed final bytes and admits one completed successor',async t=>{
+test('judgment variant preserves malformed final bytes and admits one completed successor',async t=>{
   const f=await completedNativeCase(t),responseVariant='stnl-current-native-judgment-v1';
   const first=await normalizedFormal(f,{invalid:true,responseVariant,invalidText:'{first official-shaped mechanical refusal'});
   assert.equal(first.captured.captureClass,'formal-rejection');
@@ -109,7 +109,7 @@ test('D1 N1 judgment variant preserves malformed final bytes and admits one comp
 });
 
 
-test('D1 N2 rejected EXECUTE gets a new owner with only the original remaining budget',async t=>{
+test('rejected EXECUTE gets a new owner with only the original remaining budget',async t=>{
   const f=await completedPristineCase(t),first=await execute(f,{invalid:true});await publish(first.start.handle);
   const rejected=await captureCurrentExecution(f.specPath),c=JSON.parse(Buffer.from(rejected.files.get('continuity.json'))).deliveries[0];
   assert.equal(c.normalization.status,'settled');assert.equal(c.normalization.consumedInvocations,1);
@@ -125,7 +125,7 @@ test('D1 N2 rejected EXECUTE gets a new owner with only the original remaining b
   await formal(f);assert.equal((await captureCurrentExecution(f.specPath)).inspection.deliveries[0].formalStatus,'PASS');
 });
 
-test('D1 N2 FAIL then rejected invocation two leaves exactly invocation three',async t=>{
+test('FAIL then rejected invocation two leaves exactly invocation three',async t=>{
   const f=await completedPristineCase(t),first=await execute(f,{statuses:['TESTS_FAIL','TESTS_PASS'],invalid:true,invalidAt:2});
   await publish(first.start.handle);const rejected=await captureCurrentExecution(f.specPath);
   const c=JSON.parse(Buffer.from(rejected.files.get('continuity.json'))).deliveries[0];
@@ -137,7 +137,7 @@ test('D1 N2 FAIL then rejected invocation two leaves exactly invocation three',a
 });
 
 
-test('D1 N3 converted v3 with completed supports two actual private recipe reviews',async t=>{
+test('converted v3 with completed supports two actual private recipe reviews',async t=>{
   const f=await completedNativeCase(t,{drift:false}),before=await captureCurrentExecution(f.specPath);
   for(const round of [1,2]) {
     const image=await captureCurrentExecution(f.specPath),input=reviewInput(image,round),proposal=prepareCurrentLocalReview(input);
@@ -157,7 +157,7 @@ test('D1 N3 converted v3 with completed supports two actual private recipe revie
   assert.equal(c.localRevision,3);assert.equal(c.counters.validationAttempts,before.inspection.deliveries[0].counters.validationAttempts+2);
 });
 
-test('D1 N4 EXECUTE preserves removal bytes before the private output disappears and formal proves absence',async t=>{
+test('EXECUTE preserves removal bytes before the private output disappears and formal proves absence',async t=>{
   const f=await completedPristineCase(t,{extraOutput:true});
   const removed=await fs.readFile(path.join(f.root,'other/obsolete module.mjs'));
   const operation=await execute(f,{beforeReserve:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'))});
@@ -169,7 +169,7 @@ test('D1 N4 EXECUTE preserves removal bytes before the private output disappears
 });
 
 
-test('D1 N1 current v1 formal rejection with completed publishes and consumes one successor',async t=>{
+test('current v1 formal rejection with completed publishes and consumes one successor',async t=>{
   const f=await completedPristineCase(t),implementation=await execute(f);await publish(implementation.start.handle);
   await normalizedFormal(f,{invalid:true,responseVariant:'stnl-current-native-judgment-v1'});
   const rejected=await captureCurrentExecution(f.specPath),c=JSON.parse(Buffer.from(rejected.files.get('continuity.json'))).deliveries[0];
@@ -179,7 +179,7 @@ test('D1 N1 current v1 formal rejection with completed publishes and consumes on
   assert.equal(final.inspection.deliveries[0].formalStatus,'PASS');assert.equal(final.inspection.deliveries[0].counters.validationAttempts,1);
 });
 
-test('D1 N1 converted v4 formal refusal after APPLY preserves findings until its one successor',async t=>{
+test('converted v4 formal refusal after APPLY preserves findings until its one successor',async t=>{
   const f=await completedBlockingCase(t),start=await startCompletedApply(f);
   await completedApplyRound(f,start,{edit:'export const greeting="hello";\n'});await publish(start.handle);
   const before=await captureCurrentExecution(f.specPath);
@@ -191,7 +191,7 @@ test('D1 N1 converted v4 formal refusal after APPLY preserves findings until its
 });
 
 
-test('D1 N4 converted APPLY removal is witnessed before effect and survives the following v4 formal',async t=>{
+test('converted APPLY removal is witnessed before effect and survives the following v4 formal',async t=>{
   const f=await completedBlockingCase(t,{extraOutput:true}),start=await startCompletedApply(f);
   const bytes=await fs.readFile(path.join(f.root,'other/obsolete module.mjs'));
   await completedApplyRound(f,start,{edit:'export const greeting="hello";\n',beforeVerify:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'))});
@@ -205,7 +205,7 @@ test('D1 N4 converted APPLY removal is witnessed before effect and survives the 
 });
 
 
-test('D1 N3 closed converted v4 findings permits an approved private recipe review and fresh formal',async t=>{
+test('closed converted v4 findings permits an approved private recipe review and fresh formal',async t=>{
   const f=await completedBlockingCase(t),start=await startCompletedApply(f);
   await completedApplyRound(f,start,{edit:'export const greeting="hello";\n'});await publish(start.handle);
   await completedFormal(f,{references:'finding-01',dispositions:'finding-01=resolved'});
@@ -221,7 +221,7 @@ test('D1 N3 closed converted v4 findings permits an approved private recipe revi
 });
 
 
-test('D1 N5 typed recipe and SPEC/workspace/product paths with spaces use the normal vertical',async t=>{
+test('typed recipe and SPEC/workspace/product paths with spaces use the normal vertical',async t=>{
   const f=await completedPristineCase(t,{spaces:true,extraOutput:true});
   assert.ok(f.root.includes(' '));assert.ok(f.specPath.includes(' '));assert.ok(f.productFile.includes(' '));assert.ok(f.testFile.includes(' '));
   const operation=await execute(f,{beforeReserve:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'))});
@@ -231,7 +231,7 @@ test('D1 N5 typed recipe and SPEC/workspace/product paths with spaces use the no
 });
 
 
-test('D1 N2 identical malformed EXECUTE stops after two corrections without a fourth owner',async t=>{
+test('identical malformed EXECUTE stops after two corrections without a fourth owner',async t=>{
   const sameInvalid=async({file})=>{const tool=JSON.parse(await fs.readFile(file));tool.finalResponse='IDENTICAL_INVALID_EXECUTE_RESPONSE';await fs.writeFile(file,JSON.stringify(tool)+'\n');};
   const f=await completedPristineCase(t),first=await execute(f,{beforeCapture:sameInvalid});await publish(first.start.handle);
   const second=await execute(f,{successor:true,beforeCapture:sameInvalid});await publish(second.start.handle);
@@ -243,7 +243,7 @@ test('D1 N2 identical malformed EXECUTE stops after two corrections without a fo
   await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
 });
 
-test('D1 N2 refusal in invocation five consumes the local margin and forbids a successor',async t=>{
+test('refusal in invocation five consumes the local margin and forbids a successor',async t=>{
   const f=await completedPristineCase(t),first=await execute(f,{statuses:['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL','TESTS_FAIL','TESTS_PASS'],invalid:true,invalidAt:5});
   await publish(first.start.handle);const image=await captureCurrentExecution(f.specPath),c=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
   assert.equal(c.counters.implementationChecks,4);assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,5);
@@ -251,7 +251,7 @@ test('D1 N2 refusal in invocation five consumes the local margin and forbids a s
   await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
 });
 
-test('D1 N1 current v1 third formal refusal exhausts without consuming a formal ID',async t=>{
+test('current v1 third formal refusal exhausts without consuming a formal ID',async t=>{
   const f=await completedPristineCase(t),implementation=await execute(f);await publish(implementation.start.handle);
   await normalizedFormal(f,{invalid:true});await normalizedFormal(f,{successor:true,invalid:true});
   await normalizedFormal(f,{successor:true,invalid:true});
@@ -260,7 +260,7 @@ test('D1 N1 current v1 third formal refusal exhausts without consuming a formal 
   assert.equal(image.inspection.normalHandoff,null);
 });
 
-test('D1 N1 current v2 refusal after APPLY has exactly one formal successor',async t=>{
+test('current v2 refusal after APPLY has exactly one formal successor',async t=>{
   const f=await completedPristineCase(t),implementation=await execute(f);await publish(implementation.start.handle);
   await fs.writeFile(path.join(f.root,'other/greeting.mjs'),'export const greeting="broken";\n');
   const finding={id:'finding-01',severity:'blocking',originAttempt:'attempt-01',problem:'Greeting violates the approved requirement.',
@@ -273,14 +273,14 @@ test('D1 N1 current v2 refusal after APPLY has exactly one formal successor',asy
 });
 
 
-test('D1 N2 ordinary FAIL in the successor keeps only its final original invocation',async t=>{
+test('ordinary FAIL in the successor keeps only its final original invocation',async t=>{
   const f=await completedPristineCase(t),first=await execute(f,{invalid:true});await publish(first.start.handle);
   const second=await execute(f,{successor:true,statuses:['TESTS_FAIL','TESTS_PASS']});await publish(second.start.handle);
   const image=await captureCurrentExecution(f.specPath);assert.equal(image.inspection.deliveries[0].counters.implementationChecks,2);
   assert.equal(image.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
 });
 
-for(const defect of ['missing','foreign-owner','wrong-mode','wrong-bytes'])test(`D1 N4 removal proof ${defect} blocks incorporation and preserves its first response`,async t=>{
+for(const defect of ['missing','foreign-owner','wrong-mode','wrong-bytes'])test(`removal proof ${defect} blocks incorporation and preserves its first response`,async t=>{
   const f=await completedPristineCase(t,{extraOutput:true});let capturedInput;
   await assert.rejects(()=>execute(f,{beforeReserve:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs')),
     beforeCapture:async input=>{
@@ -300,7 +300,7 @@ for(const defect of ['missing','foreign-owner','wrong-mode','wrong-bytes'])test(
 });
 
 
-test('D1 N3 private review after a normalized converted formal keeps required proof until fresh validation',async t=>{
+test('private review after a normalized converted formal keeps required proof until fresh validation',async t=>{
   const f=await completedNativeCase(t);await normalizedFormal(f,{invalid:true});await normalizedFormal(f,{successor:true});
   const image=await captureCurrentExecution(f.specPath),input=reviewInput(image,1),proposal=prepareCurrentLocalReview(input);
   const review={...proposal.reviewRequest,decision:'approved',summary:'Controlled independent review after a concluded normalization.',
@@ -312,7 +312,7 @@ test('D1 N3 private review after a normalized converted formal keeps required pr
 });
 
 
-test('D1 N3 repeated converted private reviews preserve an independently active native sibling',async t=>{
+test('repeated converted private reviews preserve an independently active native sibling',async t=>{
   const f=await completedNativeCase(t,{drift:false,retire:false}),before=await captureCurrentExecution(f.specPath);
   const a=JSON.parse(Buffer.from(before.files.get('continuity.json'))).deliveries[0],aBytes=before.files.get(a.evidence.path);
   for(const round of [1,2]) {
@@ -328,7 +328,7 @@ test('D1 N3 repeated converted private reviews preserve an independently active 
 });
 
 
-test('D1 N3/N4 private recipe reviews retain exactly the removed output witness across fresh formal proof',async t=>{
+test('private recipe reviews retain exactly the removed output witness across fresh formal proof',async t=>{
   const f=await completedBlockingCase(t,{extraOutput:true}),start=await startCompletedApply(f);
   await completedApplyRound(f,start,{edit:'export const greeting="hello";\n',beforeVerify:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'))});
   await publish(start.handle);await completedFormal(f,{references:'finding-01',dispositions:'finding-01=resolved'});
@@ -352,7 +352,7 @@ test('D1 N3/N4 private recipe reviews retain exactly the removed output witness 
 });
 
 
-test('D1 N2 concluded malformed EXECUTE preserves a blocked receipt without inventing Tested state',async t=>{
+test('concluded malformed EXECUTE preserves a blocked receipt without inventing Tested state',async t=>{
   const f=await completedPristineCase(t),first=await execute(f,{beforeCapture:async({file})=>{
     const tool=JSON.parse(await fs.readFile(file));tool.finalResponse='{first malformed mechanical result';await fs.writeFile(file,JSON.stringify(tool)+'\n');
   }});
@@ -366,7 +366,7 @@ test('D1 N2 concluded malformed EXECUTE preserves a blocked receipt without inve
 });
 
 
-test('D1 N2 coherently resealed counters cannot reset the rejected episode',async t=>{
+test('coherently resealed counters cannot reset the rejected episode',async t=>{
   const f=await completedPristineCase(t),first=await execute(f,{invalid:true});await publish(first.start.handle);
   const image=await captureCurrentExecution(f.specPath),original=JSON.parse(Buffer.from(image.files.get('continuity.json')));
   for(const field of ['consumedInvocations','causeSha256','sourceOperationAttemptId']) {
@@ -384,7 +384,7 @@ test('D1 N2 coherently resealed counters cannot reset the rejected episode',asyn
 });
 
 
-test('D1 N3 private review after normalized EXECUTE keeps its first formal and inherited source authority',async t=>{
+test('private review after normalized EXECUTE keeps its first formal and inherited source authority',async t=>{
   const f=await completedPristineCase(t),first=await execute(f,{invalid:true});await publish(first.start.handle);
   const second=await execute(f,{successor:true});await publish(second.start.handle);
   const image=await captureCurrentExecution(f.specPath),input=reviewInput(image,1),proposal=prepareCurrentLocalReview(input);
@@ -398,7 +398,7 @@ test('D1 N3 private review after normalized EXECUTE keeps its first formal and i
 });
 
 
-test('D1 N2 a coherently rebound source cannot claim a different predecessor closure',async t=>{
+test('a coherently rebound source cannot claim a different predecessor closure',async t=>{
   const f=await completedPristineCase(t),first=await execute(f,{invalid:true});await publish(first.start.handle);
   const second=await execute(f,{successor:true});await publish(second.start.handle);
   const image=await captureCurrentExecution(f.specPath),continuity=JSON.parse(Buffer.from(image.files.get('continuity.json'))),current=continuity.deliveries[0];
@@ -416,7 +416,7 @@ test('D1 N2 a coherently rebound source cannot claim a different predecessor clo
   await assert.rejects(()=>captureCurrentExecution(f.specPath),/predecessor closure/);
 });
 
-for(const removalAt of ['refusal','successor','successor-after-FAIL','successor-review-exhausted'])test(`D1 N2/N4 retained normalized EXECUTE removal keeps its exact predecessor closure (${removalAt})`,async t=>{
+for(const removalAt of ['refusal','successor','successor-after-FAIL','successor-review-exhausted'])test(`retained normalized EXECUTE removal keeps its exact predecessor closure (${removalAt})`,async t=>{
   const f=await completedPristineCase(t,{extraOutput:true});
   const deleted=await fs.readFile(path.join(f.root,'other/obsolete module.mjs'));
   const first=await execute(f,{invalid:true,...(removalAt==='successor-after-FAIL'?{statuses:['TESTS_FAIL','TESTS_PASS'],invalidAt:2}:{}),
@@ -465,7 +465,7 @@ for(const removalAt of ['refusal','successor','successor-after-FAIL','successor-
   assert.deepEqual(Buffer.from(JSON.parse(Buffer.from(bundle.objects.find(item=>item.id===proofs[0]).bytesBase64,'base64')).bytesBase64,'base64'),deleted);
 });
 
-for(const removalAt of ['successor','refusal'])for(const exhausted of removalAt==='successor'?[false,true]:[false])test(`D1 N3/N4 normalized APPLY removal survives private review and fresh formal; removalAt=${removalAt}; exhausted=${exhausted}`,async t=>{
+for(const removalAt of ['successor','refusal'])for(const exhausted of removalAt==='successor'?[false,true]:[false])test(`normalized APPLY removal survives private review and fresh formal; removalAt=${removalAt}; exhausted=${exhausted}`,async t=>{
   const f=await completedBlockingCase(t,{extraOutput:true}),first=await startCompletedApply(f);
   await completedApplyRound(f,first,{invalid:true,...(removalAt==='refusal'?{beforeVerify:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'))}:{})});await publish(first.handle);
   const next=await startCompletedApply(f,{successor:true});

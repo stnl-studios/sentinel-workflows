@@ -275,7 +275,7 @@ test('EC-1 normalization: formal HEAD and proof failures cannot become a rejecti
   });
 });
 
-test('EC-1 normalization: Q22 rejection and successor readers trap caught historical access',async t=>{
+test('normalization after rejection and successor reads exposes any access to historical evidence',async t=>{
   const worker=path.resolve('scripts/fixtures/current-quiet-reader.mjs');
   const readers=['stnl-slice-executor','stnl-slice-quality-manager'].map(name=>
     path.resolve('skills/workflows',name,'runtime/execution-current-reader.mjs'));
@@ -287,7 +287,7 @@ test('EC-1 normalization: Q22 rejection and successor readers trap caught histor
     await fs.mkdir(path.dirname(canary),{recursive:true});
     await fs.writeFile(canary,'historical canary\n');
     for(const reader of readers) {
-      const log=path.join(fixture.root,'tmp',`q22-${path.basename(path.dirname(reader))}-${successor}.json`);
+      const log=path.join(fixture.root,'tmp',`normalization-recovery-${path.basename(path.dirname(reader))}-${successor}.json`);
       const command=mode=>run(process.execPath,[worker,'--worker',mode,reader,
         fixture.specPath,log,fixture.root],{timeout:20000});
       await command('canary-caught');

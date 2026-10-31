@@ -1554,7 +1554,7 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
             retainedBackup:await stat(backup)?backup:null,activation,expectedActivationId:activation.activationId};
         }
       }
-      // Retain previous approved snapshots/evidence with their ownership marker until U2 retention policy.
+      // Retain previous approved snapshots/evidence with their ownership marker until the retention policy allows cleanup.
       return { publication: 'confirmed', cleanup: retired?'complete':currentReplacement?'pending':'complete', retainedBackup: retired?null:moved ? backup : null, allocation: marker,
         activation, expectedActivationId: activation?.activationId ?? null };
     } catch (error) {
@@ -1637,7 +1637,7 @@ async function assertPreparationAllocationRoot(record) {
 }
 
 // Immutable creation associations, separate from freely edited candidate bytes.
-// The path comes only from the independently resolved official workspace/U1 lock.
+// The path comes only from the independently resolved official workspace initialization lock.
 export async function preparationRegistryPath(workspace) {
   return (await resolveExecutionFilesystemRoots(workspace)).preparationRegistry;
 }

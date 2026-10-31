@@ -46,7 +46,7 @@ test('EC-1 private drift reserves one same-owner recheck and retains both PASS c
   const worker=path.resolve('scripts/fixtures/current-quiet-reader.mjs');
   for(const skill of ['stnl-slice-executor','stnl-slice-quality-manager']) {
     const reader=path.resolve('skills/workflows',skill,'runtime/execution-current-reader.mjs');
-    const log=path.join(c.fixture.root,'tmp',`product-drift-q22-${skill}.json`);
+    const log=path.join(c.fixture.root,'tmp',`product-drift-${skill}.json`);
     const command=mode=>run(process.execPath,[worker,'--worker',mode,reader,
       c.fixture.specPath,log,c.fixture.root],{timeout:20000});
     await command('canary-caught');

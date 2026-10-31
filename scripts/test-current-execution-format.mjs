@@ -58,7 +58,7 @@ function rejectionSupport(bundle) {
     sources: {...clone(bundle.validation.sources), verificationObservation: null},
   };
 }
-function b1(api) {
+function validatesCurrentAuthorityAndProjection(api) {
   const image = minimalImage();
   const expectedPreimages = [PREPARATION_PREIMAGE, GLOBAL_REVIEW_PREIMAGE, DELIVERY_PREIMAGE];
   for (const literal of expectedPreimages) assert.equal(typeof literal, 'string');
@@ -103,7 +103,7 @@ function b1(api) {
   rejects(() => api.validateCurrentImage({activationBytes: image.activationBytes, files: image.files}), 'INVALID_CURRENT_IMAGE');
 }
 
-function b2(api) {
+function resolvesLogicalPathsIndependentlyOfCurrentDirectory(api) {
   const originalCwd = process.cwd();
   process.chdir(os.tmpdir());
   try {
@@ -137,7 +137,7 @@ function b2(api) {
   } finally { process.chdir(originalCwd); }
 }
 
-function b3(api) {
+function rejectsMalformedImagesAndUnsafePaths(api) {
   const context = process.platform === 'win32' ? {
     logicalSpecRoot: 'C:\\work\\repo\\specs\\pay', logicalAuthorityPath: 'C:\\work\\repo\\specs\\pay\\feature_spec.md',
     logicalExecutionRoot: 'C:\\work\\repo\\specs\\pay\\execution', physicalExecutionRoot: 'C:\\work\\repo\\specs\\pay\\execution', productRoot: 'C:\\work\\repo',
@@ -227,7 +227,7 @@ function b3(api) {
   assert.equal(getterCalled, false);
 }
 
-function b4(api) {
+function validatesEvidenceOwnershipAndSupportedFormats(api) {
   const bundle = proofBundle({externalLiteral: '/legacy/receipt/only-a-literal.json'});
   const image = fixtureWithEvidence(bundle);
   const result = api.validateCurrentImage({activationBytes: image.activationBytes, files: image.files});
@@ -245,7 +245,7 @@ function b4(api) {
 
 }
 
-function b5(api) {
+function validatesEvidenceObjectHashesAndOrdering(api) {
   const base = proofBundle();
   const rawChanged = clone(base); rawChanged.objects[0].bytesBase64 = Buffer.from('abc\n').toString('base64');
   const rawImage = fixtureWithEvidence(rawChanged);
@@ -321,7 +321,7 @@ function b5(api) {
     projectionHash('preparation', PREPARATION_PREIMAGE.replace('One serial delivery.', 'One ç\\nline.')));
 }
 
-function b6(api) {
+function rejectsLegacyCurrentEvidenceFields(api) {
   for (const [field, legacy] of [['workCapture', '/old/work-capture.json'], ['receiptFile', '/old/receipt.json']]) {
     const oldAttempt = minimalImage();
     oldAttempt.activation.lastAttempt = {
@@ -340,7 +340,7 @@ function b6(api) {
   rejects(() => api.validateCurrentImage({activationBytes: oldProjection.activationBytes, files: oldProjection.files}), 'UNSUPPORTED_FORMAT');
 }
 
-function b7(api) {
+function validatesCompletedEvidenceAndContinuity(api) {
   const bundle = proofBundle();
   const image = completedImage(bundle);
   const result = api.validateCurrentImage({activationBytes: image.activationBytes, files: image.files});
@@ -416,12 +416,20 @@ function b7(api) {
   rejects(() => api.validateCurrentEvidence(duplicateOrdinal), 'INVALID_CURRENT_IMAGE');
 }
 
-const checks = [b1, b2, b3, b4, b5, b6, b7];
-for (let index = 0; index < checks.length; index += 1) {
-  test(`B${index + 1} — EC-1 contract and independent oracle`, () => checks[index](current));
+const checks = [
+  ['validates current authority and projection', validatesCurrentAuthorityAndProjection],
+  ['resolves logical paths independently of current directory', resolvesLogicalPathsIndependentlyOfCurrentDirectory],
+  ['rejects malformed images and unsafe paths', rejectsMalformedImagesAndUnsafePaths],
+  ['validates evidence ownership and supported formats', validatesEvidenceOwnershipAndSupportedFormats],
+  ['validates evidence object hashes and ordering', validatesEvidenceObjectHashesAndOrdering],
+  ['rejects legacy current evidence fields', rejectsLegacyCurrentEvidenceFields],
+  ['validates completed evidence and continuity', validatesCompletedEvidenceAndContinuity],
+];
+for (const [name, check] of checks) {
+  test(name, () => check(current));
 }
 
-test('B8 — seven identical, self-contained distributed modules reproduce B1–B7', async () => {
+test('seven identical, self-contained distributed modules reproduce the format checks', async () => {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'stnl-ec1-isolated-'));
   try {
     const bytes = await Promise.all(modulePaths.map(file => fs.readFile(path.join(root, file))));
@@ -433,9 +441,9 @@ test('B8 — seven identical, self-contained distributed modules reproduce B1–
       const isolated = path.join(directory, 'execution-current.mjs');
       await fs.writeFile(isolated, bytes[index]);
       const api = await import(pathToFileURL(isolated).href);
-      for (let proof = 0; proof < checks.length; proof += 1) {
-        try { checks[proof](api); }
-        catch (error) { error.message = `copy ${index + 1}, B${proof + 1}: ${error.message}`; throw error; }
+      for (const [name, check] of checks) {
+        try { check(api); }
+        catch (error) { error.message = `copy ${index + 1}, ${name}: ${error.message}`; throw error; }
       }
     }
   } finally {

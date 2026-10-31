@@ -113,10 +113,9 @@ O runner faz parte do handoff da operação. Não existe uma etapa manual separa
 | `templates/prompts/` | Prompts curtos para operações explícitas |
 | `scripts/sentinel-install.mjs` | Instalação global, prévia e seleção de cliente |
 | `integrations/` | Helpers de descoberta dos clientes no checkout; não são instalados como etapas de workflow |
-| `benchmarks/` | Bancada separada para desenvolvimento e avaliação; não é incluída nos pacotes dos clientes |
-| `maintenance/` | Planos e registros de decisão para mantenedores; não são distribuídos |
+| `benchmarks/` | Ferramenta independente para avaliar fluxos em um workspace isolado; não é incluída nos pacotes dos clientes |
 
-O SDK do adapter Codex e os artefatos de App Server apoiam o desenvolvimento e a avaliação no repositório. Eles não fazem parte do pacote normal de skills e agents. Campanhas de benchmark e saídas temporárias também ficam fora do pacote de produto.
+Os pacotes dos clientes contêm somente as skills e os agents administrados pelo instalador. Os helpers locais do Codex e as ferramentas de benchmark permanecem no repositório e fora da distribuição instalada.
 
 ## Limites e evidências
 
