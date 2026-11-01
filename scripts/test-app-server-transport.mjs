@@ -315,8 +315,16 @@ for(const mode of ['existing-evidence','malformed-evidence','invalid-identity','
 test(`pre-dispatch refusal preserves safe preparation category (${mode})`,async t=>{
   const f=await fixture(t),s=server({bundle:f.bundle,cwd:f.root,provider:true});
   if(mode==='offline-client'){
-    await assert.rejects(createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root}),
-      refuses('an explicit offline App Server provider is required for this fixture'));return;
+    const previous=process.env.STNL_OFFLINE_PROVIDER_CONTEXT;
+    process.env.STNL_OFFLINE_PROVIDER_CONTEXT='TEST_ONLY';
+    try {
+      await assert.rejects(createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root}),
+        refuses('an explicit offline App Server provider is required for this fixture'));
+    } finally {
+      if(previous===undefined)delete process.env.STNL_OFFLINE_PROVIDER_CONTEXT;
+      else process.env.STNL_OFFLINE_PROVIDER_CONTEXT=previous;
+    }
+    return;
   }
   const p=await createNativeProvider({snapshot:f.root,workspace:f.root,evidenceRoot:f.root,rpc:s.rpc});
   const args={prompt:'OFFLINE',workflowSkill:'stnl-slice-executor',model:'gpt-6-luna',effort:'high',operationId:'prepare-refusal',role:'author'};

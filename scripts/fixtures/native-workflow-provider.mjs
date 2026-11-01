@@ -103,10 +103,15 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
     } else if (operation === 'PLAN') {
       if (retainedPlanReturn && fault?.startsWith('plan-redelivery')) {
         if (!prompt.includes('handoff re-delivery only') || !prompt.includes(preparation.candidateExecutionRoot)
-          || !prompt.includes('Do not rerun')) throw new Error('redelivery lacks exact candidate and concrete feedback');
+          || !prompt.includes('do not rerun')) throw new Error(`redelivery lacks exact candidate and concrete feedback: ${JSON.stringify({
+            exactInstruction:prompt.includes('handoff re-delivery only'),
+            promptRoot:prompt.includes(preparation.candidateExecutionRoot),
+            preparationRoot:preparation.candidateExecutionRoot,
+            noRerun:prompt.includes('do not rerun')})}`);
         const attempt=operations.filter(item=>item.operation==='PLAN').length-1;
         if(fault==='plan-redelivery-missing-file') {
-          turn.items.push({id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'The preserved original file is absent; no handoff invented.'});return;
+          turn.items.push({id:randomUUID(),type:'agentMessage',phase:'final_answer',text:'The preserved original file is absent; no handoff invented.'});
+          command(turn.items,{status:'DRAFT',candidateExecutionRoot:preparation.candidateExecutionRoot});return;
         }
         if(fault==='plan-redelivery-exhausted'||fault==='plan-redelivery-twice'&&attempt<2) {
           command(turn.items,{status:'DRAFT',candidateExecutionRoot:preparation.candidateExecutionRoot});
@@ -138,7 +143,8 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
           && operations.filter(item=>item.operation==='PLAN').length===4) {
           retainedPlanReturn=path.join(caseRoot,'tmp/literal-plan-return.json');
           await fs.writeFile(retainedPlanReturn,JSON.stringify(preparation)+'\n');
-          command(turn.items,{});turn.items.at(-1).aggregatedOutput=JSON.stringify({stdoutFile:retainedPlanReturn})+'\n'+JSON.stringify({status:preparation.status});
+          command(turn.items,{});turn.items.at(-1).aggregatedOutput=JSON.stringify({stdoutFile:retainedPlanReturn})+'\n'+JSON.stringify({
+            status:preparation.status,candidateExecutionRoot:preparation.candidateExecutionRoot,publication:'not-started'});
         } else command(turn.items, preparation);
         return;
       }
@@ -161,9 +167,12 @@ export function offlineNativeWorkflow({ workspace, caseRoot, snapshot, fault = n
         await fs.writeFile(retainedPlanReturn, JSON.stringify(preparation) + '\n');
         command(turn.items, {});
         turn.items.at(-1).aggregatedOutput = JSON.stringify({ stdoutFile: retainedPlanReturn }) + '\n'
-          + JSON.stringify({ status: preparation.status, candidateExecutionRoot: preparation.candidateExecutionRoot });
+          + JSON.stringify({ status: preparation.status, candidateExecutionRoot: preparation.candidateExecutionRoot,
+            publication:'not-started' });
         if(fault==='plan-redelivery-missing-file')await fs.unlink(retainedPlanReturn);
-        if(fault==='plan-redelivery-no-allocation')turn.items=turn.items.filter(item=>!item.aggregatedOutput?.includes('"status":"DRAFT"'));
+        if(fault==='plan-redelivery-no-allocation')turn.items=turn.items.filter(item=>
+          !item.aggregatedOutput?.includes('"status":"DRAFT"')
+          &&!item.aggregatedOutput?.includes('"candidateExecutionRoot"'));
         if(fault==='plan-redelivery-denied')turn.items.push({id:randomUUID(),type:'commandExecution',status:'completed',exitCode:1,
           command:"zsh -lc 'cat <<EOF\nsynthetic\nEOF'",aggregatedOutput:"zsh:1: can't create temp file for here document: operation not permitted\n"});
       } else command(turn.items, preparation);

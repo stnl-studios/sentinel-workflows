@@ -6,12 +6,14 @@ import {createHash} from 'node:crypto';
 import {reseal,writeImage} from './fixtures/current-quiet-reader.mjs';
 import {completedBlockingCase,startCompletedApply,completedApplyRound,completedFormal} from './fixtures/current-completed-findings.mjs';
 import {completedPristineCase,execute,formal,reviewInput} from './fixtures/current-completed-pristine.mjs';
-import {completedNativeCase} from './fixtures/current-completed-native.mjs';
+import {completedNativeCase,reopeningInput} from './fixtures/current-completed-native.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {prepareCurrentLocalReview,finalizeCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs';
 import {publishCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/current-local-review.mjs';
-import {reserveDispatch,publish,normalizeSuccessor,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {begin,reserveDispatch,publish,normalizeSuccessor,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {preparePreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
+import {publishPreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
 
 for(const operation of ['EXECUTE_SLICE','APPLY_FINDINGS'])test(`operational producer recovery: ${operation} four corrected schema failures retain their lineage`,async t=>{
   const f=operation==='EXECUTE_SLICE'?await completedPristineCase(t):await completedBlockingCase(t);
@@ -37,6 +39,166 @@ for(const operation of ['EXECUTE_SLICE','APPLY_FINDINGS'])test(`operational prod
       await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
     }
   }
+});
+
+async function publishReviewedReplan({specPath,completedDeliveryIds,artifacts}) {
+  const draft=await preparePreparationCandidate({specPath,operation:'REPLAN',completedDeliveryIds});
+  for(const [name,bytes] of artifacts) {
+    const target=path.join(draft.candidateExecutionRoot,name);
+    await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,bytes);
+  }
+  const options={specPath,candidateExecutionRoot:draft.candidateExecutionRoot};
+  const prepared=await publishPreparationCandidate(options);
+  assert.equal(prepared.status,'AWAITING_REVIEW');
+  const approve=request=>({...structuredClone(request),decision:'approved',
+    summary:'Controlled exact-artifact review for this offline Q19 regression.',
+    evidenceDecisions:request.evidenceDecisions.map(item=>({...item,reason:'Bind the exact reviewed evidence and selected retention or revalidation.'}))});
+  const review={globalReview:approve(prepared.reviewRequest.globalReview),
+    deliveries:prepared.reviewRequest.deliveries.map(item=>({deliveryId:item.deliveryId,review:approve(item.review)}))};
+  const result=await publishPreparationCandidate({...options,reviewDecision:review});
+  assert.equal(result.publication,'confirmed');
+  assert.equal(result.cleanup,'complete');
+}
+
+async function publicQ18Q19Fixture(t,{extraOutput=true}={}) {
+  const f=await completedNativeCase(t,{drift:false,extraOutput,retire:false});
+  let image=await captureCurrentExecution(f.specPath);
+  let continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const active=continuity.deliveries;
+  const q18Artifacts=new Map(['plan.md','tasks.md'].map(name=>[name,Buffer.from(Buffer.from(image.files.get(name)).toString('utf8')
+    .split('\n').filter(line=>!active.some(item=>line.includes(`| ${item.slice.slice(6)} - `))).join('\n'))]));
+  await publishReviewedReplan({specPath:f.specPath,
+    completedDeliveryIds:[...continuity.completed,...active].map(item=>item.deliveryId),artifacts:q18Artifacts});
+
+  image=await captureCurrentExecution(f.specPath);continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const reopening=reopeningInput(image,f.delivery.deliveryId);
+  await publishReviewedReplan({specPath:f.specPath,completedDeliveryIds:reopening.completedDeliveryIds,
+    artifacts:reopening.artifacts});
+  image=await captureCurrentExecution(f.specPath);
+  assert.equal(image.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
+  assert.equal(image.inspection.deliveries[0].persistedValidation,'revalidation-required');
+  await assert.rejects(()=>begin({specPath:f.specPath,slice:f.delivery.slice,operation:'EXECUTE_SLICE',
+    expectedActivationId:image.inspection.activationId}),error=>error.code==='UNSUPPORTED_FORMAT');
+  return {f,image};
+}
+
+test('public Q18 then Q19 APPLY removal survives private review and fresh formal',async t=>{
+  const {f,image:initialImage}=await publicQ18Q19Fixture(t);let image=initialImage;
+
+  await fs.writeFile(path.join(f.root,'other/greeting.mjs'),'export const greeting="broken";\n');
+  const finding={id:'finding-01',severity:'blocking',originAttempt:'attempt-03',
+    problem:'The approved greeting export regressed.',evidence:'The prepared test observes broken instead of hello.',
+    impact:'AC-002 is unmet.',relatedAuthority:'AC-002; obligation-01',expectedCorrection:'Restore the greeting export to hello.'};
+  await completedFormal(f,{status:'NEEDS_FIX',findings:[finding],references:'finding-01',dispositions:'finding-01=active'});
+  image=await captureCurrentExecution(f.specPath);
+  assert.equal(image.inspection.normalHandoff?.operation,'APPLY_FINDINGS');
+  const start=await startCompletedApply(f);
+  await completedApplyRound(f,start,{edit:'export const greeting="hello";\n',
+    beforeVerify:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'))});
+  await publish(start.handle);
+  await completedFormal(f,{references:'finding-01',dispositions:'finding-01=resolved'});
+
+  const beforeReview=await captureCurrentExecution(f.specPath),input=reviewInput(beforeReview,2),proposal=prepareCurrentLocalReview(input);
+  const review={...proposal.reviewRequest,decision:'approved',summary:'Controlled exact private recipe review after Q19 APPLY.',
+    evidenceDecisions:proposal.reviewRequest.evidenceDecisions.map(item=>({...item,reason:'Revalidate this exact private recipe while retaining the captured removal proof.'}))};
+  await publishCurrentLocalReview({specPath:f.specPath,slice:f.delivery.slice,planBytes:input.planBytes,
+    reviewedTaskBytes:input.reviewedTaskBytes,currentTaskBytes:input.currentTaskBytes,review});
+  const firstRevalidation=await normalizedFormal(f,{invalid:true});
+  const recoveredRevalidation=await normalizedFormal(f,{successor:true});
+  const afterRecovery=await captureCurrentExecution(f.specPath),secondInput=reviewInput(afterRecovery,2),secondProposal=prepareCurrentLocalReview(secondInput);
+  const secondReview={...secondProposal.reviewRequest,decision:'approved',summary:'Controlled second private recipe review after Q19 recovery.',
+    evidenceDecisions:secondProposal.reviewRequest.evidenceDecisions.map(item=>({...item,reason:'Revalidate this exact recipe after the concluded refusal and successor while retaining the captured removal proof.'}))};
+  await publishCurrentLocalReview({specPath:f.specPath,slice:f.delivery.slice,planBytes:secondInput.planBytes,
+    reviewedTaskBytes:secondInput.reviewedTaskBytes,currentTaskBytes:secondInput.currentTaskBytes,review:secondReview});
+  const revalidation=await normalizedFormal(f);
+  const revalidationRequest=JSON.parse(await fs.readFile(revalidation.dispatch.requestFile));
+  assert.deepEqual(revalidationRequest.base.priorScopePaths,
+    ['other/greeting.mjs','other/greeting.test.mjs','other/obsolete module.mjs']);
+  const final=await captureCurrentExecution(f.specPath);
+  assert.equal(firstRevalidation.published.transition.outcome,'rejected');
+  assert.equal(recoveredRevalidation.published.transition.outcome,'recorded');
+  assert.equal(firstRevalidation.published.transition.counters.validationAttempts,
+    beforeReview.inspection.deliveries.find(item=>item.deliveryId===f.delivery.deliveryId).counters.validationAttempts);
+  assert.equal(recoveredRevalidation.published.transition.counters.validationAttempts,
+    beforeReview.inspection.deliveries.find(item=>item.deliveryId===f.delivery.deliveryId).counters.validationAttempts+1);
+  assert.equal(revalidation.published.transition.outcome,'recorded');
+  assert.equal(final.inspection.deliveries.find(item=>item.deliveryId===f.delivery.deliveryId).formalStatus,'PASS');
+  const current=JSON.parse(Buffer.from(final.files.get('continuity.json'))).deliveries.find(item=>item.deliveryId===f.delivery.deliveryId);
+  const bundle=JSON.parse(Buffer.from(final.files.get(current.evidence.path)));
+  const removalRefs=bundle.support.filter(item=>item.kind==='findings-check').flatMap(item=>item.sources.removalProofs??[]);
+  assert.equal(removalRefs.length,1);
+  const removal=JSON.parse(Buffer.from(bundle.objects.find(item=>item.id===removalRefs[0]).bytesBase64,'base64'));
+  assert.equal(removal.path,'other/obsolete module.mjs');
+  assert.equal(final.inspection.deliveries.find(item=>item.deliveryId===f.delivery.deliveryId).counters.validationAttempts,
+    beforeReview.inspection.deliveries.find(item=>item.deliveryId===f.delivery.deliveryId).counters.validationAttempts+2);
+});
+
+test('public Q18 then Q19 APPLY refusal successor retains a removed output through private review',async t=>{
+  const {f}=await publicQ18Q19Fixture(t);
+  await fs.writeFile(path.join(f.root,'other/greeting.mjs'),'export const greeting="broken";\n');
+  const finding={id:'finding-01',severity:'blocking',originAttempt:'attempt-03',
+    problem:'The approved greeting export regressed.',evidence:'The prepared test observes broken instead of hello.',
+    impact:'AC-002 is unmet.',relatedAuthority:'AC-002; obligation-01',expectedCorrection:'Restore the greeting export to hello.'};
+  await completedFormal(f,{status:'NEEDS_FIX',findings:[finding],references:'finding-01',dispositions:'finding-01=active'});
+  const first=await startCompletedApply(f);
+  await completedApplyRound(f,first,{invalid:true,beforeVerify:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'),{force:true})});
+  assert.equal((await publish(first.handle)).transition.outcome,'rejected');
+  const rejected=await captureCurrentExecution(f.specPath);
+  assert.equal(rejected.inspection.normalHandoff?.operation,'APPLY_FINDINGS');
+  const successor=await startCompletedApply(f,{successor:true});
+  await completedApplyRound(f,successor,{edit:'export const greeting="hello";\n'});
+  assert.equal((await publish(successor.handle)).transition.outcome,'recorded');
+  await completedFormal(f,{references:'finding-01',dispositions:'finding-01=resolved'});
+
+  const beforeReview=await captureCurrentExecution(f.specPath),input=reviewInput(beforeReview,2),proposal=prepareCurrentLocalReview(input);
+  const review={...proposal.reviewRequest,decision:'approved',summary:'Controlled private recipe review after Q19 APPLY refusal recovery.',
+    evidenceDecisions:proposal.reviewRequest.evidenceDecisions.map(item=>({...item,reason:'Revalidate the reviewed recipe while preserving the exact predecessor rejection and removal witness.'}))};
+  await publishCurrentLocalReview({specPath:f.specPath,slice:f.delivery.slice,planBytes:input.planBytes,
+    reviewedTaskBytes:input.reviewedTaskBytes,currentTaskBytes:input.currentTaskBytes,review});
+  const formal=await normalizedFormal(f);
+  assert.equal(formal.published.transition.outcome,'recorded');
+  const image=await captureCurrentExecution(f.specPath),current=JSON.parse(Buffer.from(image.files.get('continuity.json')))
+    .deliveries.find(item=>item.deliveryId===f.delivery.deliveryId),bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path)));
+  const rejections=bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='APPLY_FINDINGS');
+  assert.equal(rejections.length,1);
+  const checks=bundle.support.filter(item=>item.kind==='findings-check');
+  assert.equal(checks.length,1);
+  const removalRefs=[...rejections,...checks].flatMap(item=>item.sources.removalProofs??[]);
+  assert.equal(removalRefs.length,1);
+  const proof=JSON.parse(Buffer.from(bundle.objects.find(item=>item.id===removalRefs[0]).bytesBase64,'base64'));
+  assert.equal(proof.path,'other/obsolete module.mjs');
+  assert.equal(image.inspection.deliveries.find(item=>item.deliveryId===f.delivery.deliveryId).formalStatus,'PASS');
+
+  const tamperedContinuity=JSON.parse(Buffer.from(image.files.get('continuity.json'))),tamperedCurrent=tamperedContinuity.deliveries
+    .find(item=>item.deliveryId===f.delivery.deliveryId),tamperedBundle=JSON.parse(Buffer.from(image.files.get(tamperedCurrent.evidence.path)));
+  const refusal=tamperedBundle.support.find(item=>item.kind==='rejection'&&item.origin.operation==='APPLY_FINDINGS');
+  const originObject=tamperedBundle.objects.find(item=>item.id===refusal.sources.origin),origin=JSON.parse(Buffer.from(originObject.bytesBase64,'base64'));
+  const applyRequest=JSON.parse(origin.applyRequestUtf8);applyRequest.authority.delivery.deliveryId='99999999-9999-4999-8999-999999999999';
+  origin.applyRequestUtf8=JSON.stringify(applyRequest)+'\n';
+  const originBytes=Buffer.from(JSON.stringify(origin)+'\n'),originId='sha256:'+createHash('sha256').update(originBytes).digest('hex');
+  refusal.sources.origin=originId;originObject.id=originId;originObject.bytesBase64=originBytes.toString('base64');
+  tamperedBundle.objects.sort((left,right)=>left.id<right.id?-1:1);
+  const tamperedBytes=Buffer.from(JSON.stringify(tamperedBundle)+'\n');tamperedCurrent.evidence.sha256='sha256:'+createHash('sha256').update(tamperedBytes).digest('hex');
+  const tampered={execution:f.view.execution,activation:JSON.parse(Buffer.from(image.activationBytes)),
+    files:new Map([...image.files].map(([name,bytes])=>[name,Buffer.from(bytes)])),continuity:tamperedContinuity};
+  tampered.files.set(tamperedCurrent.evidence.path,tamperedBytes);reseal(tampered);await writeImage(tampered);
+  await assert.rejects(()=>captureCurrentExecution(f.specPath),error=>error.code==='EVIDENCE_STALE'
+    &&/retained APPLY predecessor bytes differ/u.test(error.message));
+  for(const [name,bytes]of image.files)await fs.writeFile(path.join(f.view.execution,name),bytes);
+  await fs.writeFile(path.join(f.view.execution,'activation.json'),image.activationBytes);
+});
+
+test('public Q18 completed set cannot be used to create a pristine Q19 execution',async t=>{
+  const f=await completedNativeCase(t,{drift:false,retire:false});
+  const image=await captureCurrentExecution(f.specPath),continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const active=continuity.deliveries;
+  const q18Artifacts=new Map(['plan.md','tasks.md'].map(name=>[name,Buffer.from(Buffer.from(image.files.get(name)).toString('utf8')
+    .split('\n').filter(line=>!active.some(item=>line.includes(`| ${item.slice.slice(6)} - `))).join('\n'))]));
+  await publishReviewedReplan({specPath:f.specPath,
+    completedDeliveryIds:[...continuity.completed,...active].map(item=>item.deliveryId),artifacts:q18Artifacts});
+  const afterQ18=await captureCurrentExecution(f.specPath),completed=JSON.parse(Buffer.from(afterQ18.files.get('continuity.json'))).completed;
+  await assert.rejects(()=>preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',
+    completedDeliveryIds:completed.map(item=>item.deliveryId)}),error=>error.code==='UNSUPPORTED_FORMAT');
 });
 
 test('operational EXECUTE recurrence uses authenticated Initial authority without an absent request',async t=>{
@@ -416,53 +578,31 @@ test('a coherently rebound source cannot claim a different predecessor closure',
   await assert.rejects(()=>captureCurrentExecution(f.specPath),/predecessor closure/);
 });
 
-for(const removalAt of ['refusal','successor','successor-after-FAIL','successor-review-exhausted'])test(`retained normalized EXECUTE removal keeps its exact predecessor closure (${removalAt})`,async t=>{
+// completedPristineCase deletes the native formal bundle and zeros consumed counters;
+// Q18 cannot create that state and public Q19 reopens an existing completed delivery
+// only for VALIDATE_SLICE. Keep all four mutation variants as fail-closed tests.
+// completedPristineCase deletes a formal bundle and resets consumption by fixture mutation;
+// it is not a public Q18/Q19 producer. Keep each former recovery variant fail-closed at
+// the first boundary that proves the missing authority or first formal anchor.
+for(const removalAt of ['refusal','successor','successor-after-FAIL','successor-review-exhausted'])test(`synthetic converted EXECUTE removal is rejected before APPLY recovery (${removalAt})`,async t=>{
   const f=await completedPristineCase(t,{extraOutput:true});
-  const deleted=await fs.readFile(path.join(f.root,'other/obsolete module.mjs'));
   const first=await execute(f,{invalid:true,...(removalAt==='successor-after-FAIL'?{statuses:['TESTS_FAIL','TESTS_PASS'],invalidAt:2}:{}),
     ...(removalAt==='refusal'?{beforeReserve:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'))}:{})});
   await publish(first.start.handle);
-  const second=await execute(f,{successor:true,...(removalAt!=='refusal'?{beforeReserve:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'))}:{})});await publish(second.start.handle);
+  if(removalAt==='refusal') {
+    const successor=await execute(f,{successor:true});
+    await assert.rejects(()=>publish(successor.start.handle),error=>error.code==='OWNER_MISMATCH');
+    return;
+  }
+  const second=await execute(f,{successor:true,beforeReserve:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'))});await publish(second.start.handle);
   await formal(f);
   await fs.writeFile(path.join(f.root,'other/greeting.mjs'),'export const greeting="broken";\n');
   const finding={id:'finding-01',severity:'blocking',originAttempt:'attempt-02',problem:'The greeting export regressed.',
     evidence:'The prepared assertion observes broken instead of hello.',impact:'AC-001 is unmet.',relatedAuthority:'AC-001; obligation-01',expectedCorrection:'Restore hello.'};
   await completedFormal(f,{status:'NEEDS_FIX',findings:[finding],references:'finding-01',dispositions:'finding-01=active'});
-  const start=await startCompletedApply(f);await completedApplyRound(f,start,{edit:'export const greeting="hello";\n'});await publish(start.handle);
-  if(removalAt.startsWith('successor')&&removalAt!=='successor-after-FAIL')await normalizedFormal(f,{invalid:true});
-  await completedFormal(f,{references:'finding-01',dispositions:'finding-01=resolved',successor:removalAt==='successor'||removalAt==='successor-review-exhausted'});
-  if(removalAt==='successor'||removalAt==='successor-review-exhausted') {
-    const before=await captureCurrentExecution(f.specPath),input=reviewInput(before,1),proposal=prepareCurrentLocalReview(input);
-    const review={...proposal.reviewRequest,decision:'approved',summary:'Controlled independent approval retaining the normalized EXECUTE removal closure.',
-      evidenceDecisions:proposal.reviewRequest.evidenceDecisions.map(item=>({...item,reason:'The private recipe changed; revalidate without rewriting the retained removal episode.'}))};
-    await publishCurrentLocalReview({specPath:f.specPath,slice:f.delivery.slice,planBytes:input.planBytes,
-      reviewedTaskBytes:input.reviewedTaskBytes,currentTaskBytes:input.currentTaskBytes,review});
-    await normalizedFormal(f,{invalid:true});
-    if(removalAt==='successor-review-exhausted') {
-      await normalizedFormal(f,{successor:true,invalid:true});
-      await normalizedFormal(f,{successor:true,invalid:true});
-    }
-    else await completedFormal(f,{successor:true});
-    if(removalAt==='successor') {
-      const previous=await captureCurrentExecution(f.specPath),next=reviewInput(previous,2),candidate=prepareCurrentLocalReview(next);
-      const approval={...candidate.reviewRequest,decision:'approved',summary:'Controlled independent second private recipe review after normalized formal proof.',
-        evidenceDecisions:candidate.reviewRequest.evidenceDecisions.map(item=>({...item,reason:'Revalidate the second private recipe change, preserving only demanded immutable witnesses.'}))};
-      await publishCurrentLocalReview({specPath:f.specPath,slice:f.delivery.slice,planBytes:next.planBytes,
-        reviewedTaskBytes:next.reviewedTaskBytes,currentTaskBytes:next.currentTaskBytes,review:approval});
-      await completedFormal(f);
-    }
-  }
-  const image=await captureCurrentExecution(f.specPath),c=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0],bundle=JSON.parse(Buffer.from(image.files.get(c.evidence.path)));
-  assert.equal(image.inspection.deliveries[0].formalStatus,removalAt==='successor-review-exhausted'?null:'PASS');
-  if(removalAt==='successor-review-exhausted') {
-    assert.equal(c.normalization.status,'exhausted');assert.equal(c.normalization.consumedInvocations,3);
-    assert.equal(c.counters.validationAttempts,3);assert.equal(image.inspection.normalHandoff,null);
-    await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:image.inspection.activationId}));
-  }
-  const checks=bundle.support.filter(item=>item.kind==='implementation-check');assert.equal(checks.length,removalAt==='successor-after-FAIL'?2:1);
-  const refusal=bundle.support.find(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE');assert.ok(refusal);assert.equal(refusal.operationAttemptId,first.start.owner.operationAttemptId);
-  const proofs=[...checks,refusal].flatMap(item=>item.sources.removalProofs);assert.equal(proofs.length,1);
-  assert.deepEqual(Buffer.from(JSON.parse(Buffer.from(bundle.objects.find(item=>item.id===proofs[0]).bytesBase64,'base64')).bytesBase64,'base64'),deleted);
+  const start=await startCompletedApply(f);await completedApplyRound(f,start,{edit:'export const greeting="hello";\n'});
+  await assert.rejects(()=>publish(start.handle),error=>error.code==='RUNNER_RESULT_REJECTED'
+    &&/retained implementation lacks its first formal anchor/u.test(error.message));
 });
 
 for(const removalAt of ['successor','refusal'])for(const exhausted of removalAt==='successor'?[false,true]:[false])test(`normalized APPLY removal survives private review and fresh formal; removalAt=${removalAt}; exhausted=${exhausted}`,async t=>{

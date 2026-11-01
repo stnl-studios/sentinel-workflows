@@ -114,8 +114,16 @@ test('a first operational proof with no decision requires every native source an
   await t.test('offline family',async()=>{const changed=structuredClone(bundle);changed.implementation[0].origin.transport='managed';await reject(changed,'UNSUPPORTED_FORMAT');});
 });
 
-for(const statuses of [['TESTS_FAIL','TESTS_PASS'],['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL']])test('current implementation budget '+statuses.join('/'),async t=>{
+for(const statuses of [['TESTS_FAIL','TESTS_PASS'],['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL'],
+  ['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL','TESTS_FAIL','TESTS_FAIL']])test('current implementation budget '+statuses.join('/'),async t=>{
   const f=await completedPristineCase(t),operation=await execute(f,{statuses});
+  if(statuses.length===3) {
+    assert.equal((await resume(operation.start.handle)).nextAction,'reserve-dispatch');
+    const fourth=await reserveDispatch(operation.start.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+    assert.equal(fourth.round,4);
+    await assert.rejects(()=>publish(operation.start.handle),error=>error.code==='OWNER_UNCERTAIN');
+    return;
+  }
   assert.equal((await resume(operation.start.handle)).nextAction,'publish');
   await assert.rejects(()=>reserveDispatch(operation.start.handle,{responseVariant:'stnl-current-native-judgment-v1'}),error=>error.code==='OWNER_UNCERTAIN');
   await publish(operation.start.handle);const image=await captureCurrentExecution(f.specPath);
@@ -194,7 +202,7 @@ test('uncertain metadata preserves A1 and cannot reserve a successor',async t=>{
 });
 
 test('first formal NEEDS_FIX connects to the already accepted corrective cycle',async t=>{
-  const f=await completedPristineCase(t),operation=await execute(f,{statuses:['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL']});await publish(operation.start.handle);
+  const f=await completedPristineCase(t),operation=await execute(f,{statuses:['TESTS_FAIL','TESTS_FAIL','TESTS_FAIL','TESTS_FAIL','TESTS_FAIL']});await publish(operation.start.handle);
   const finding={id:'finding-01',severity:'blocking',originAttempt:'attempt-01',problem:'The current greeting equals broken instead of hello.',evidence:'other/greeting.mjs exports broken and the prepared strict assertion fails.',impact:'AC-001/obligation-01 is not met.',relatedAuthority:'AC-001; obligation-01',expectedCorrection:'Restore the greeting export in other/greeting.mjs to hello.'};
   await formal(f,{status:'NEEDS_FIX',newFindings:[finding],references:'finding-01',dispositions:'finding-01=active'});
   const before=await captureCurrentExecution(f.specPath);assert.equal(before.inspection.normalHandoff?.operation,'APPLY_FINDINGS');
@@ -204,7 +212,7 @@ test('first formal NEEDS_FIX connects to the already accepted corrective cycle',
   const {applyPayload}=await import('./fixtures/current-findings-evidence.mjs');const {head,...result}=applyPayload(1,'TESTS_PASS',0);result.commands=observed.commands;result.findingsVerified='finding-01';result.unsupportedActiveFindings='none';
   const file=path.join(f.root,'controlled-pristine-apply.json');await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
   await captureNative(start.handle,file);await publish(start.handle);await formal(f,{references:'finding-01',dispositions:'finding-01=resolved'});
-  const after=await captureCurrentExecution(f.specPath);assert.equal(after.inspection.deliveries[0].formalStatus,'PASS');assert.deepEqual(after.inspection.deliveries[0].counters,{implementationChecks:3,validationAttempts:2,findingsChecks:1,findings:1});
+  const after=await captureCurrentExecution(f.specPath);assert.equal(after.inspection.deliveries[0].formalStatus,'PASS');assert.deepEqual(after.inspection.deliveries[0].counters,{implementationChecks:5,validationAttempts:2,findingsChecks:1,findings:1});
 });
 
 test('pristine excludes prior validation, diagnostic, normalization, consumption and active owner',async t=>{

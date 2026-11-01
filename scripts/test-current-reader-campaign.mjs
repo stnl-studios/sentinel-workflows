@@ -129,6 +129,18 @@ test('C02 existing native proof families compose with completed independently',a
     ['APPLY_BLOCKED',1,'NEEDS_FIX','BLOCKED'],['APPLY_PASS',1,'PASS','TESTS_PASS'],
     ['INITIAL_REFUSAL',1,null,null],['FORMAL_REFUSAL',1,null,'TESTS_PASS'],['APPLY_REFUSAL',1,'NEEDS_FIX',null],
   ]) await t.test(`${kind} ${rounds}`,async()=>using(()=>campaignImage({kind,rounds}),async f=>{
+    if(kind==='FAIL3') {
+      // Under the five-call budget, three initial failures are still a prefix.
+      // The quiet reader already guards against treating it as a completed cycle.
+      await rejected(()=>inspectCurrentExecution(f.specPath),'UNSUPPORTED_FORMAT','Initial FAIL prefix is not a completed quiet cycle');
+      return;
+    }
+    if(kind==='APPLY_REFUSAL') {
+      // This synthetic capture has no producer-concluded refusal; a dashboard
+      // normalization cannot manufacture the missing authoritative proof.
+      await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','normalization lacks its concluded refusal');
+      return;
+    }
     const before=await tree(f.project),result=await inspectCurrentExecution(f.specPath),b=result.deliveries[0];
     assert.equal(result.completed[0].observedValidation,'current');
     assert.equal(b.formalStatus,formalStatus);if(auxiliaryStatus!==null)assert.equal(b.auxiliaryStatus,auxiliaryStatus);
