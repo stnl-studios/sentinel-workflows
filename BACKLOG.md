@@ -6,6 +6,7 @@ Este backlog resume acompanhamentos e direções futuras do produto. Cada item e
 
 - **Uso nativo no Claude Code:** verificar o pacote instalado em uma sessão real, registrar incompatibilidades observadas e corrigir apenas defeitos reproduzíveis. A distribuição e seus contratos já têm cobertura offline; isso não substitui a verificação no cliente.
 - **Medição do benchmark:** a campanha funcional A/B/C passou, mas os dados de consumo e a cobertura de alguns turnos e auxiliares estão incompletos. Completar a coleta antes de fazer comparações ou alegações de custo, tokens ou desempenho.
+- **Revisão de utilidade da suíte:** avaliar redundância, custo e valor de detecção de regressões dos testes existentes antes de propor qualquer remoção ou ampliação.
 
 Esses acompanhamentos não bloqueiam o uso nem a entrega atual do Sentinel. A medição incompleta não deve ser tratada como zero ou como resultado qualificado.
 

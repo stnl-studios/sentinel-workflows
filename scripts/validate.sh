@@ -3,15 +3,19 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SKIP_SMOKE=0
+STRUCTURE_ONLY=0
 
 usage() {
-  echo "usage: scripts/validate.sh [--no-smoke]" >&2
+  echo "usage: scripts/validate.sh [--no-smoke | --structure-only]" >&2
 }
 
 case "$#" in
   0) ;;
   1)
     if [[ "$1" == "--no-smoke" ]]; then
+      SKIP_SMOKE=1
+    elif [[ "$1" == "--structure-only" ]]; then
+      STRUCTURE_ONLY=1
       SKIP_SMOKE=1
     else
       usage
@@ -31,13 +35,15 @@ while IFS= read -r -d '' module; do
   node --check "$module"
 done < <(find scripts skills templates benchmarks agents/codex/runtime -type f -name '*.mjs' -print0)
 
-node --test benchmarks/sentinel-todo/seed/test/*.test.mjs
-node --test scripts/test-execution-contract.mjs
-node scripts/test-benchmark-contract.mjs
-node scripts/test-benchmark-measurement.mjs
-node --test scripts/test-benchmark-campaign.mjs
-node --test scripts/test-benchmark-manager.mjs scripts/test-benchmark-ui.mjs scripts/test-codex-runner-adapter.mjs
-node --test scripts/test-app-server-transport.mjs scripts/test-command-environment.mjs scripts/test-current-runtime-boundaries.mjs
+if [[ "$STRUCTURE_ONLY" == "0" ]]; then
+  node --test benchmarks/sentinel-todo/seed/test/*.test.mjs
+  node --test scripts/test-execution-contract.mjs
+  node scripts/test-benchmark-contract.mjs
+  node scripts/test-benchmark-measurement.mjs
+  node --test scripts/test-benchmark-campaign.mjs
+  node --test scripts/test-benchmark-manager.mjs scripts/test-benchmark-ui.mjs scripts/test-codex-runner-adapter.mjs
+  node --test scripts/test-app-server-transport.mjs scripts/test-command-environment.mjs scripts/test-current-runtime-boundaries.mjs
+fi
 
 node scripts/check-contracts.mjs repository --root "$ROOT"
 node scripts/check-contracts.mjs launchers --root templates/prompts

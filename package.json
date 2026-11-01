@@ -2,6 +2,7 @@
   "name": "sentinel-workflows",
   "private": true,
   "scripts": {
+    "test": "node scripts/run-tests.mjs",
     "sentinel:install": "node scripts/sentinel-install.mjs",
     "benchmark": "node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs --functional",
     "benchmark:campaign": "node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs",

@@ -127,7 +127,13 @@ Os pacotes dos clientes contêm somente as skills e os agents administrados pelo
 
 ## Checks para mantenedores
 
-O repositório não tem um único script `npm test`. Rode os checks pertinentes à área alterada. Exemplos:
+`npm test` executa o catálogo auditado em `scripts/test-catalog.json`: scripts de teste em `scripts/`, testes `.test.mjs` das skills de workflow e os testes do seed offline do benchmark. O runner compara os arquivos descobertos com as entradas incluídas e as exclusões justificadas, e falha se surgir um arquivo novo ou se uma decisão do catálogo ficar obsoleta. A única exclusão é `scripts/fixtures/prepared-offline-case.test.mjs`, um fixture de benchmark que é copiado para um checkout gerado e cuja importação relativa não existe no repositório-fonte. Os testes do benchmark usam fixtures controladas; o comando não inicia campanha real, instalação global nem chamada de modelo.
+
+Ao terminar os testes, `npm test` roda `scripts/validate.sh --structure-only`, que mantém a verificação de sintaxe, contratos, skills distribuíveis e estrutura do repositório sem repetir os grupos de teste já cobertos pelo catálogo. `scripts/validate.sh` sem argumentos preserva a validação completa existente.
+
+Como referência local, uma execução bem-sucedida do catálogo completo levou cerca de 74 minutos; o tempo varia com a máquina e os casos do benchmark offline, portanto esse número não é uma garantia de duração.
+
+Para rodar checks específicos durante uma alteração, use os comandos pertinentes à área. Exemplos:
 
 ```sh
 node --test scripts/test-sentinel-install.mjs
