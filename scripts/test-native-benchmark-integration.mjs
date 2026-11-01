@@ -164,9 +164,14 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', 'usa
   const serialize = product.serializePlanPathClaims;
   let serialized = 0;
   product.serializePlanPathClaims = async input => {
+    const call = ++serialized;
+    // The third serialization is the manager's pre-dispatch CAS check for the
+    // author correction. Change the candidate after refusal but before this
+    // read so the stale reviewed authority must block the correction.
+    if (fault === 'review-correction-drift' && call === 3)
+      await fs.appendFile(path.join(input.candidateExecutionRoot, 'plans/slice-01.md'), '\nExtra unreviewed draft content.\n');
     const value = await serialize(input);
-    if (++serialized === 1) {
-      if (fault === 'review-correction-drift') await fs.appendFile(path.join(input.candidateExecutionRoot, 'plans/slice-01.md'), '\nExtra unreviewed draft content.\n');
+    if (call === 1) {
       if (fault === 'review-correction-owner') {
         const markerFile = `${input.candidateExecutionRoot}.owner.json`, marker = JSON.parse(await fs.readFile(markerFile));
         marker.allocationId = '00000000-0000-4000-8000-000000000000'; await fs.writeFile(markerFile, JSON.stringify(marker));
@@ -299,11 +304,18 @@ for (const [regime, fault, role = 'default'] of [['fresh', null], ['fresh', 'usa
     assert.equal(result.status, 'BLOCKED');
     const state = JSON.parse(await fs.readFile(path.join(runRoot, 'case-a/case-state.json')));
     const ledger = JSON.parse(await fs.readFile(path.join(runRoot, '.turn-ledger.json')));
-    const count = fault === 'review-correction-twice' ? 11 : 3;
+    const ownershipDrift=['review-correction-owner','review-correction-cas'].includes(fault);
+    const count = fault === 'review-correction-twice' ? 11 : ownershipDrift ? 2 : 3;
     assert.equal(backend.calls.filter(call=>call.method==='turn/start').length, count,
       'invalid source/ownership blocks before admitting author correction; the bounded author return preserves every independent review');
     assert.equal(ledger.total, count); assert.equal(ledger.reservations.length, 0);
     assert.equal(backend.operations.some(item=>['EXECUTE_SLICE','SPEC_CLOSE'].includes(item.operation)), false);
+    if(ownershipDrift) {
+      assert.deepEqual(state.operations.map(item=>item.operation),['SPEC_INIT','PLAN']);
+      assert.equal(state.terminal.result,'BLOCKED');
+      assert.equal(state.terminal.blocker,'EXECUTION_PUBLICATION_BLOCKED');
+      return;
+    }
     const refused = JSON.parse(await fs.readFile(state.operations[2].evidencePath));
     assert.equal(refused.outcome.result, 'NEEDS_FIX');
     if (fault === 'review-correction-twice') assert.deepEqual(state.terminal, { result: 'BLOCKED', blocker: 'PREPARATION_REVIEW_NOT_APPROVED' });

@@ -459,19 +459,26 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null,te
   if(current.evidence) {
     const bundleBytes=Buffer.from(image.files.get(current.evidence.path));
     const bundle=parseCurrentJson(bundleBytes.toString('utf8'));
-    if(bundle.findingsChecks.length) {
+    if(bundle.validation?.recordFormat==='stnl-task-record-v2') {
       const facts=await inspectPostConversionEvidence({context:operation.context,
         snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,bundleBytes,
         observedWork:current.baseline,lastAttempt:image.activation.lastAttempt,
         admissionRef:image.activation.lastAttempt?.operationRef??null});
-      if(facts.cycle) {
-      formalPrior=bundle.validation.id===facts.cycle.admissionId
-        ?facts.cycle.lastScope:facts.latest.request.scope.paths;
+      const baselineScope=current.baseline.entries
+        .filter(item=>['file','absent'].includes(item.kind)&&output(item.path)).map(item=>item.path);
+      const historicalPrior=bundle.validation?.origin?.localRevision<current.localRevision;
+      const previousRejected=current.normalization?.operation==='VALIDATE_SLICE'
+        &&bundle.support.some(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE');
+      const findingsCycle=facts.cycle?.checks?.length?facts.cycle:null;
+      if(findingsCycle?.admissionId===bundle.validation?.id) formalPrior=findingsCycle.lastScope;
+      else if(previousRejected&&facts.rejection?.origin.operation==='VALIDATE_SLICE') formalPrior=facts.rejection.request.scope.paths;
+      else formalPrior=[...new Set([...baselineScope,...(!historicalPrior?(facts.latest?.request.scope.paths??[]):[])])].sort(order);
+      if(findingsCycle) {
       openFindings=bundle.openFindings;
-      auxiliary={kind:'findings',operationAttemptId:facts.cycle.owner.operationAttemptId,
-        cycle:facts.cycle.admissionId,firstCheckId:facts.cycle.checks[0].id,
-        lastCheckId:facts.cycle.checks.at(-1).id,
-        recordsSha256:currentEvidenceValueSha256(facts.cycle.checks)};
+      auxiliary={kind:'findings',operationAttemptId:findingsCycle.owner.operationAttemptId,
+        cycle:findingsCycle.admissionId,firstCheckId:findingsCycle.checks[0].id,
+        lastCheckId:findingsCycle.checks.at(-1).id,
+        recordsSha256:currentEvidenceValueSha256(findingsCycle.checks)};
       }
     }
   }

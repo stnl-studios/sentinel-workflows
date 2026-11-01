@@ -876,11 +876,11 @@ test('R09 counters and retained object roots have independent authority',async t
   }));
 });
 
-test('R10 BLOCKED formal and Initial FAIL prefix do not invent recovery',async t=>{
-  for(const field of ['Changed Areas','Corrections Applied']) await t.test(`concluded refusal still checks ${field}`,async()=>using(
+test('R10 synthetic semantic refusals fail closed and Initial exhaustion uses the five-call budget',async t=>{
+  await t.test('composed APPLY refusal without official conclusion cannot validate private status fields',async()=>using(
     ()=>producerAppliedImage({semanticRejection:true}),async f=>{
-      editSection(f,'slice-01',field,'- `../../../../src/pay.mjs`');reseal(f);await writeImage(f);
-      await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE',field);
+      editSection(f,'slice-01','Changed Areas','- `../../../../src/pay.mjs`');reseal(f);await writeImage(f);
+      await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','normalization lacks its concluded refusal');
     }));
   for(const count of [2,3]) await t.test(`Initial refusal after ${count} consumed invocations`,async()=>using(
     ()=>producerInitialImage({semanticRejection:true,statuses:Array(count).fill('TESTS_FAIL')}),async f=>{
@@ -943,20 +943,17 @@ test('R10 BLOCKED formal and Initial FAIL prefix do not invent recovery',async t
       assert.equal(rejection.consumedInvocations,count);assert.equal(rejection.round,count);
       assert.equal(result.deliveries[0].counters.findingsChecks,count-1);assert.equal(result.normalHandoff,null);
     }));
-  await t.test('first Initial APPLY refusal has terminal consumption and no accepted check',async()=>using(
+  await t.test('composed Initial APPLY refusal without official conclusion is refused',async()=>using(
     ()=>producerAppliedImage({semanticRejection:true}),async f=>{
-      const result=await inspectCurrentExecution(f.specPath),first=result.deliveries[0];
-      assert.equal(first.persistedValidation,'uncertain');assert.equal(result.normalHandoff,null);
-      assert.equal(first.counters.findingsChecks,0);
-      assert.equal(f.applied.bundle.support.at(-1).kind,'rejection');
-      assert.deepEqual(f.applied.bundle.findingsChecks,[]);
+      await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','normalization lacks its concluded refusal');
     }));
   for(const field of ['normalization','lastDiagnostic'])
     await t.test(`first Initial APPLY refusal rejects altered ${field}`,async()=>using(
       ()=>producerAppliedImage({semanticRejection:true}),async f=>{
-        f.continuity.deliveries[0][field]=null;
+        f.continuity.deliveries[0][field]=field==='normalization'
+          ?{...f.continuity.deliveries[0].normalization,used:2}:null;
         reseal(f);await writeImage(f);
-        await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','Initial refusal state differs');
+        await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','normalization');
       }));
 
   await t.test('concluded Initial semantic rejection has no implementation record',async()=>using(
@@ -973,7 +970,7 @@ test('R10 BLOCKED formal and Initial FAIL prefix do not invent recovery',async t
       ()=>producerInitialImage({semanticRejection:true}),async f=>{
         f.continuity.deliveries[0][field]=null;
         reseal(f);await writeImage(f);
-        await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','Initial refusal state differs');
+        await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','Initial normalization/diagnostic differs');
       }));
   await t.test('concluded formal semantic rejection preserves consumption',async()=>using(
     ()=>producerFormalPass({semanticRejection:true}),async f=>{
@@ -986,12 +983,7 @@ test('R10 BLOCKED formal and Initial FAIL prefix do not invent recovery',async t
     }));
   await t.test('concluded APPLY semantic rejection preserves admission',async()=>using(
     ()=>producerAppliedImage({semanticRejection:true}),async f=>{
-      const result=await inspectCurrentExecution(f.specPath),first=result.deliveries[0];
-      assert.equal(first.persistedValidation,'uncertain');assert.equal(first.formalStatus,'NEEDS_FIX');
-      assert.equal(result.normalHandoff,null);
-      assert.deepEqual(first.counters,{implementationChecks:1,findingsChecks:0,validationAttempts:1,findings:1});
-      assert.equal(f.applied.bundle.support.at(-1).kind,'rejection');
-      assert.equal(f.activation.lastAttempt.outcome,'rejected');
+      await rejected(()=>inspectCurrentExecution(f.specPath),'INVALID_CURRENT_IMAGE','normalization lacks its concluded refusal');
     }));
   await t.test('formal BLOCKED',async()=>using(()=>producerFormalPass({status:'BLOCKED'}),async f=>{
     const result=await inspectCurrentExecution(f.specPath);
@@ -1001,13 +993,9 @@ test('R10 BLOCKED formal and Initial FAIL prefix do not invent recovery',async t
     ()=>producerInitialImage({statuses:Array(count).fill('TESTS_FAIL')}),async f=>{
       await rejected(()=>inspectCurrentExecution(f.specPath),'UNSUPPORTED_FORMAT','Initial FAIL prefix');
     }));
-  await t.test('Initial FAIL round 3 is exhausted',async()=>using(
+  await t.test('Initial FAIL round 3 remains an incomplete prefix under the five-call budget',async()=>using(
     ()=>producerInitialImage({statuses:Array(3).fill('TESTS_FAIL')}),async f=>{
-      const result=await inspectCurrentExecution(f.specPath);
-      assert.equal(result.deliveries[0].auxiliaryStatus,'TESTS_FAIL');
-      assert.deepEqual(result.deliveries[0].counters,{implementationChecks:3,findingsChecks:0,validationAttempts:0,findings:0});
-      assert.equal(result.normalHandoff?.operation,'VALIDATE_SLICE');
-      assert.equal(result.state,'IMPLEMENTATION_RETRY_EXHAUSTED');
+      await rejected(()=>inspectCurrentExecution(f.specPath),'UNSUPPORTED_FORMAT','Initial FAIL prefix is not a completed quiet cycle');
     }));
 });
 

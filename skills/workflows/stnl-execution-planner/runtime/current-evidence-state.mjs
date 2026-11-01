@@ -851,8 +851,8 @@ function postCaptureProof({context,snapshotBytes,current,capture,expectedBase,ad
     fail('UNSAFE_PATH','prior formal scope contains an input-only path');
   const reason=request.scope.paths.length?null:postFilelessReason;
   const derived=deriveCapture({context,authority:auth,capture,expectedOwner:request.owner,
-    expectedBase,priorFiles:priorFiles??new Set(request.format==='stnl-current-validation-request-v4'
-      ?request.base.baseline.entries.filter(item=>item.kind==='absent').map(item=>item.path):[]),filelessReason:reason});
+    expectedBase,priorFiles:priorFiles??new Set(request.base.baseline?.entries.filter(item=>item.kind==='absent').map(item=>item.path)??[]),
+    filelessReason:reason});
   if(derived.rejection && !allowRejection) fail('RUNNER_RESULT_REJECTED',
     `offline semantic rejection cannot produce a successor: ${JSON.stringify(derived.rejection)}`);
   return derived;
@@ -1990,7 +1990,7 @@ export async function composePostConversionValidation({context,requirementsAutho
       fail('UNSUPPORTED_FORMAT','S0 cannot compose a post-conversion formal');
   }
   const output=postOutput(context,postAuthority(snapshot,current).delivery,current.slice);
-  const findingsCycle=previousFacts?.cycle?.admissionId?previousFacts.cycle:null;
+  const findingsCycle=previousFacts?.cycle?.checks?.length?previousFacts.cycle:null;
   const priorScopePaths=findingsCycle && findingsCycle.admissionId===previousRecord?.id
     ?findingsCycle.lastScope
     :previousRejected?previousFacts.rejection.request.scope.paths
@@ -2687,15 +2687,20 @@ function deriveRetainedApplyEpisode(bundle,map,context,approvedAuthority,records
   const admission=[...bundle.support,bundle.validation].find(item=>item?.kind==='validation'&&item.id===first.base.validation.id);
   if(!admission)incomplete('retained APPLY predecessor admission absent');
   const priorChecks=records.slice(0,normalized);
+  const successorChecks=records.slice(normalized);
   if(priorChecks.some(item=>item.origin.operationAttemptId===first.owner.operationAttemptId)
     ||records.slice(normalized).some(item=>item.origin.operationAttemptId!==first.owner.operationAttemptId))
     mismatch('retained APPLY episode has a cyclic or mixed owner prefix');
-  const priorSupport=bundle.support.filter(item=>!priorChecks.includes(item)&&item!==admission
+  const priorSupport=bundle.support.filter(item=>!priorChecks.includes(item)&&!successorChecks.includes(item)&&item!==admission
     &&!(item.kind==='rejection'&&item.origin.operation==='APPLY_FINDINGS'&&item.operationAttemptId===first.owner.operationAttemptId)
     &&(item.kind!=='validation'||formalRecordNumber(item)<formalRecordNumber(admission))
     &&(item.kind!=='rejection'||item.origin.operation!=='VALIDATE_SLICE'
       ||Number(requestForRecord(item,map).attemptId.slice(8))<=formalRecordNumber(admission)));
-  const prior={...bundle,currentAuthoritySha256:projectedDelivery(approvedAuthority.delivery),
+  const refusedCap=restoreCaptureSources('current-findings',refusal,map);
+  const refusalRequest=jsonBytes(refusedCap.applyRequest,'retained APPLY rejection request').value;
+  const priorDelivery=refusalRequest.authority?.delivery;
+  if(!priorDelivery)incomplete('retained APPLY refusal has no approved source authority');
+  const prior={...bundle,currentAuthoritySha256:projectedDelivery(priorDelivery),
     findingsChecks:priorChecks,validation:admission,openFindings:first.base.openFindings,support:priorSupport};
   prior.objects=referencedObjects([...prior.implementation,...priorChecks,...priorSupport,admission],map);
   const priorBytes=encode(prior);
@@ -2708,7 +2713,6 @@ function deriveRetainedApplyEpisode(bundle,map,context,approvedAuthority,records
   if(!rejected||rejected.operationAttemptId!==refusal.operationAttemptId
     ||verified.cycle.consumedInvocations!==inherited.consumedInvocations
     ||!same(verified.cycle.lastWork,baseline))invalid('retained APPLY predecessor refusal differs');
-  const refusedCap=restoreCaptureSources('current-findings',refusal,map);
   const expectedCause=raw(encode({class:'findings-rejection',operationAttemptId:refusal.operationAttemptId,
     requestSha256:raw(refusedCap.applyRequest),responseSha256:raw(refusedCap.rawResponse),scopePaths:verified.cycle.lastScope}));
   const priorInherited=jsonBytes(refusedCap.origin,'retained APPLY predecessor lineage').value.admission?.binding?.normalization;

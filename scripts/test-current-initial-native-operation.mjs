@@ -326,6 +326,139 @@ test('Initial first APPLY semantic refusal publishes from the same captured byte
   assert.deepEqual(await fs.readFile(path.join(owned,'round-1.response.json')),responseBefore);
 });
 
+test('official Initial execution carries an output removal through one corrected refusal successor',async t=>{
+  const f=await fixture({single:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const removable=path.join(f.root,'src/initial-only.mjs');
+  const removedBytes=Buffer.from('export const initialOnly=true;\n');
+  await fs.writeFile(removable,removedBytes);
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await installCurrentInitial(f);
+  const before=await inspectCurrentExecution(f.specPath);
+  assert.equal(before.normalHandoff?.operation,'EXECUTE_SLICE',JSON.stringify(before.normalHandoff));
+  assert.equal(before.normalHandoff?.slice,'slice-01',JSON.stringify(before.normalHandoff));
+  const first=await begin({specPath:f.specPath,slice:'slice-01',operation:'EXECUTE_SLICE',
+    expectedActivationId:before.activationId});
+  await fs.rm(removable);
+  const firstDispatch=await reserveDispatch(first.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(first.handle,'official-initial-removal-first');
+  const firstObservation=await verifyNative(firstDispatch.originFile),{head,...refused}=initialPayload(1);
+  refused.commands=firstObservation.commands;refused.coverage='none';
+  const firstFile=path.join(f.root,'official-initial-removal-first.json');
+  await fs.writeFile(firstFile,JSON.stringify({agentId:'official-initial-removal-first',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:refused})})+'\n');
+  await captureNative(first.handle,firstFile);
+  const firstPublication=await publish(first.handle);
+  assert.equal(firstPublication.transition.outcome,'rejected');
+
+  const stopped=await inspectCurrentExecution(f.specPath);
+  assert.equal(stopped.normalHandoff?.operation,'EXECUTE_SLICE');
+  const successor=await normalizeSuccessor({specPath:f.specPath,slice:'slice-01',
+    expectedActivationId:stopped.activationId});
+  const nextDispatch=await reserveDispatch(successor.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(successor.handle,'official-initial-removal-successor');
+  const nextObservation=await verifyNative(nextDispatch.originFile),{head:ignored,...accepted}=initialPayload(2,'TESTS_PASS');
+  accepted.commands=nextObservation.commands;accepted.automaticCheckRound='2/5';
+  const nextFile=path.join(f.root,'official-initial-removal-successor.json');
+  await fs.writeFile(nextFile,JSON.stringify({agentId:'official-initial-removal-successor',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:accepted})})+'\n');
+  await captureNative(successor.handle,nextFile);
+  await publish(successor.handle);
+  const final=await inspectCurrentExecution(f.specPath);
+  assert.equal(final.normalHandoff?.operation,'VALIDATE_SLICE');
+  assert.equal(final.deliveries[0].counters.implementationChecks,1);
+  assert.equal(final.deliveries[0].counters.validationAttempts,0);
+  const image=await captureCurrentExecution(f.specPath);
+  const current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(image.files.get(current.evidence.path)));
+  const removalId=[...bundle.implementation,...bundle.support]
+    .flatMap(item=>item.sources.removalProofs??[]).find(id=>id);
+  assert.ok(removalId);
+  const proof=JSON.parse(Buffer.from(bundle.objects.find(item=>item.id===removalId).bytesBase64,'base64'));
+  assert.equal(proof.path,'src/initial-only.mjs');
+  assert.deepEqual(Buffer.from(proof.bytesBase64,'base64'),removedBytes);
+  assert.ok(head);assert.ok(ignored);
+});
+
+test('official Initial history retains five implementation failures behind its first formal and findings cycle',async t=>{
+  const f=await fixture({single:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const product=path.join(f.root,'src/pay.mjs');
+  await fs.writeFile(product,'export const pay=()=>"wrong-0";\n');
+  await installCurrentInitial(f);
+  const before=await inspectCurrentExecution(f.specPath);
+  const execute=await begin({specPath:f.specPath,slice:'slice-01',operation:'EXECUTE_SLICE',
+    expectedActivationId:before.activationId});
+  for(let round=1;round<=5;round++) {
+    await fs.writeFile(product,`export const pay=()=>"wrong-${round}";\n`);
+    const dispatch=await reserveDispatch(execute.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+    const agentId=`official-initial-anchor-execute-${round}`;
+    await bindNative(execute.handle,agentId);
+    const observation=await verifyNative(dispatch.originFile),{head,...result}=initialPayload(round,'TESTS_FAIL');
+    result.commands=observation.commands;result.automaticCheckRound=`${round}/5`;
+    const file=path.join(f.root,`${agentId}.json`);
+    await fs.writeFile(file,JSON.stringify({agentId,status:'completed',
+      finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
+    await captureNative(execute.handle,file);
+    assert.ok(head);
+  }
+  await publish(execute.handle);
+  const handoff=await inspectCurrentExecution(f.specPath);
+  assert.equal(handoff.normalHandoff?.operation,'VALIDATE_SLICE');
+  const firstFormal=await begin({specPath:f.specPath,slice:'slice-01',operation:'VALIDATE_SLICE',
+    expectedActivationId:handoff.activationId});
+  const formalDispatch=await reserveDispatch(firstFormal.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(firstFormal.handle,'official-initial-anchor-first-formal');
+  const formalObservation=await verifyNative(formalDispatch.originFile);
+  const request=JSON.parse(await fs.readFile(formalDispatch.requestFile));
+  const finding={id:'finding-01',severity:'blocking',originAttempt:request.attemptId,
+    problem:'The pay export returns a wrong value.',evidence:'The approved test fails for all five captured implementation rounds.',
+    impact:'AC-001 is unmet.',relatedAuthority:'AC-001',expectedCorrection:'Make the pay export return paid.'};
+  const formalFile=path.join(f.root,'official-initial-anchor-first-formal.json');
+  await fs.writeFile(formalFile,JSON.stringify({agentId:'official-initial-anchor-first-formal',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:{status:'NEEDS_FIX',
+      commands:formalObservation.commands,evidence:'The prepared pay assertion failed.',findingReferences:'finding-01',
+      findingDispositions:'finding-01=active',blockers:'none',unexpectedWorkspaceEffects:'none',
+      persistenceSummary:'The native helper retained the failing product observation.'},newFindings:[finding]})})+'\n');
+  await captureNative(firstFormal.handle,formalFile);
+  await publish(firstFormal.handle);
+
+  const applyState=await inspectCurrentExecution(f.specPath);
+  const apply=await begin({specPath:f.specPath,slice:'slice-01',operation:'APPLY_FINDINGS',
+    expectedActivationId:applyState.activationId});
+  await fs.writeFile(product,'export const pay=()=>"paid";\n');
+  const applyDispatch=await reserveDispatch(apply.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(apply.handle,'official-initial-anchor-apply');
+  const applyObservation=await verifyNative(applyDispatch.originFile),{head:applyHead,...correction}=applyPayload(1,'TESTS_PASS',0);
+  correction.commands=applyObservation.commands;correction.findingsVerified='finding-01';
+  correction.unsupportedActiveFindings='none';
+  const applyFile=path.join(f.root,'official-initial-anchor-apply.json');
+  await fs.writeFile(applyFile,JSON.stringify({agentId:'official-initial-anchor-apply',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:correction})})+'\n');
+  await captureNative(apply.handle,applyFile);
+  await publish(apply.handle);
+
+  const validateState=await inspectCurrentExecution(f.specPath);
+  const validate=await begin({specPath:f.specPath,slice:'slice-01',operation:'VALIDATE_SLICE',
+    expectedActivationId:validateState.activationId});
+  const validateDispatch=await reserveDispatch(validate.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(validate.handle,'official-initial-anchor-final-formal');
+  const validateObservation=await verifyNative(validateDispatch.originFile);
+  const validateFile=path.join(f.root,'official-initial-anchor-final-formal.json');
+  await fs.writeFile(validateFile,JSON.stringify({agentId:'official-initial-anchor-final-formal',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:{status:'PASS',
+      commands:validateObservation.commands,evidence:'The corrected pay export passes the prepared test.',
+      findingReferences:'finding-01',findingDispositions:'finding-01=resolved',blockers:'none',
+      unexpectedWorkspaceEffects:'none',persistenceSummary:'The runner made no product edits.'},newFindings:[]})})+'\n');
+  await captureNative(validate.handle,validateFile);
+  await publish(validate.handle);
+  const final=await inspectCurrentExecution(f.specPath);
+  assert.equal(final.deliveries[0].formalStatus,'PASS');
+  assert.deepEqual(final.deliveries[0].counters,
+    {implementationChecks:5,findingsChecks:1,validationAttempts:2,findings:1});
+  assert.ok(applyHead);
+});
+
 test('Initial first APPLY valid BLOCKED stays distinct from semantic refusal',async()=>{
   const f=await fixture();
   const predecessor=await sealedBlockingFormal(f);
