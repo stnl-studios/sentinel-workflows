@@ -1,0 +1,16 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import path from 'node:path';
+import {fixture,implement} from './fixtures/portable-resume-independent.mjs';
+import {inspectRequestedOperation,prepareDocumentaryResumption,installDocumentaryResumption} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
+import {normalizedFormal} from './fixtures/portable-formal-independent.mjs';
+import {ChildProcess} from 'node:child_process';
+function reviewOf(authority){const hashes=new Map(authority.artifactHashes.map(x=>[x.path,x.sha256]));const review=(scope,authoritySha256,names)=>({scope,decision:'approved',authoritySha256,examinedArtifactHashes:names.sort().map(path=>({path,sha256:hashes.get(path)})),evidenceDecisions:[],summary:'Synthetic current-byte review for new documentary context, never historical approval.'});return {globalReview:review('set',authority.globalReviewAuthoritySha256,['plan.md','tasks.md']),deliveries:authority.deliveries.map(d=>({deliveryId:d.deliveryId,review:review('slice',d.authoritySha256,[`plans/${d.slice}.md`,`tasks/${d.slice}.md`])}))};}
+
+async function bootstrap(t){const f=await fixture(t,true,{single:true});for(const n of ['activation.json','approved-preparation.json','continuity.json'])await fs.unlink(path.join(f.image.f.execution,n));const request={specPath:f.specPath,slice:'slice-01',operation:'EXECUTE_SLICE'};const d=await inspectRequestedOperation(request);const p=await prepareDocumentaryResumption({...request,expectedDecisionSha256:d.decisionSha256});await installDocumentaryResumption({handle:p.handle,review:reviewOf(p.authority)});return f;}
+function count(t){const calls=[],spawn=ChildProcess.prototype.spawn;ChildProcess.prototype.spawn=function(o){if(o.args?.some(a=>/src\/pay\.test\.mjs$/.test(String(a))))calls.push(o.args);return spawn.call(this,o);};t.after(()=>{ChildProcess.prototype.spawn=spawn;});return calls;}
+
+test('malformed semantic judgment never becomes formal PASS or automatic extra check',async t=>{
+ const f=await bootstrap(t),calls=count(t);await implement(f,{slice:'slice-01'});
+ await normalizedFormal({...f,delivery:{slice:'slice-01'}},{responseVariant:'stnl-current-native-judgment-v1',invalid:true,invalidText:'PASS claimed without required structured evidence'});
+ const final=await captureCurrentExecution(f.specPath);assert.notEqual(final.inspection.deliveries[0].formalStatus,'PASS');assert.equal(calls.length,2);assert.equal(final.inspection.deliveries[0].counters.validationAttempts,0,'malformed output must not fabricate an accepted formal attempt');const continuity=JSON.parse(Buffer.from(final.files.get('continuity.json')).toString());assert.equal(continuity.deliveries[0].lastDiagnostic.code,'RUNNER_RESULT_REJECTED');await assert.rejects(()=>normalizedFormal({...f,delivery:{slice:'slice-01'}},{responseVariant:'stnl-current-native-judgment-v1'}));assert.equal(calls.length,2,'rejected semantic call still consumes its grant');t.diagnostic(JSON.stringify({physicalRecipeInvocations:calls.length,state:final.inspection.state}));
+});

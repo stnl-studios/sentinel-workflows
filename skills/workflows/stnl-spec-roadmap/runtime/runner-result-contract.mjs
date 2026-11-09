@@ -1,6 +1,12 @@
 // Pure semantic contract shared by canonical producers and rejection readback.
 function fail(message) { throw new Error(message); }
 
+// Template markers must begin with a name. Ordinary comparisons and emoticons
+// such as "<3 ->" are evidence text, not unfilled template fields.
+export function hasTemplatePlaceholder(value) {
+  return /<[ \t]*[\p{L}_][^<>\r\n]*>/u.test(value);
+}
+
 // Local bounded lineage; the caller owns its operational quota across stages.
 export const MAX_NATIVE_PRODUCER_TURNS = 5;
 export const MIN_CORRECTIONS_BEFORE_RECURRENCE = 2;

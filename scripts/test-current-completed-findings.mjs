@@ -31,8 +31,12 @@ test('F01 completed A remains literal through NEEDS_FIX, APPLY and independent f
   assert.deepEqual(Buffer.from(after.files.get('approved-preparation.json')),Buffer.from(before.files.get('approved-preparation.json')));
   const a=beforeC.completed[0];assert.deepEqual(Buffer.from(after.files.get(a.evidence.path)),Buffer.from(before.files.get(a.evidence.path)));
   assert.deepEqual(after.inspection.deliveries[0].counters,{findings:1,findingsChecks:1,implementationChecks:1,validationAttempts:4});
-  assert.equal(after.inspection.deliveries[0].formalStatus,'PASS');assert.equal(after.inspection.normalHandoff,null);
-  assert.equal(after.inspection.state,'VALIDATION_BLOCKED');
+  assert.equal(after.inspection.deliveries[0].formalStatus,'PASS');
+  // Local PASS preserves completed A, but B still owes the integral judgment.
+  assert.deepEqual(after.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:f.delivery.slice,deliveryId:f.delivery.deliveryId});
+  assert.equal(after.inspection.state,'FINDINGS_CORRECTED');
+  assert.deepEqual(after.inspection.diagnostics,[{kind:'evidence',artifact:'continuity.json',field:'terminal',
+    reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]);
 });
 
 for(const statuses of [['TESTS_FAIL','TESTS_PASS'],['TESTS_FAIL','TESTS_FAIL','TESTS_PASS'],Array(5).fill('TESTS_FAIL')])

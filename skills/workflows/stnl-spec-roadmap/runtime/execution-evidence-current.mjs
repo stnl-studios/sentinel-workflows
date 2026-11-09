@@ -2,13 +2,14 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { parseCurrentJson, logicalArtifactPath, validateCurrentEvidence } from './execution-current.mjs';
 import {
-  RunnerSemanticResultError, assertRunnerVerdictConsistency, assertExecutionResultScope,
+  hasTemplatePlaceholder, RunnerSemanticResultError, assertRunnerVerdictConsistency, assertExecutionResultScope,
   deriveCanonicalRunnerRejection, recoverableRunnerResultDiagnostic,
   parseSemanticExecutionPayload, serializeMarkdownScalar, serializeCommand,
   executionFields, isExplanatoryExecutionField, MAX_NATIVE_PRODUCER_TURNS, nativeCheckRoundMatches, validateReviewTriage,
 } from './runner-result-contract.mjs';
 import { verifyCapturedInvocation, verifyWorkObservation, packCaptureSources, restoreCaptureSources,
-  closeEvidenceObjects, projectNativeJudgment, NATIVE_JUDGMENT_VARIANT, findingsRoundCaptureSha256 } from './execution-evidence-proof.mjs';
+  closeEvidenceObjects, projectNativeJudgment, NATIVE_JUDGMENT_VARIANT, findingsRoundCaptureSha256,
+  assertExternalOutputContextTransition } from './execution-evidence-proof.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
 const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u;
@@ -139,7 +140,9 @@ function work(value, label) {
       closed(entry, ['path', 'kind', 'sha256', 'mode'], `${label}.entry`);
       token(entry.sha256, HASH, `${label}.hash`); integer(entry.mode, `${label}.mode`, 0, 511);
     } else if (entry.kind === 'directory') {
-      closed(entry, ['path', 'kind', 'children'], `${label}.entry`);
+      closed(entry, ['path', 'kind', 'children',...(Object.hasOwn(entry,'externalContextSha256')?['externalContextSha256']:[]),...(Object.hasOwn(entry,'mode')?['mode']:[])], `${label}.entry`);
+      if(Object.hasOwn(entry,'externalContextSha256'))token(entry.externalContextSha256,HASH,`${label}.externalContextSha256`);
+      if(Object.hasOwn(entry,'mode'))integer(entry.mode,`${label}.mode`,0,511);
       dense(entry.children, `${label}.children`);
       let prev = null;
       for (const child of entry.children) {
@@ -171,9 +174,22 @@ function work(value, label) {
 }
 function coverage(manifest, claims, label) {
   const byPath = work(manifest, label);
+  const inputs=new Set(claims.filter(item=>item.kind==='input').map(item=>item.path));
+  for(const entry of manifest.entries)if(entry.externalContextSha256!==undefined
+    && !claims.some(item=>item.kind==='file'&&!inputs.has(item.path)&&item.path.startsWith(entry.path+'/')))
+    stale(`${label}: external context is not an approved output ancestor ${entry.path}`);
   for (const item of claims) {
     const entry = byPath.get(item.path);
-    if (!entry) incomplete(`${label}: missing declared ${item.path}`);
+    if (!entry) {
+      // The observer records the first missing ancestor, never fabricated
+      // descendants. Only literal absence proves a declared output forecast;
+      // inputs and omitted projected children cannot use this exception.
+      let absent=false;
+      for(let parent=path.posix.dirname(item.path);parent!=='.';parent=path.posix.dirname(parent))
+        if(byPath.get(parent)?.kind==='absent'){absent=true;break;}
+      if(['file','directory','product'].includes(item.kind)&&absent)continue;
+      incomplete(`${label}: missing declared ${item.path}`);
+    }
     if (item.kind === 'input' && entry.kind !== 'file') stale(`${label}: Existing Input is not a file ${item.path}`);
     if (item.kind === 'directory' && entry.kind === 'file') stale(`${label}: declared directory is a file ${item.path}`);
     if (['file','product'].includes(item.kind) && entry.kind === 'directory') stale(`${label}: declared file is a directory ${item.path}`);
@@ -292,12 +308,26 @@ function domainChanges(before, after, info, round) {
   const afterMap = new Map(after.entries.map(entry => [entry.path, entry]));
   const deltas = changedLeaves(before, after);
   for (const prior of before.entries) if (!afterMap.has(prior.path)) stale(`round ${round}: prior domain member omitted ${prior.path}`);
+  assertExternalOutputContextTransition(before,after,info,`round ${round}`);
   const priorDirectories = new Map(before.entries.filter(entry => entry.kind === 'directory').map(entry => [entry.path,entry]));
   const afterDirectories = new Map(after.entries.filter(entry => entry.kind === 'directory').map(entry => [entry.path,entry]));
   for (const name of new Set([...priorDirectories.keys(),...afterDirectories.keys()])) {
     const left=priorDirectories.get(name), right=afterDirectories.get(name);
     if (!left || !right) {
-      if (!areaContains(info.areas,name) || !deltas.some(delta => delta.startsWith(`${name}/`))) stale(`round ${round}: unexplained directory domain change ${name}`);
+      // A literal missing ancestor can become only the structural chain of
+      // explicitly authorized new files. Projected directory children alone
+      // never establish baseline absence or authorize another output.
+      let absent = false;
+      for (let parent = name; parent !== '.'; parent = path.posix.dirname(parent)) {
+        if (priorMap.get(parent)?.kind === 'absent') { absent = true; break; }
+      }
+      const createdFile = leaf => afterMap.get(leaf)?.kind === 'file'
+        && !priorMap.has(leaf)
+        && info.areas.some(area => area.kind === 'file' && area.path === leaf);
+      const structuralCreation = !left && right && absent && right.children.length > 0
+        && right.children.every(child => deltas.some(leaf =>
+          (leaf === `${name}/${child}` || leaf.startsWith(`${name}/${child}/`)) && createdFile(leaf)));
+      if (!structuralCreation && (!areaContains(info.areas,name) || !deltas.some(delta => delta.startsWith(`${name}/`)))) stale(`round ${round}: unexplained directory domain change ${name}`);
       continue;
     }
     for (const child of new Set([...left.children,...right.children])) {
@@ -369,7 +399,7 @@ function semanticError(cause) { return new RunnerSemanticResultError('EXECUTE_SL
 function presentRendered(value) {
   if (typeof value !== 'string' || value.length === 0 || /^(?:pending|n\/a)$/iu.test(value)) return false;
   const outsideEncodedScalars = value.replace(/json:"(?:\\.|[^"\\])*"/gu, 'json:""');
-  return !/<[^>\n]+>/u.test(outsideEncodedScalars);
+  return !hasTemplatePlaceholder(outsideEncodedScalars);
 }
 function nonPlaceholder(value) {
   return presentRendered(value) && !/^(?:none|not_available)$/iu.test(value);

@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "origin": {
+    "revision": "6d53ab0c5e5de015d697c9ea1f9e100e2a75e2c2",
+    "scope": "Framework Markdown only; metadata snapshot, no source contents or Git objects"
+  },
+  "measurement": {
+    "bytes": "Buffer.byteLength of raw file bytes",
+    "words": "Buffer.toString(\"utf8\").trim().split(/\\s+/u).filter(Boolean).length, summed per file",
+    "sha256": "SHA-256 of raw file bytes",
+    "git_blob_sha1": "SHA-1 of UTF-8 \"blob <byteLength>\\0\" followed by raw file bytes",
+    "snapshot_digest": "SHA-256 of JSON.stringify(parsed snapshot), UTF-8; object and array order retained"
+  },
+  "files": {
+    "skills/stnl-spec-lifecycle-manager/SKILL.md": {
+      "words": 627,
+      "bytes": 4824,
+      "sha256": "22f19fe9d5867d34a1569cf58ca9479468486d803b23fe4bbed5cbd554a61867",
+      "git_blob_sha1": "7a2c14083e01d8590c630120f157577adcf1dfcb"
+    },
+    "skills/stnl-spec-lifecycle-manager/references/canonical-ids.md": {
+      "words": 394,
+      "bytes": 2796,
+      "sha256": "a32101f244764bd7106e5c9e5fd560b25360fd2182a461fd5ea82effd48afd83",
+      "git_blob_sha1": "dee87d47a1cb1e13e170f75cc4cfa15c3f0760bf"
+    },
+    "skills/stnl-spec-lifecycle-manager/references/close-policy.md": {
+      "words": 429,
+      "bytes": 3236,
+      "sha256": "db81f3f1912179300efbd1bb4223af8f18c2b5b27a20949e88a8e88f5fbc8e46",
+      "git_blob_sha1": "d48191d2b01da40500305e87a4ce695b9b7cc1a7"
+    },
+    "skills/stnl-spec-lifecycle-manager/references/modes.md": {
+      "words": 727,
+      "bytes": 5415,
+      "sha256": "7a2b18525fdd312c40c96147d15eb4994a22cd9bafa924d39edcf99ab781d7ed",
+      "git_blob_sha1": "8adac50bf8f25c21eca664a66b2d00b5b85c77da"
+    },
+    "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md": {
+      "words": 601,
+      "bytes": 4757,
+      "sha256": "b9180488eaaeed2e3bd44526c4f6086b012a72405563bc77212ee59b0b004e72",
+      "git_blob_sha1": "cd7b5287724945fe56d24c80da4cab9dbb8c2478"
+    },
+    "skills/stnl-spec-lifecycle-manager/references/spec-schema.md": {
+      "words": 1105,
+      "bytes": 8212,
+      "sha256": "216f26f777bc49c84092fe745f815db1ceba17b3f6b5531561309ba33d9d6fb0",
+      "git_blob_sha1": "51ac57cfebce9cfc5a83f249b6f91b217321a52e"
+    },
+    "skills/stnl-spec-lifecycle-manager/references/spec-workspace.md": {
+      "words": 869,
+      "bytes": 6429,
+      "sha256": "31097823e55288e52ed06b44f595c6f787e6e851bd332dfc99e9061e0efa2d3b",
+      "git_blob_sha1": "affce4cd4a241d6aac98f176f6019ee1d80ffd1a"
+    }
+  },
+  "modes": {
+    "INIT_DRAFT": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-workspace.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-schema.md"
+        ],
+        "words": 3328,
+        "bytes": 24880
+      },
+      "maximum_ceilings": {
+        "words": 3300,
+        "bytes": 24800
+      },
+      "minimum_reduction_percent": 0
+    },
+    "INIT_READY": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-workspace.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-schema.md",
+          "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md",
+          "skills/stnl-spec-lifecycle-manager/references/canonical-ids.md"
+        ],
+        "words": 4323,
+        "bytes": 32433
+      },
+      "maximum_ceilings": {
+        "words": 4275,
+        "bytes": 32225
+      },
+      "minimum_reduction_percent": 0
+    },
+    "RESUME_FOCUSED": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-workspace.md"
+        ],
+        "words": 2223,
+        "bytes": 16668
+      },
+      "maximum_ceilings": {
+        "words": 2180,
+        "bytes": 16610
+      },
+      "minimum_reduction_percent": 0
+    },
+    "READINESS_LOCAL": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-schema.md",
+          "skills/stnl-spec-lifecycle-manager/references/canonical-ids.md"
+        ],
+        "words": 3454,
+        "bytes": 26004
+      },
+      "maximum_ceilings": {
+        "words": 1870,
+        "bytes": 14750
+      },
+      "minimum_reduction_percent": 0
+    },
+    "READINESS_GLOBAL": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-schema.md",
+          "skills/stnl-spec-lifecycle-manager/references/canonical-ids.md"
+        ],
+        "words": 3454,
+        "bytes": 26004
+      },
+      "maximum_ceilings": {
+        "words": 1870,
+        "bytes": 14750
+      },
+      "minimum_reduction_percent": 15
+    },
+    "CLOSE": {
+      "baseline": {
+        "files": [
+          "skills/stnl-spec-lifecycle-manager/SKILL.md",
+          "skills/stnl-spec-lifecycle-manager/references/modes.md",
+          "skills/stnl-spec-lifecycle-manager/references/readiness-gates.md",
+          "skills/stnl-spec-lifecycle-manager/references/spec-schema.md",
+          "skills/stnl-spec-lifecycle-manager/references/canonical-ids.md",
+          "skills/stnl-spec-lifecycle-manager/references/close-policy.md"
+        ],
+        "words": 3883,
+        "bytes": 29240
+      },
+      "maximum_ceilings": {
+        "words": 2375,
+        "bytes": 18650
+      },
+      "minimum_reduction_percent": 20
+    }
+  }
+}

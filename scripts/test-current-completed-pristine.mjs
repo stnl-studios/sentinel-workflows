@@ -192,12 +192,33 @@ test('captured implementation PASS cannot be published after drift; one episode 
   await captureNative(operation.start.handle,file);await publish(operation.start.handle);const final=await captureCurrentExecution(f.specPath);assert.equal(final.inspection.deliveries[0].counters.implementationChecks,2);
 });
 
-test('uncertain metadata preserves A1 and cannot reserve a successor',async t=>{
+test('foreign semantic metadata settles rejection and requires publication before a successor',async t=>{
+  const f=await completedPristineCase(t),operation=await execute(f,{headOverride:'f'.repeat(40)});
+  assert.equal((await resume(operation.start.handle)).nextAction,'publish');
+  await assert.rejects(()=>reserveDispatch(operation.start.handle,{responseVariant:'stnl-current-native-judgment-v1'}));
+  await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:f.delivery.slice,operation:'EXECUTE_SLICE',expectedActivationId:operation.before.inspection.activationId}));
+  const raw=operation.rounds[0].raw;
+  assert.equal(await fs.readFile(path.join(path.dirname(operation.rounds[0].dispatch.originFile),'round-1.response.json'),'utf8'),raw);
+  await publish(operation.start.handle);
+  const image=await captureCurrentExecution(f.specPath);
+  assert.equal(JSON.parse(Buffer.from(image.activationBytes)).activeAttempt,null);
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const bundle=JSON.parse(Buffer.from(image.files.get(continuity.deliveries[0].evidence.path)));
+  assert.equal(bundle.support.at(-1).kind,'rejection');
+  assert.ok(bundle.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')===raw));
+  assert.notEqual(image.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
+});
+
+test('foreign native identity preserves A1 and waits for the bound agent without a successor',async t=>{
   const f=await completedPristineCase(t),a0=await captureCurrentExecution(f.specPath);
-  await assert.rejects(()=>execute(f,{headOverride:'f'.repeat(40)}),error=>error.code==='RUNNER_RESULT_REJECTED');
+  let protectedFiles;
+  await assert.rejects(()=>execute(f,{beforeCapture:async({file,dispatch})=>{const directory=path.dirname(dispatch.originFile);protectedFiles=await Promise.all(['agent','origin','observation'].map(async name=>{const file=path.join(directory,'round-1.'+name+'.json');return {file,bytes:await fs.readFile(file)};}));const result=JSON.parse(await fs.readFile(file,'utf8'));result.agentId='foreign-unbound-agent';await fs.writeFile(file,JSON.stringify(result));}}),error=>error.code==='OWNER_MISMATCH');
+  for(const item of protectedFiles)assert.deepEqual(await fs.readFile(item.file),item.bytes);
+  await assert.rejects(fs.lstat(path.join(path.dirname(protectedFiles[0].file),'round-1.response.json')),{code:'ENOENT'});
   const activation=JSON.parse(await fs.readFile(path.join(f.image.context.logicalExecutionRoot,'activation.json')));assert.ok(activation.activeAttempt);assert.equal(activation.previousActivationId,a0.inspection.activationId);
   const handle={format:'stnl-current-operation-handle-v1',specPath:f.specPath,operationId:activation.activeAttempt.operationRef.operationId,ownershipToken:activation.activeAttempt.ownershipToken};
-  assert.equal((await resume(handle)).nextAction,'stop-and-diagnose');
+  assert.equal((await resume(handle)).nextAction,'await-same-agent');
+  await assert.rejects(()=>publish(handle),error=>error.code==='OWNER_UNCERTAIN');
   await assert.rejects(()=>reserveDispatch(handle,{responseVariant:'stnl-current-native-judgment-v1'}),error=>error.code==='OWNER_UNCERTAIN');
 });
 

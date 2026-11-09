@@ -1,3 +1,4 @@
+import {publishPreparationCandidate} from './fixtures/synthetic-preparation-approval.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,7 +10,7 @@ import {loadProduct} from '../benchmarks/sentinel-todo/runtime/benchmark-manager
 import {retainBeforeClose,finishCloseEvidence,validateRetainedSource,validateTerminalEvidence} from '../benchmarks/sentinel-todo/runtime/native-evidence.mjs';
 import {publishCandidate} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs';
 import {preparePreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
-import {publishPreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
+
 import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {READY_FIXTURE} from '../skills/workflows/stnl-spec-lifecycle-manager/runtime/test/publisher-fixtures.mjs';
 const sha=bytes=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
@@ -56,6 +57,39 @@ test('converted retained proof survives retirement and terminal reentry validati
   ]) {
     const bad=structuredClone(pre);mutate(bad);
     await assert.rejects(validateRetainedSource({product,evidence:bad,specPath,workspace}));
+  }
+  const completed=JSON.parse(Buffer.from(before.files.get('continuity.json'))).completed[0];
+  assert.ok(completed);
+  const rewrite=(e,name,bytes,{rebind=true}={})=>{
+    e.source.files=e.source.files.filter(item=>item.name!==name);
+    if(bytes!==null)e.source.files.push({name,bytesBase64:bytes.toString('base64'),sha256:sha(bytes)});
+    if(rebind) {
+      const activation=JSON.parse(Buffer.from(e.source.activationBase64,'base64'));
+      activation.artifacts=activation.artifacts.filter(item=>item.path!==name);
+      if(bytes!==null)activation.artifacts.push({path:name,sha256:sha(bytes)});
+      activation.artifacts.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+      e.source.activationBase64=Buffer.from(JSON.stringify(activation)).toString('base64');
+      e.disposition.artifactManifestSha256=sha(Buffer.from(JSON.stringify(activation.artifacts)));
+    }
+    e.sourceSha256=sha(Buffer.from(JSON.stringify(e.source)));
+  };
+  // Rebind capsule/activation digests where indicated so these refusals prove
+  // the full layout and normative/evidence guards, not just an outer checksum.
+  for(const [label,mutate] of [
+    ['foreign Markdown',e=>rewrite(e,'plans/slice-99.md',Buffer.from('foreign Markdown\n'))],
+    ['incomplete retained pair',e=>rewrite(e,`plans/${completed.slice}.md`,null)],
+    ['retained document bytes',e=>rewrite(e,`tasks/${completed.slice}.md`,Buffer.from('changed retained bytes\n'),{rebind:false})],
+    ['reviewed carrier',e=>rewrite(e,'plan.md',Buffer.from(Buffer.from(before.files.get('plan.md')).toString().replace(/^- Plan revision: .+$/mu,'- Plan revision: 999')))],
+    ['evidence digest',e=>rewrite(e,completed.evidence.path,Buffer.concat([before.files.get(completed.evidence.path),Buffer.from(' ')]))],
+    ['snapshot authority',e=>{
+      const approved=JSON.parse(Buffer.from(before.files.get('approved-preparation.json')));
+      approved.requirementsAuthority='sha256:'+'0'.repeat(64);
+      rewrite(e,'approved-preparation.json',Buffer.from(JSON.stringify(approved)));
+    }],
+  ]) {
+    const bad=structuredClone(pre);mutate(bad);
+    await assert.rejects(validateRetainedSource({product,evidence:bad,specPath,workspace}),
+      error=>['INVALID_CURRENT_IMAGE','STALE_APPROVAL','REQUIREMENTS_CHANGED','EVIDENCE_INCOMPLETE','EVIDENCE_STALE'].includes(error.code),label);
   }
   assert.deepEqual((await captureCurrentExecution(f.specPath)).activationBytes,before.activationBytes);
   assert.deepEqual((await captureCurrentExecution(f.specPath)).files,before.files);

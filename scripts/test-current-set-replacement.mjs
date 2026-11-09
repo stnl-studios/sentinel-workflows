@@ -131,7 +131,12 @@ test('Q18 composes A completed and B current PASS in memory with exact retained 
     assert.deepEqual(next.objects,old.objects,'all original captured bytes and object IDs remain literal');
     assert.deepEqual(next.validation,old.validation,'the existing PASS record is not reauthored');
     assert.equal(sha(result.files.get(current.evidence.path)),current.evidence.sha256);
-    for(const group of ['plans','tasks'])assert.equal(result.files.has(`${group}/${current.slice}.md`),false);
+    for(const group of ['plans','tasks']) {
+      const name=`${group}/${current.slice}.md`,prior=image.files.get(name);
+      // Keep available completed documents literally; never fabricate absent ones.
+      if(prior===undefined)assert.equal(result.files.has(name),false);
+      else assert.deepEqual(result.files.get(name),Buffer.from(prior));
+    }
   }
   assert.equal(result.files.has('activation.json'),false);
   const untouched=await captureCurrentExecution(fixture.specPath);
@@ -168,8 +173,12 @@ test('Q18 composes A completed and B current PASS in memory with exact retained 
         ['INVALID_CURRENT_IMAGE','UNSUPPORTED_FORMAT'].includes(error?.code));
     assert.deepEqual(prepareCurrentSetReplacement({...input,completedDeliveryIds:[...ids].reverse()})
       .reviewRequest,proposal.reviewRequest,'selection order does not change membership');
+    const retainedTask=Buffer.from(image.files.get('tasks/slice-02.md'));
+    assert.deepEqual(prepareCurrentSetReplacement({...input,artifacts:new Map([...input.artifacts,
+      ['tasks/slice-02.md',retainedTask]])}).reviewRequest,proposal.reviewRequest);
     assert.throws(()=>prepareCurrentSetReplacement({...input,artifacts:new Map([...input.artifacts,
-      ['tasks/slice-02.md',image.files.get('tasks/slice-02.md')]])}),{code:'INVALID_CURRENT_IMAGE'});
+      ['tasks/slice-02.md',Buffer.concat([retainedTask,Buffer.from('\n')])]])}),
+      {code:'STALE_APPROVAL',message:'retained completed document was changed'});
   });
   await t.test('approval binds content after proposal, independent of mutated output buffers',()=>{
     const candidate=prepareCurrentSetReplacement(input),review=controlledReview(candidate);
@@ -345,8 +354,10 @@ test('Q19 reopens private B from Q18 in memory, retaining independent A and lite
   assert.equal(first.inspection.state,'VALIDATION_BLOCKED');assert.equal(first.inspection.normalHandoff,null);
   const q18=inertReviewSource(live,first.result),prior=decode(q18.files.get('continuity.json'));
   assert.equal(prior.deliveries.length,0);
-  assert.equal(q18.files.has(`plans/${fixture.delivery.slice}.md`),false);
-  assert.equal(q18.files.has(`tasks/${fixture.delivery.slice}.md`),false);
+  for(const group of ['plans','tasks']) {
+    const name=`${group}/${fixture.delivery.slice}.md`;
+    assert.deepEqual(q18.files.get(name),Buffer.from(live.files.get(name)));
+  }
   const input=reopeningInput(q18,fixture.delivery.deliveryId);
   const second=await composeVerified(input,fixture.specPath),next=decode(second.result.files.get('continuity.json'));
   const a=prior.completed.find(item=>item.deliveryId!==fixture.delivery.deliveryId),b=prior.completed.find(item=>item.deliveryId===fixture.delivery.deliveryId);
@@ -438,7 +449,8 @@ test('Q19 reopens private B from Q18 in memory, retaining independent A and lite
     const stale=reopeningInput(q18,b.deliveryId),proposal=prepareCurrentSetReplacement(stale),review=controlledReview(proposal);
     stale.artifacts.set('plan.md',Buffer.concat([stale.artifacts.get('plan.md'),Buffer.from('\n')]));
     assert.throws(()=>finalizeCurrentSetReplacement({proposal,review}),{code:'STALE_APPROVAL'});
-    assert.throws(()=>prepareCurrentSetReplacement({...input,completedDeliveryIds:[b.deliveryId]}),{code:'INVALID_CURRENT_IMAGE'});
+    assert.throws(()=>prepareCurrentSetReplacement({...input,completedDeliveryIds:[b.deliveryId]}),
+      {code:'STALE_APPROVAL',message:'retained completed document was changed'});
   });
   await t.test('Q19 inspects the retained source before reopening and refuses product drift',async()=>{
     for(const relative of ['src/greeting.mjs',fixture.productFile]) {

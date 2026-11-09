@@ -325,7 +325,7 @@ test('planner/reviewer copies import from their shipped pure evidence closure', 
       assert.deepEqual(Object.keys(api).sort(), ['approveCurrentPreparation', 'approveInitialPreparation',
         'finalizeCurrentLocalReview', 'finalizeCurrentSetReplacement',
         'prepareCurrentLocalReview', 'prepareCurrentSetReplacement',
-        'projectCurrentPreparation', 'projectInitialPreparation', 'validateCurrentPreparation',
+        'projectCurrentPreparation', 'projectDocumentaryPreparation', 'projectInitialPreparation', 'restoreDocumentaryPreparationArtifacts', 'validateCurrentPreparation',
         'validateInitialApprovedPreparation', 'validateReviewedPreparation']);
       for (const [label, check] of [
         ['initial preparation', projectsAndApprovesInitialPreparation],

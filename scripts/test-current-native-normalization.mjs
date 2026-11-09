@@ -188,7 +188,13 @@ test('EC-1 normalization: quiet rejection and successor read without temporary a
     const second=await captureQualityExecution(fixture.specPath);
     assert.deepEqual(first.inspection,second.inspection);
     assert.equal(first.inspection.deliveries[0].formalStatus,successor?'PASS':null);
-    assert.equal(first.inspection.normalHandoff?.operation,successor?undefined:'VALIDATE_SLICE');
+    assert.deepEqual(first.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:fixture.delivery.slice,deliveryId:fixture.delivery.deliveryId});
+    if(successor) {
+      // Successful local recovery still owes its separate integral judgment.
+      assert.notEqual(first.inspection.state,'COMPLETE');
+      assert.deepEqual(first.inspection.diagnostics,[{kind:'evidence',artifact:'continuity.json',field:'terminal',
+        reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]);
+    }
   });
 });
 

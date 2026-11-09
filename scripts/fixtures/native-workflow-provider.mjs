@@ -1,3 +1,4 @@
+import {publishPreparationCandidate} from './synthetic-preparation-approval.mjs';
 import assert from 'node:assert/strict';
 // OFFLINE_TEST_ONLY. Scripted authors/judges through the real public producers;
 // these outcomes do not attest semantic model quality or native transport.
@@ -12,7 +13,7 @@ import { publishCandidate } from '../../skills/workflows/stnl-spec-lifecycle-man
 import { preparePreparationCandidate } from '../../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
 import { assertPreparationCandidate, preparePlanCandidate } from '../../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs';
 import { serializePlanPathClaims } from '../../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs';
-import { publishPreparationCandidate } from '../../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
+
 import { inspectCurrentExecution } from '../../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import { begin, normalizeSuccessor, reserveDispatch, bindNative, verifyNative, captureNative, publish, resume } from
   '../../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';

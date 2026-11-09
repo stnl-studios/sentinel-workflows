@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.Build.Sql/2.3.0">
+  <PropertyGroup>
+    <Name>SentinelSynthetic</Name>
+    <DSP>Microsoft.Data.Tools.Schema.Sql.Sql160DatabaseSchemaProvider</DSP>
+    <ModelCollation>1033, CI</ModelCollation>
+    <EnableDefaultSqlItems>false</EnableDefaultSqlItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Build Include="Tables.sql" />
+    <Build Include="Rebuild.sql" />
+    <PreDeploy Include="PreDeployment.sql" />
+    <PostDeploy Include="PostDeployment.sql" />
+  </ItemGroup>
+</Project>

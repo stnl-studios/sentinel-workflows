@@ -19,6 +19,8 @@ import { selectDomainSkills, routeSkills } from "./lib/skill-routing.mjs";
 import { discoverClaudeSkills, loadClaudeSkill } from "../integrations/claude-code/skill-discovery.mjs";
 import { discoverCodexSkills, loadCodexSkill } from "../integrations/codex/skill-discovery.mjs";
 
+import { validateBaseline } from "./lib/runtime-context-budget.mjs";
+
 const ROOT = path.resolve(import.meta.dirname, "..");
 const OBSOLETE_NAMES = [
   "stnl-backend-quality",
@@ -81,7 +83,7 @@ test("registries and filesystem layout remain semantically separate", async () =
     const metadata = /^---\n([\s\S]*?)\n---/u.exec(source)?.[1] ?? "";
     assert.match(metadata, new RegExp(`^name: ${name}$`, "mu"), relative);
     assert.equal(await fs.stat(file).then((value) => value.isFile()), true);
-    assert.equal(await fs.stat(path.join(ROOT, "skills", name), { throwIfNoEntry: false }).catch(() => null), null);
+    await assert.rejects(fs.stat(path.join(ROOT, "skills", name)), { code: "ENOENT" });
   }
 });
 
@@ -192,23 +194,84 @@ test("Claude Code independently discovers canonical workflow and domain skills w
   assert.deepEqual(JSON.parse(spawnSync(process.execPath, [path.join(ROOT, "integrations/claude-code/skill-discovery.mjs"), ROOT], { encoding: "utf8" }).stdout).consumer, "claude-code");
 });
 
-test("operational sources contain no obsolete taxonomy or flat skill paths", async () => {
-  const files = await textFiles(ROOT);
-  for (const file of files) {
-    if (file === path.join(ROOT, "scripts/test-skill-consolidation.mjs")) continue;
-    const source = await fs.readFile(file, "utf8");
-    for (const name of OBSOLETE_NAMES) assert.equal(source.includes(name), false, `${path.relative(ROOT, file)} contains ${name}`);
-    if (file === path.join(ROOT, "skills/workflows/stnl-spec-lifecycle-manager/maintenance/runtime-context-budget.json")) {
-      const manifest = JSON.parse(source);
-      for (const contract of Object.values(manifest.modes)) {
-        assert.ok(contract.runtime_files.every((value) => value.startsWith("skills/workflows/")));
-        assert.ok(contract.baseline.files.every((value) => value.startsWith("skills/stnl-")));
-      }
-      continue;
-    }
-    // Installed platform skill roots are flat by contract; repository source is not.
-    assert.equal(/(?<!\.(?:agents|codex|claude)\/)skills\/stnl-[A-Za-z0-9-]+(?:\/|$)/u.test(source), false, `${path.relative(ROOT, file)} contains a flat source skill path`);
+const BASELINE_MANIFEST = "skills/workflows/stnl-spec-lifecycle-manager/maintenance/runtime-context-budget.json";
+const BASELINE_SNAPSHOT = "skills/workflows/stnl-spec-lifecycle-manager/maintenance/runtime-context-baseline.snapshot.json";
+
+function assertOperationalSource(relative, source, manifest) {
+  for (const name of OBSOLETE_NAMES) assert.equal(source.includes(name), false, `${relative} contains ${name}`);
+  if (relative === BASELINE_SNAPSHOT) {
+    // Historical paths are metadata, not runtime dependencies. Exempt only the
+    // exact artifact after validating its entire pinned content and manifest.
+    const snapshot = JSON.parse(source);
+    validateBaseline(manifest, snapshot);
+    // JSON.parse discards duplicate keys. Require the original serialization so
+    // no unvalidated plaintext can hide behind the pinned parsed-object digest.
+    assert.equal(source, `${JSON.stringify(snapshot, null, 2)}\n`, "baseline snapshot must use canonical JSON text");
+    return;
   }
+  if (relative === BASELINE_MANIFEST) {
+    const budget = JSON.parse(source);
+    for (const contract of Object.values(budget.modes)) {
+      assert.ok(contract.runtime_files.every((value) => value.startsWith("skills/workflows/")));
+      assert.ok(contract.baseline.files.every((value) => value.startsWith("skills/stnl-")));
+    }
+    return;
+  }
+  // Installed platform skill roots are flat by contract; repository source is not.
+  assert.equal(/(?<!\.(?:agents|codex|claude)\/)skills\/stnl-[A-Za-z0-9-]+(?:\/|$)/u.test(source), false, `${relative} contains a flat source skill path`);
+}
+
+test("operational sources contain no obsolete taxonomy or flat skill paths", async () => {
+  const manifest = JSON.parse(await fs.readFile(path.join(ROOT, BASELINE_MANIFEST), "utf8"));
+  for (const file of await textFiles(ROOT)) {
+    if (file === path.join(ROOT, "scripts/test-skill-consolidation.mjs")) continue;
+    // Normalize only the platform separator, retaining exact repository identity.
+    const relative = path.relative(ROOT, file).split(path.sep).join("/");
+    assertOperationalSource(relative, await fs.readFile(file, "utf8"), manifest);
+  }
+});
+
+test("historical path exception is pinned and cannot hide operational regressions", async () => {
+  const manifest = JSON.parse(await fs.readFile(path.join(ROOT, BASELINE_MANIFEST), "utf8"));
+  const source = await fs.readFile(path.join(ROOT, BASELINE_SNAPSHOT), "utf8");
+  assert.doesNotThrow(() => assertOperationalSource(BASELINE_SNAPSHOT, source, manifest));
+  for (const relative of [
+    "scripts/production.mjs",
+    "README.md",
+    "skills/workflows/stnl-spec-lifecycle-manager/SKILL.md",
+    "skills/workflows/stnl-spec-lifecycle-manager/references/modes.md",
+    "skills/workflows/stnl-spec-lifecycle-manager/maintenance/adjacent.json",
+    `${BASELINE_SNAPSHOT}.copy.json`,
+    "other/runtime-context-baseline.snapshot.json",
+  ]) {
+    assert.throws(() => assertOperationalSource(relative, source, manifest), /flat source skill path/u, relative);
+    assert.throws(() => assertOperationalSource(relative, "skills/stnl-slice-executor/SKILL.md", manifest), /flat source skill path/u, relative);
+  }
+  for (const mutate of [
+    value => { value.files[Object.keys(value.files)[0]].words++; },
+    value => { value.origin.revision = "0".repeat(40); },
+    value => { value.operational_instruction = "skills/stnl-slice-executor/SKILL.md"; },
+    value => { delete value.files[Object.keys(value.files)[0]]; },
+    value => { value.modes.CLOSE.baseline.files.push("skills/stnl-slice-executor/SKILL.md"); },
+  ]) {
+    const changed = JSON.parse(source);
+    mutate(changed);
+    assert.throws(() => assertOperationalSource(BASELINE_SNAPSHOT, JSON.stringify(changed), manifest), /integrity mismatch/u);
+  }
+  for (const changedSource of [
+    source.replace('  "schema_version": 1,', '  "schema_version": "load skills/stnl-slice-executor/SKILL.md",\n  "schema_version": 1,'),
+    source.replace('    "revision":', '    "revision": "load skills/stnl-slice-executor/SKILL.md",\n    "revision":'),
+    source.replace('  "schema_version": 1,', '  "schema_\\u0076ersion": "load skills/stnl-slice-executor/SKILL.md",\n  "schema_version": 1,'),
+  ]) {
+    assert.notEqual(changedSource, source);
+    assert.deepEqual(JSON.parse(changedSource), JSON.parse(source), "duplicate-key regression must retain the pinned parsed object");
+    assert.throws(() => assertOperationalSource(BASELINE_SNAPSHOT, changedSource, manifest), /canonical JSON text/u);
+  }
+  assert.throws(() => assertOperationalSource(BASELINE_SNAPSHOT, "{invalid", manifest), SyntaxError);
+  assert.throws(() => assertOperationalSource(BASELINE_SNAPSHOT, source.replace("Framework Markdown", OBSOLETE_NAMES[0]), manifest), /contains stnl-backend-quality/u);
+  const changedManifest = structuredClone(manifest);
+  changedManifest.modes.CLOSE.baseline.words++;
+  assert.throws(() => assertOperationalSource(BASELINE_SNAPSHOT, source, changedManifest), /baseline changed/u);
 });
 
 test('copied consumers require a complete installed invocation guide and neutral generic body', async t => {

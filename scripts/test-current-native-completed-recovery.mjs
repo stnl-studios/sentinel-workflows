@@ -1,3 +1,4 @@
+import {publishPreparationCandidate} from './fixtures/synthetic-preparation-approval.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -13,7 +14,7 @@ import {prepareCurrentLocalReview,finalizeCurrentLocalReview} from '../skills/wo
 import {publishCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/current-local-review.mjs';
 import {begin,reserveDispatch,publish,normalizeSuccessor,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {preparePreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
-import {publishPreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
+
 
 for(const operation of ['EXECUTE_SLICE','APPLY_FINDINGS'])test(`operational producer recovery: ${operation} four corrected schema failures retain their lineage`,async t=>{
   const f=operation==='EXECUTE_SLICE'?await completedPristineCase(t):await completedBlockingCase(t);

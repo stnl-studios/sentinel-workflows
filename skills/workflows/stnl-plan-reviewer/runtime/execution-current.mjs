@@ -405,7 +405,9 @@ function work(value, label) {
       object(entry, ['path', 'kind', 'sha256', 'mode'], label); hash(entry.sha256, label); nat(entry.mode, label);
       if (entry.mode > 511) invalid(`${label}: invalid mode`);
     } else if (entry.kind === 'directory') {
-      object(entry, ['path', 'kind', 'children'], label); array(entry.children, label);
+      object(entry, ['path', 'kind', 'children',...(Object.hasOwn(entry,'externalContextSha256')?['externalContextSha256']:[]),...(Object.hasOwn(entry,'mode')?['mode']:[])], label); array(entry.children, label);
+      if(Object.hasOwn(entry,'externalContextSha256'))hash(entry.externalContextSha256,`${label}.externalContextSha256`);
+      if(Object.hasOwn(entry,'mode')){nat(entry.mode,`${label}.mode`);if(entry.mode>511)invalid(`${label}: invalid directory mode`);}
       for (const child of entry.children) {
         posixRelative(child, label);
         if (child.includes('/')) invalid(`${label}: child is not a basename`);
@@ -557,9 +559,31 @@ function review(value, scope, projection, expectedPaths) {
   ordered(value.evidenceDecisions, item => item.deliveryId, 'evidenceDecisions');
   string(value.summary, 'review.summary');
 }
+export function validateDocumentaryRequest(value) {
+  object(value,['format','requestId','requestedSlice','requestedOperation','terminal','slice','operation','activationId','newAttemptLimit','decisionSha256'],'documentary request');
+  string(value.requestId,'documentary user request ID');if(value.requestId.length>512||!value.requestId.trim())invalid('documentary user request ID');
+  slice(value.requestedSlice,'requested documentary slice');slice(value.slice,'admitted documentary slice');
+  oneOf(value.requestedOperation,['EXECUTE_SLICE','VALIDATE_SLICE','APPLY_FINDINGS'],'requested documentary phase');
+  oneOf(value.operation,['EXECUTE_SLICE','VALIDATE_SLICE','APPLY_FINDINGS'],'admitted documentary phase');
+  uuid(value.activationId,'documentary base activation');hash(value.decisionSha256,'documentary decision');
+  const base={format:value.format,requestId:value.requestId,requestedSlice:value.requestedSlice,requestedOperation:value.requestedOperation,terminal:value.terminal,
+    slice:value.slice,operation:value.operation,activationId:value.activationId,newAttemptLimit:value.newAttemptLimit};
+  if(value.format!=='stnl-documentary-request-v1'||typeof value.terminal!=='boolean'||value.terminal&&value.requestedOperation!=='VALIDATE_SLICE'||value.newAttemptLimit!==1||value.decisionSha256!==raw(Buffer.from(JSON.stringify(base)+'\n')))
+    invalid('documentary request digest or limit differs');
+  return value;
+}
+export function validateDocumentaryResumption(value) {
+  object(value,['format','sourceSha256','decisionSha256','operation','slice','historicalBudget','historicalProof','historicalApproval','newAttemptLimit'],'documentary resumption');
+  if(value.format!=='stnl-documentary-resumption-v1'||value.historicalBudget!=='unknown'
+    ||value.historicalProof!=='unverified'||value.historicalApproval!=='unverified'||value.newAttemptLimit!==1
+    ||!['EXECUTE_SLICE','VALIDATE_SLICE'].includes(value.operation))invalid('documentary resumption provenance differs');
+  hash(value.sourceSha256,'resumption source');hash(value.decisionSha256,'resumption decision');slice(value.slice,'resumption slice');
+  return value;
+}
 function approved(value) {
   checkedFormat(value, FORMAT.preparation, 'approved preparation');
-  object(value, ['format', 'preparationRevision', 'requirementsAuthority', 'normativeSha256', 'normativeProjection', 'globalReview', 'deliveries', 'completed', 'reviewedArtifacts'], 'approved preparation');
+  object(value, ['format', 'preparationRevision', 'requirementsAuthority', 'normativeSha256', 'normativeProjection', 'globalReview', 'deliveries', 'completed', 'reviewedArtifacts', ...(value.resumption===undefined?[]:['resumption'])], 'approved preparation');
+  if(value.resumption!==undefined)validateDocumentaryResumption(value.resumption);
   nat(value.preparationRevision, 'preparationRevision', true); hash(value.requirementsAuthority, 'requirementsAuthority'); hash(value.normativeSha256, 'normativeSha256');
   currentProjection(value.normativeProjection);
   if (value.requirementsAuthority !== value.normativeProjection.requirementsAuthority || value.normativeSha256 !== projected('preparation', value.normativeProjection)) invalid('preparation authority mismatch');
@@ -658,6 +682,14 @@ export function currentTerminalProjection(snapshot) {
     objective: projection.global.objective, strategy: projection.global.strategy,
     risks: projection.global.risks, deliveries});
 }
+// Q18 re-prepares the delivery, so a concluded native EXECUTE refusal from an earlier preparation of
+// the same delivery/slice/local revision stays in support as history; it never carries the terminal claim.
+function supersededExecutionRefusal(item,current,snapshot) {
+  return item.kind==='rejection'&&item.origin?.transport==='native'&&item.origin?.operation==='EXECUTE_SLICE'
+    &&item.origin?.deliveryId===current.deliveryId&&item.origin?.slice===current.slice
+    &&item.origin?.localRevision===current.localRevision
+    &&item.origin?.preparationRevision<snapshot.preparationRevision;
+}
 export function retainedQ20TerminalReplacement({current,decision,bundle,record,approvedDelivery,leaf,global,snapshot,files}) {
   if(decision.disposition!=='retain-current'||!approvedDelivery
     ||decision.evidenceSha256===current.evidence?.sha256
@@ -674,7 +706,7 @@ export function retainedQ20TerminalReplacement({current,decision,bundle,record,a
     ||!same(record.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
       objective:global.objective,strategy:global.strategy,risks:global.risks})
     ||!same(record.contract?.recipe,leaf.verificationRecipe)
-    ||bundle.support.some(item=>item.kind!=='validation'||item.recordFormat!=='stnl-task-record-v2'
+    ||bundle.support.some(item=>!supersededExecutionRefusal(item,current,snapshot)&&(item.kind!=='validation'||item.recordFormat!=='stnl-task-record-v2'
       ||item.origin?.transport!=='native'||item.origin?.operation!=='VALIDATE_SLICE'
       ||item.origin?.deliveryId!==current.deliveryId||item.origin?.slice!==current.slice
       ||item.origin?.localRevision!==current.localRevision
@@ -682,7 +714,7 @@ export function retainedQ20TerminalReplacement({current,decision,bundle,record,a
       ||!HASH.test(item.origin?.normativeSha256)
       ||!same(item.contract?.delivery,leaf)||!same(item.contract?.context,{requirementsAuthority:snapshot.requirementsAuthority,
         objective:global.objective,strategy:global.strategy,risks:global.risks})
-      ||!same(item.contract?.recipe,leaf.verificationRecipe)))return false;
+      ||!same(item.contract?.recipe,leaf.verificationRecipe))))return false;
   if(bundle.implementation.some(item=>item.kind!=='implementation-check'
     ||item.recordFormat!=='stnl-task-record-v2'||item.origin?.transport!=='native'
     ||item.origin?.operation!=='EXECUTE_SLICE'||item.origin?.deliveryId!==current.deliveryId
@@ -836,7 +868,15 @@ function validateCurrentContent(files) {
   }
   const snapshot = approved(parsed.get('approved-preparation.json'));
   const continuity = validateCurrentContinuity(parsed.get('continuity.json'));
-  const expected = ['approved-preparation.json', 'continuity.json', 'plan.md', 'tasks.md',
+  const retainedDocuments=[];
+  for(const item of snapshot.completed) {
+    const pair=[`plans/${item.slice}.md`,`tasks/${item.slice}.md`];
+    if(pair.some(name=>files.has(name))) {
+      if(!pair.every(name=>files.has(name)))invalid('retained completed documents require the Plan/Task pair');
+      retainedDocuments.push(...pair);
+    }
+  }
+  const expected = ['approved-preparation.json', 'continuity.json', 'plan.md', 'tasks.md',...retainedDocuments,
     ...snapshot.deliveries.flatMap(item => [`plans/${item.slice}.md`, `tasks/${item.slice}.md`]),
     ...[...continuity.deliveries, ...continuity.completed].filter(item => item.evidence).map(item => item.evidence.path)].sort(ordinal);
   if (!same(names.sort(ordinal), expected)) invalid('current content layout mismatch');
@@ -950,11 +990,15 @@ function validateCurrentContent(files) {
           &&item.origin.operation===({'implementation-check':'EXECUTE_SLICE','findings-check':'APPLY_FINDINGS',validation:'VALIDATE_SLICE'})[item.kind]
           &&item.origin.deliveryId===current.deliveryId&&item.origin.slice===current.slice
           &&item.origin.localRevision<=current.localRevision);
+    // Q20 terminal reentry after Q18: formal history plus superseded EXECUTE refusals only.
+    const retainedQ20Support=bundle?.findingsChecks?.length===0&&bundle.support.length<=5
+      &&bundle.support.every(item=>item.kind==='validation'||supersededExecutionRefusal(item,current,snapshot));
     return decision.evidenceSha256!==current.evidence?.sha256 && approvedDelivery
       && (bundle?.implementation?.length===0 || retainedQ20TerminalReplacement({current,decision,bundle,record,
         approvedDelivery,leaf,global,snapshot,files})
       && (bundle.findingsChecks?.length===0 || convertedFindings || retainedRemoval)
-      && (bundle.support?.length===0 || convertedFindings || convertedRejection || retainedRemoval)
+      && (bundle.support?.length===0 || convertedFindings || convertedRejection || retainedRemoval
+        || retainedQ20Support)
       && bundle.openDivergences?.length===0
       && validConvertedRecord);
   };
@@ -980,6 +1024,29 @@ function validateCurrentContent(files) {
     if (current.validation === 'current' && current.evidence === null) evidenceError('current delivery lacks evidence');
     if (current.evidence === null) continue;
     const evidence = validateCurrentEvidence(parsed.get(current.evidence.path));
+    if(snapshot.resumption) {
+      const objects=new Map(evidence.objects.map(item=>[item.id,Buffer.from(item.bytesBase64,'base64')])),used=new Set();
+      const records=[...evidence.implementation,...evidence.findingsChecks,...(evidence.validation?[evidence.validation]:[]),...evidence.support];
+      for(const record of records) {
+        const capsule=parseCurrentJson(decode(objects.get(record.sources.origin),'documentary origin capsule'));
+        const origin=parseCurrentJson(capsule.originUtf8),binding=origin.admission?.binding;
+        const decision=validateDocumentaryRequest(binding?.documentaryRequest);
+        const requested=[...snapshot.deliveries,...snapshot.completed].find(item=>item.slice===decision.requestedSlice);
+        const permitted=new Set();
+        const include=id=>{if(permitted.has(id))return;const leaf=leaves.get(id);if(!leaf)invalid('documentary request dependency is absent');permitted.add(id);for(const dep of leaf.dependencies)include(dep);};
+        if(!requested)invalid('documentary request target is absent');include(requested.deliveryId);
+        if(!permitted.has(current.deliveryId))invalid('documentary proof is outside requested target and dependencies');
+        if(record.kind!=='rejection'&&(!['EXECUTE_SLICE','APPLY_FINDINGS'].includes(decision.requestedOperation)||decision.requestedSlice!==decision.slice)) {
+          const before=parseCurrentJson(capsule.baselineUtf8);
+          if(!same(before.manifest,record.testedWork))invalid('observational documentary request changed product state');
+        }
+        if(origin.attempt!==1||binding.normalization!==undefined||record.kind==='rejection'&&record.consumedInvocations!==1
+          ||decision.activationId!==origin.admission.baseActivation.activationId||decision.operation!==record.origin.operation||decision.slice!==record.origin.slice)
+          invalid('documentary proof exceeds the admitted current request');
+        const key=JSON.stringify([decision.requestId,decision.operation,decision.slice,decision.terminal]);
+        if(used.has(key))invalid('documentary request consumed more than one invocation');used.add(key);
+      }
+    }
     if (raw(Map.prototype.get.call(files, current.evidence.path)) !== current.evidence.sha256) invalid('continuity evidence raw hash mismatch');
     if (evidence.deliveryId !== current.deliveryId || evidence.slice !== current.slice || evidence.currentAuthoritySha256 !== current.authoritySha256) invalid('evidence current binding mismatch');
     if (current.validation === 'current' && evidence.validation === null) evidenceError('current delivery lacks formal validation record');

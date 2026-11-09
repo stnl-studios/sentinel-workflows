@@ -7,14 +7,17 @@ import {ChildProcess,execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {completedNativeCase} from './fixtures/current-completed-native.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
-import {captureCurrentExecution,captureCurrentActiveExecution,validateCurrentReviewCandidate} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
+import {captureCurrentExecution,captureCurrentActiveExecution,validateCurrentReviewCandidate,currentTerminalProductBasisMatches} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {begin,reserveDispatch,bindNative,verifyNative,publish} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {prepareCurrentLocalReview,finalizeCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs';
 import {finding} from './fixtures/current-validation-evidence.mjs';
+import {retireActive} from './fixtures/current-reader-campaign.mjs';
 
 const decode=bytes=>JSON.parse(Buffer.from(bytes));
 const sha=bytes=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
 const json=value=>Buffer.from(JSON.stringify(value)+'\n');
+const canonical=value=>JSON.stringify(value,(_key,item)=>item&&typeof item==='object'&&!Array.isArray(item)
+  ?Object.fromEntries(Object.entries(item).sort(([a],[b])=>a<b?-1:a>b?1:0)):item);
 const run=promisify(execFile);
 const invalid=error=>['EVIDENCE_STALE','EVIDENCE_INCOMPLETE','INVALID_CURRENT_IMAGE','OWNER_UNCERTAIN','RUNNER_RESULT_REJECTED'].includes(error.code);
 
@@ -39,23 +42,31 @@ async function privateReview(f,image,slice) {
 
 // Controlled captures in disposable workspaces only; this suite never invokes
 // a model and is not evidence for the separate real native acceptance block.
-function changedBasis(image,edit) {
+function changedCapture(image,edit) {
   const files=new Map([...image.files].map(([name,bytes])=>[name,Buffer.from(bytes)]));
   const continuity=decode(files.get('continuity.json')),current=continuity.deliveries[0];
   const old=current.evidence.sha256,bundle=decode(files.get(current.evidence.path));
-  const object=bundle.objects.find(item=>item.id===bundle.validation.sources.origin);
-  const capsule=decode(Buffer.from(object.bytesBase64,'base64')),origin=JSON.parse(capsule.originUtf8);
-  edit(origin);capsule.originUtf8=JSON.stringify(origin)+'\n';capsule.dispatchUtf8=capsule.originUtf8;
-  const bytes=json(capsule);object.id=sha(bytes);object.bytesBase64=bytes.toString('base64');
-  bundle.validation.sources.origin=object.id;bundle.objects.sort((a,b)=>a.id<b.id?-1:1);
+  edit(bundle);
   const next=json(bundle);current.evidence.sha256=sha(next);files.set(current.evidence.path,next);
   files.set('continuity.json',json(continuity));
   const task=`tasks/${current.slice}.md`;
   files.set(task,Buffer.from(files.get(task).toString('utf8').replaceAll(old,current.evidence.sha256)));
   return files;
 }
+function changedSource(bundle,name,edit) {
+  const object=bundle.objects.find(item=>item.id===bundle.validation.sources[name]);
+  const value=decode(Buffer.from(object.bytesBase64,'base64'));edit(value);
+  const bytes=json(value);object.id=sha(bytes);object.bytesBase64=bytes.toString('base64');
+  bundle.validation.sources[name]=object.id;bundle.objects.sort((a,b)=>a.id<b.id?-1:1);
+}
+function changedBasis(image,edit) {
+  return changedCapture(image,bundle=>changedSource(bundle,'origin',capsule=>{
+    const origin=JSON.parse(capsule.originUtf8);edit(origin);
+    capsule.originUtf8=JSON.stringify(origin)+'\n';capsule.dispatchUtf8=capsule.originUtf8;
+  }));
+}
 
-test('T01 terminal certification requires the complete current product basis while preserving local PASS',async t=>{
+test('T01 terminal v2 preserves valid certification and rejects post-capture product-basis tampering',async t=>{
   const f=await completedNativeCase(t);await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
   const image=await captureCurrentExecution(f.specPath),a=image.inspection.completed[0];
   assert.equal(image.inspection.state,'COMPLETE');assert.equal(image.observedByDelivery.size,2);
@@ -69,14 +80,89 @@ test('T01 terminal certification requires the complete current product basis whi
     'different captured directory membership':o=>{o.otherDeliveryWork[0].manifest.entries.find(x=>x.kind==='directory').children=[];},
     'different captured file mode':o=>{o.otherDeliveryWork[0].manifest.entries.find(x=>x.kind==='file').mode=0;},
   };
-  for(const [name,edit]of Object.entries(cases))await t.test(name,async()=>{
-    const result=await validateCurrentReviewCandidate({specPath:f.specPath,files:changedBasis(image,edit)});
-    assert.equal(result.state,'VALIDATION_BLOCKED');assert.equal(result.normalHandoff,null);
-    assert.match(result.diagnostics[0].reason,/terminal.*basis/u);
-    assert.equal(result.deliveries[0].formalStatus,'PASS');assert.equal(result.deliveries[0].observedValidation,'current');
-    assert.equal(result.completed[0].observedValidation,'current');
+  const continuity=decode(image.files.get('continuity.json')),selected=continuity.deliveries[0];
+  const bundle=decode(image.files.get(selected.evidence.path));
+  const capsule=decode(Buffer.from(bundle.objects.find(item=>item.id===bundle.validation.sources.origin).bytesBase64,'base64'));
+  const origin=JSON.parse(capsule.originUtf8);
+  const observed=decode(Buffer.from(bundle.objects.find(item=>item.id===bundle.validation.sources.verificationObservation).bytesBase64,'base64'));
+  assert.equal(observed.executionContext.format,'stnl-same-operation-context-v1');
+  assert.equal(observed.executionContext.invocation.binding.originSha256,sha(Buffer.from(capsule.originUtf8)));
+  const unchanged=await validateCurrentReviewCandidate({specPath:f.specPath,files:image.files});
+  assert.equal(unchanged.state,'COMPLETE');assert.equal(unchanged.normalHandoff,null);
+  assert.equal(unchanged.deliveries[0].formalStatus,'PASS');assert.equal(unchanged.deliveries[0].observedValidation,'current');
+  assert.equal(unchanged.completed[0].observedValidation,'current');
+  // Unit coverage of the semantic comparison is deliberately separate from the
+  // public reader. The latter must reject tampered v2 captures before reaching
+  // this comparison; neither layer rewrites or removes the invocation binding.
+  const others=[{deliveryId:a.deliveryId,slice:a.slice,initialObservation:true,
+    observation:{manifest:structuredClone(image.observedByDelivery.get(a.deliveryId).manifest)}}];
+  assert.equal(currentTerminalProductBasisMatches(origin.otherDeliveryWork,others),true);
+  for(const [name,edit]of Object.entries(cases)) {
+    await t.test(`semantic basis comparison: ${name}`,()=>{
+      const authored=structuredClone(origin),before=structuredClone(others);edit(authored);
+      assert.equal(currentTerminalProductBasisMatches(authored.otherDeliveryWork,others),false);
+      assert.deepEqual(others,before);
+    });
+    await t.test(`public reader rejects post-capture tampering: ${name}`,async()=>{
+      await assert.rejects(()=>validateCurrentReviewCandidate({specPath:f.specPath,files:changedBasis(image,edit)}),
+        error=>error.code==='OWNER_MISMATCH'&&error.message==='native replay invocation identity: binding differs');
+    });
+  }
+  for(const [name,edit]of Object.entries({
+    'owner':invocation=>{invocation.binding.owner.ownershipToken=randomUUID();},
+    'request':invocation=>{invocation.binding.requestSha256='sha256:'+'0'.repeat(64);},
+    'output path':invocation=>{invocation.outputFile=path.join(path.dirname(invocation.outputFile),'foreign.verification.json');},
+  }))await t.test(`public reader rejects rehashed invocation ${name}`,async()=>{
+    const files=changedCapture(image,bundle=>changedSource(bundle,'verificationObservation',observation=>{
+      edit(observation.executionContext.invocation);
+      observation.executionContext.invocationSha256=sha(Buffer.from(canonical(observation.executionContext.invocation)));
+    }));
+    await assert.rejects(()=>validateCurrentReviewCandidate({specPath:f.specPath,files}),
+      error=>error.code==='OWNER_MISMATCH'&&error.message==='native replay invocation identity: binding differs');
   });
-  const after=await captureCurrentExecution(f.specPath);assert.deepEqual(after.files,image.files);assert.deepEqual(after.activationBytes,image.activationBytes);
+  const after=await captureCurrentExecution(f.specPath);
+  assert.equal(after.inspection.state,'COMPLETE');assert.equal(after.inspection.deliveries[0].formalStatus,'PASS');
+  assert.equal(after.inspection.deliveries[0].observedValidation,'current');
+  assert.equal(after.inspection.completed[0].observedValidation,'current');
+  assert.deepEqual(after.files,image.files);assert.deepEqual(after.activationBytes,image.activationBytes);
+});
+
+test('T01 newer local revalidation preserves local PASS but invalidates the retained retired terminal judgment',async t=>{
+  const f=await completedNativeCase(t,{retire:false,independent:true});
+  await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+  const before=await captureCurrentExecution(f.specPath);assert.equal(before.inspection.state,'COMPLETE');
+  const continuity=decode(before.files.get('continuity.json')),sibling=continuity.deliveries[0];
+  const terminal=continuity.deliveries.find(item=>item.deliveryId===f.delivery.deliveryId);
+  const snapshot=decode(before.files.get('approved-preparation.json'));
+  // Author a reviewed completed integral owner, preserving its exact native
+  // proof. The remaining independent contribution is then revalidated through
+  // the real producer; no origin or invocation fingerprint is rewritten.
+  await retireActive({project:f.root,execution:f.image.f.execution,specPath:f.specPath,source:f.specPath,
+    spec:path.dirname(f.specPath),authority:before.requirementsAuthority,activation:decode(before.activationBytes),
+    snapshot,continuity,files:new Map([...before.files].map(([name,bytes])=>[name,Buffer.from(bytes)])),
+    artifacts:new Map(snapshot.reviewedArtifacts.map(item=>[item.path,Buffer.from(item.utf8)]))},[terminal.slice]);
+  const retired=await captureCurrentExecution(f.specPath);assert.equal(retired.inspection.state,'COMPLETE');
+  await fs.appendFile(path.join(f.root,'src/greeting.mjs'),'// independently validated sibling delta\n');
+  await normalizedFormal({...f,delivery:sibling});
+  const after=await captureCurrentExecution(f.specPath);
+  assert.ok([...after.inspection.deliveries,...after.inspection.completed]
+    .every(item=>item.formalStatus==='PASS'&&item.observedValidation==='current'));
+  assert.equal(after.inspection.state,'VALIDATION_BLOCKED');assert.equal(after.inspection.normalHandoff,null);
+  assert.equal(after.inspection.diagnostics[0].reason,'EVIDENCE_STALE: terminal judgment precedes current local validation');
+  const terminalBundle=decode(after.files.get(terminal.evidence.path));
+  const siblingBundle=decode(after.files.get(sibling.evidence.path));
+  assert.ok(siblingBundle.validation.origin.preparationRevision>terminalBundle.validation.origin.preparationRevision);
+  const capsule=decode(Buffer.from(terminalBundle.objects.find(item=>item.id===terminalBundle.validation.sources.origin).bytesBase64,'base64'));
+  const origin=JSON.parse(capsule.originUtf8);
+  const others=image=>[{deliveryId:sibling.deliveryId,slice:sibling.slice,initialObservation:true,
+    observation:image.observedByDelivery.get(sibling.deliveryId)}];
+  // The retained terminal basis also differs, but the newer local generation
+  // takes diagnostic precedence. Same-generation basis rejection is covered
+  // separately by test-current-sibling-admission.mjs.
+  assert.equal(currentTerminalProductBasisMatches(origin.otherDeliveryWork,others(retired)),true);
+  assert.equal(currentTerminalProductBasisMatches(origin.otherDeliveryWork,others(after)),false);
+  assert.deepEqual(after.files.get('approved-preparation.json'),retired.files.get('approved-preparation.json'));
+  assert.deepEqual(after.files.get(terminal.evidence.path),retired.files.get(terminal.evidence.path));
 });
 
 test('T02 completed observations guard before recipe, composition and publication without new verification',async t=>{
@@ -181,8 +267,13 @@ test('T04 an obsolete integral PASS remains historical while equivalent local pr
   assert.ok(bundle.support.some(record=>JSON.stringify(record)===JSON.stringify(sourceBundle.validation)));
   assert.equal(bundle.validation.contract.terminal,null);
   assert.equal(after.inspection.deliveries[0].formalStatus,'PASS');assert.equal(after.inspection.deliveries[0].observedValidation,'current');
-  assert.equal(after.inspection.completed[0].observedValidation,'current');assert.equal(after.inspection.state,'VALIDATION_BLOCKED');
-  assert.match(after.inspection.diagnostics[0].reason,/terminal/u);
+  assert.equal(after.inspection.completed[0].observedValidation,'current');
+  assert.equal(after.inspection.state,'IMPLEMENTED_AWAITING_VALIDATION');
+  // Historical integral support cannot certify the new local proof; its live
+  // owner may supply a fresh judgment without another preparation change.
+  assert.deepEqual(after.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:current.slice,deliveryId:current.deliveryId});
+  assert.deepEqual(after.inspection.diagnostics,[{kind:'evidence',artifact:'continuity.json',field:'terminal',
+    reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]);
 });
 
 test('T06 a current latest integral PASS loses only certification when another reviewed contribution changes',async t=>{

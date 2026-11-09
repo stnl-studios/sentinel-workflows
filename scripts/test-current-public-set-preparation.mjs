@@ -1,3 +1,4 @@
+import {publishPreparationCandidate,approveSyntheticPreparation} from './fixtures/synthetic-preparation-approval.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,7 +12,7 @@ import {preflightExecutionOperation} from '../skills/workflows/stnl-execution-pl
 import {preparePreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
 import {preparePlanCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs';
 import {serializePlanPathClaims} from '../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs';
-import {publishPreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
+
 import {begin} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 const run=promisify(execFile),runtime=path.resolve('skills/workflows/stnl-execution-planner/runtime');
 const decode=bytes=>JSON.parse(Buffer.from(bytes));
@@ -40,6 +41,14 @@ async function unchanged(f){
 }
 test('Public Q18 API prepares a complete owned proposal, stays awaiting review and is byte stable',async t=>{
  const f=await sourceFixture(t);
+ const retainedDocuments=new Map(['plans/slice-02.md','tasks/slice-02.md']
+  .map(name=>[name,Buffer.from(f.source.files.get(name))]));
+ // A future terminal offer is not an active owner or unfinished local proof.
+ assert.equal(f.source.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
+ assert.equal(f.source.inspection.diagnostics[0].reason,'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment');
+ assert.notEqual(f.source.inspection.state,'COMPLETE');
+ assert.ok([...f.source.inspection.deliveries,...f.source.inspection.completed]
+  .every(item=>item.persistedValidation==='current'&&item.observedValidation==='current'&&item.formalStatus==='PASS'));
  assert.equal((await preflightExecutionOperation(f.specPath,'REPLAN')).operation,'REPLAN');
  await assert.rejects(preflightExecutionOperation(f.specPath,'REPLAN','slice-02'),{code:'OWNER_UNCERTAIN'});
  const draft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:f.input.completedDeliveryIds});
@@ -52,8 +61,14 @@ test('Public Q18 API prepares a complete owned proposal, stays awaiting review a
  assert.equal(proposal.authority.deliveries.length,0);assert.equal(proposal.reviewRequest.deliveries.length,0);
  const serialized=await serializePlanPathClaims(options);
  for(const [name,bytes] of serialized.proposal.files)assert.deepEqual(await fs.readFile(path.join(options.candidateExecutionRoot,name)),bytes);
- for(const name of ['activation.json','approved-preparation.json','plans/slice-02.md','tasks/slice-02.md'])
+ for(const name of ['activation.json','approved-preparation.json'])
   await assert.rejects(fs.readFile(path.join(options.candidateExecutionRoot,name)),{code:'ENOENT'});
+ // Retirement retains existing local documents literally; it does not approve
+ // or regenerate them as active plans in the replacement preparation.
+ for(const [name,bytes] of retainedDocuments) {
+  assert.deepEqual(serialized.proposal.files.get(name),bytes);
+  assert.deepEqual(await fs.readFile(path.join(options.candidateExecutionRoot,name)),bytes);
+ }
  assert.deepEqual(await publishPreparationCandidate(options),proposal);
  assert.equal((await preparePreparationCandidate({...options,operation:'REVIEW_PLAN'})).expectedActivationId,f.source.inspection.activationId);
  const review=reviewFor(proposal.reviewRequest);
@@ -63,6 +78,10 @@ test('Public Q18 API prepares a complete owned proposal, stays awaiting review a
  await unchanged(f);assert.deepEqual(await fs.readFile(path.join(f.root,f.productFile)),before);
  const reviewed=await publishPreparationCandidate({...options,reviewDecision:review});
  assert.equal(reviewed.reviewValidated,true);assert.equal(reviewed.publication,'confirmed');assert.equal(reviewed.cleanup,'complete');
+ const final=await captureCurrentExecution(f.specPath);
+ assert.equal(final.inspection.state,'VALIDATION_BLOCKED');assert.equal(final.inspection.normalHandoff,null);
+ assert.equal(final.inspection.deliveries.length,0);assert.equal(final.inspection.completed.length,2);
+ for(const [name,bytes] of retainedDocuments)assert.deepEqual(Buffer.from(final.files.get(name)),bytes);
 });
 
 for(const reopening of [false,true])test(`Public ${reopening?'Q19':'Q18'} CLI uses the registered source and preserves live and product`,async t=>{
@@ -80,6 +99,7 @@ for(const reopening of [false,true])test(`Public ${reopening?'Q19':'Q18'} CLI us
  assert.equal((await command('prepare-plan-candidate.mjs',['--candidate-execution-root',root])).status,'DRAFT');
  const serialized=await command('serialize-plan-paths.mjs',['--spec-path',f.specPath,'--candidate-execution-root',root]);
  assert.equal(serialized.status,'PASS');
+ await approveSyntheticPreparation(options);
  const args=['--spec-path',f.specPath,'--candidate-execution-root',root],proposal=await command('publish-task-candidate.mjs',args);
  assert.equal(proposal.publication,'not-started');assert.equal(proposal.status,'AWAITING_REVIEW');
  assert.equal(proposal.authority.preparationRevision,f.source.inspection.preparationRevision+1);

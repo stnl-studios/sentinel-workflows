@@ -707,8 +707,87 @@ export function validateLifecycleTerminalRetirement(value) {
   if(Buffer.byteLength(JSON.stringify(value))>MAX_TERMINAL_RECORD_BYTES)fail('terminal retirement exceeds the bounded record limit');
   return value;
 }
+// Historical retention is inert preservation, never a source of execution authority.
+const MAX_CLOSE_ARCHIVE_BYTES=64*1024*1024;
+const MAX_CLOSE_ARCHIVE_SOURCE_BYTES=8*1024*1024;
+function validateCloseArchiveBinding(value){
+  closed(value,['format','path','identity','sha256','size','names'],'historical archive binding');
+  if(value.format!=='stnl-close-history-binding-v1'||typeof value.path!=='string'||!path.isAbsolute(value.path)
+    ||path.normalize(value.path)!==value.path||!hasPhysicalIdentity(value.identity)||!/^sha256:[a-f0-9]{64}$/u.test(value.sha256??'')
+    ||!Number.isSafeInteger(value.size)||value.size<1||value.size>MAX_CLOSE_ARCHIVE_BYTES
+    ||!Array.isArray(value.names)||!value.names.length||value.names.length>1024||new Set(value.names).size!==value.names.length
+    ||value.names.some(name=>!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u.test(name)))fail('invalid historical archive binding');
+  return value;
+}
+function closeArchivePath(roots,transactionId){
+  if(!/^[0-9a-f]{32}$/u.test(transactionId??''))fail('invalid historical archive transaction');
+  return path.join(roots.leaseParent,roots.specKey+'.close-history-'+transactionId+'.json');
+}
+export async function verifyLifecycleCloseArchive(roots,transactionId,binding,inventory){
+  if(binding===undefined)return null;
+  validateCloseArchiveBinding(binding);
+  if(binding.path!==closeArchivePath(roots,transactionId)||binding.identity.dev!==roots.leaseParentIdentity.dev)fail('historical archive has foreign context');
+  const read=await readFileWithLinks(binding.path,[1],binding.size);
+  if(!equal(read.identity,binding.identity)||digest(read.bytes)!==binding.sha256||read.bytes.length!==binding.size||read.mode!==0o600)fail('historical archive identity or bytes changed');
+  const value=parseStrictJson(read.bytes.toString('utf8'));
+  closed(value,['format','specRoot','executionRoot','transactionId','materialRootIdentity','names','entries'],'historical archive');
+  if(value.format!=='stnl-close-history-v1'||value.specRoot!==roots.specRoot||value.executionRoot!==roots.executionRoot
+    ||value.transactionId!==transactionId||!equal(value.names,binding.names)
+    ||!isDeepStrictEqual(value.materialRootIdentity,roots.materialRootIdentity??value.materialRootIdentity))fail('historical archive source context changed');
+  const expected=inventory;
+  if(!Array.isArray(value.entries)||value.entries.length!==expected.length)fail('historical archive inventory differs');
+  for(let index=0;index<expected.length;index++){
+    const entry=value.entries[index],row=expected[index];closed(entry,['role','bytesBase64'],'historical archive entry');
+    if(!isDeepStrictEqual(entry.role,row)||row.identity.dev!==binding.identity.dev)fail('historical archive source role differs');
+    if(row.kind==='directory'){if(entry.bytesBase64!==null)fail('historical archive directory payload differs');}
+    else if(row.kind==='file'){
+      if(typeof entry.bytesBase64!=='string')fail('historical archive file payload absent');
+      const bytes=Buffer.from(entry.bytesBase64,'base64');
+      if(bytes.length>MAX_CLOSE_ARCHIVE_SOURCE_BYTES||bytes.toString('base64')!==entry.bytesBase64||digest(bytes)!==row.sha256)fail('historical archive source bytes differ');
+    }else fail('historical archive refuses links or special files');
+  }
+  for(const name of binding.names){
+    const row=value.entries.find(entry=>entry.role.path===name+'/owner.json');
+    if(!row)fail('historical archive lacks owner');
+    const record=parseStrictJson(Buffer.from(row.bytesBase64,'base64').toString('utf8'));
+    validateCurrentOperationRetirementRecord(record);
+    if(record.phase!=='committed'||record.binding.operationId!==name||record.binding.specKey!==roots.specKey
+      ||record.binding.logicalSpecRoot!==roots.specRoot||record.binding.logicalExecutionRoot!==roots.executionRoot
+      ||!isDeepStrictEqual(record.binding.namespaceIdentity,value.materialRootIdentity))fail('historical archive owner association differs');
+  }
+  return value;
+}
+export async function createLifecycleCloseArchive(roots,transactionId,names,inventory){
+  const entries=[];let total=0;
+  for(const role of inventory){
+    let bytesBase64=null;
+    if(role.kind==='file'){
+      const read=await readFileWithLinks(path.join(roots.materialRoot,role.path),[1],MAX_CLOSE_ARCHIVE_SOURCE_BYTES);
+      if(!isDeepStrictEqual(read.identity,role.identity)||read.mode!==role.mode||digest(read.bytes)!==role.sha256)fail('historical archive source changed');
+      bytesBase64=read.bytes.toString('base64');total+=bytesBase64.length;
+      if(total>MAX_CLOSE_ARCHIVE_BYTES)fail('historical archive exceeds bounded size');
+    }else if(role.kind!=='directory')fail('historical archive refuses links or special files');
+    entries.push({role,bytesBase64});
+  }
+  const bytes=Buffer.from(JSON.stringify({format:'stnl-close-history-v1',specRoot:roots.specRoot,executionRoot:roots.executionRoot,
+    transactionId,materialRootIdentity:roots.materialRootIdentity,names,entries})+'\n');
+  if(bytes.length>MAX_CLOSE_ARCHIVE_BYTES)fail('historical archive exceeds bounded size');
+  const file=closeArchivePath(roots,transactionId);await ancestry(file);
+  const handle=await fs.open(file,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
+  let fileIdentity;
+  try{fileIdentity=identity(await handle.stat());if(fileIdentity.dev!==roots.leaseParentIdentity.dev)fail('historical archive device differs');await handle.writeFile(bytes);await handle.sync();}
+  finally{await handle.close();}
+  // Unlike ordinary lock housekeeping, preservation cannot waive parent
+  // durability errors: source retirement depends on this new name surviving.
+  const parentHandle=await fs.open(roots.leaseParent,constants.O_RDONLY|(constants.O_DIRECTORY??0));
+  try{await parentHandle.sync();}finally{await parentHandle.close();}
+  const binding={format:'stnl-close-history-binding-v1',path:file,identity:fileIdentity,sha256:digest(bytes),size:bytes.length,names};
+  await verifyLifecycleCloseArchive(roots,transactionId,binding,inventory);
+  return binding;
+}
 export function validateLifecycleCloseBinding(binding){
-  closed(binding,['format','sourceIdentity','requirementsAuthority','sourceExecutionDisposition','operationalInventory'],'CLOSE binding');
+  closed(binding,['format','sourceIdentity','requirementsAuthority','sourceExecutionDisposition','operationalInventory',...(Object.hasOwn(binding,'historicalArchive')?['historicalArchive']:[])],'CLOSE binding');
+  if(Object.hasOwn(binding,'historicalArchive'))validateCloseArchiveBinding(binding.historicalArchive);
   const hash=value=>typeof value==='string'&&/^sha256:[0-9a-f]{64}$/u.test(value);
   if(binding.format!=='stnl-lifecycle-close-binding-v1'||!hasPhysicalIdentity(binding.sourceIdentity)||!hash(binding.requirementsAuthority))fail('invalid CLOSE binding authority or source identity');
   const disposition=binding.sourceExecutionDisposition;
@@ -788,6 +867,7 @@ async function assertTerminalFilesystem(location,witness){
     ||!isDeepStrictEqual(roots.targetParentIdentity,context.targetParentIdentity)
     ||roots.materialRootIdentity!==null&&!isDeepStrictEqual(roots.materialRootIdentity,witness.materialRootIdentity)
     ||!isDeepStrictEqual(roots.specRoot===context.specRoot?identity(await fs.lstat(roots.specRoot)):null,witness.targetIdentity))fail('terminal retirement physical context changed');
+  await verifyLifecycleCloseArchive(roots,witness.transactionId,witness.closeBinding.historicalArchive,witness.closeBinding.operationalInventory);
   const target=await captureLifecycleRetirementRoles(roots.specRoot);
   if(!isDeepStrictEqual(target,witness.targetRoles))fail('terminal closed target bytes, modes or topology changed');
   if(roots.materialRootIdentity!==null){const actual=await captureLifecycleRetirementRoles(roots.materialRoot),expected=new Map(witness.roles.map(row=>[row.path,row]));
@@ -876,6 +956,7 @@ async function terminalRoleLocation(lease,name){
   await assertExecutionPublicationLock(lease);
   const header=validateTerminalHeader(parseStrictJson(lease.owned.bytes.toString('utf8')),lease),witness=header.terminalRetirement;
   const roots=await resolveExecutionFilesystemRoots({executionRoot:lease.executionRoot,specRoot:witness.filesystemContext.specRoot,filesystemContext:lease.filesystemContext});
+  await verifyLifecycleCloseArchive(roots,witness.transactionId,witness.closeBinding.historicalArchive,witness.closeBinding.operationalInventory);
   const row=witness.roles.find(row=>row.path===name);if(!row)fail('terminal cleanup did not seal this role');
   const file=path.resolve(roots.materialRoot,...name.split('/'));
   if(file===roots.materialRoot||!inside(file,roots.materialRoot))fail('terminal role escapes its sealed material root');
@@ -902,6 +983,10 @@ export async function removeLifecycleTerminalRetirementRole(lease,name){
   }
   const barrier=await terminalRoleLocation(lease,name),final=barrier.present;
   if(!final||!equal(identity(final),row.identity)||(final.mode&0o777)!==row.mode)fail('terminal role changed at removal barrier');
+  if(row.kind==='file'){
+    const captured=await readFileWithLinks(file,[final.nlink]);
+    if(!equal(captured.identity,row.identity)||captured.mode!==row.mode||digest(captured.bytes)!==row.sha256)fail('terminal file bytes changed at removal barrier');
+  }
   if(row.kind==='directory')await fs.rmdir(file);else await fs.unlink(file);
   await syncLockParent(path.dirname(file));
   const namespace=await fs.lstat(roots.materialRoot);if(!equal(identity(namespace),(parseStrictJson(lease.owned.bytes.toString('utf8'))).terminalRetirement.materialRootIdentity))fail('terminal namespace changed during own cleanup');
@@ -1393,10 +1478,17 @@ export async function copyCurrentCandidateTree(source,target) { await copyTree(s
 // The wrapper supplies fixed operation-specific validation and diff scope, never model-selected callbacks.
 export async function publishExecutionUpdate({ workspace, candidateExecutionRoot, expectedTree, expectedActivationId,
   owner = null, terminal = false, draft = false, readActivated, validateCandidate, authorizeDiff, checkpoint = null,
-  prepareRetention = null, currentInitial = false, currentReplacement = false,
-  recheckRequirements = null, preparationRecord = null }) {
-  if(!currentInitial&&!currentReplacement)fail('Only current Initial installation or local review publication is supported');
+  prepareRetention = null, currentInitial = false, currentReplacement = false, currentResumption = false, assertResumptionQuiet = null,
+  recheckRequirements = null, recheckProducts = null, preparationRecord = null }) {
+  if(!currentInitial&&!currentReplacement&&!currentResumption)fail('Only current Initial installation or local review publication is supported');
+  if(preparationRecord?.revalidateCompletedIds && typeof recheckProducts!=='function')
+    fail('Completed revalidation publication requires its fixed product observation guard');
   if(owner!==null||terminal||draft||prepareRetention!==null)fail('Operational publication uses the current operation controller');
+  if(currentResumption && (currentInitial || currentReplacement || expectedActivationId!==null
+    || preparationRecord!==null || typeof assertResumptionQuiet!=='function'
+    || typeof recheckRequirements!=='function' || typeof recheckProducts!=='function'
+    || typeof validateCandidate!=='function' || typeof authorizeDiff!=='function'))
+    fail('documentary resumption requires exact source CAS and fixed authority/product/owner guards');
   const location = await executionLockIdentity(workspace);
   const roots = await resolveExecutionFilesystemRoots(workspace);
   if (roots.materialRootIdentity === null) fail('publication requires its proved operational material root');
@@ -1411,8 +1503,10 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
     ||preparationRecord.candidate!==candidate||preparationRecord.source!==null||preparationRecord.expectedActivationId!==null
     ||!equal(preparationRecord.candidateIdentity,candidateTree.identity))) fail('Initial requires its own registered PLAN candidate');
   if(currentInitial)await assertRegisteredPreparationAllocation(workspace,preparationRecord);
-  if(currentReplacement && candidateTree.identity.dev!==location.parentIdentity.dev)
+  if((currentReplacement||currentResumption) && candidateTree?.identity.dev!==location.parentIdentity.dev)
     fail('EC-1 local review candidate is not on the official filesystem');
+  if(currentResumption && (candidateTree===null || candidateTree.files.some(item=>item.path==='activation.json') || !hasCapturedSource(expectedTree)))
+    fail('resumption requires captured source and a fresh activation-free candidate');
   const allocationId = randomUUID();
   const stage = candidate;
   const retentionRoot = path.join(allocationParent, `.stnl-execution-backup-${allocationId}`);
@@ -1422,22 +1516,28 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
     filesystemContext:{productRoot:roots.productRoot,temporaryRoot:roots.temporaryRoot,excludedRoots:roots.excludedRoots},
     filesystemBinding:preparationFilesystemBinding(roots),
     candidate, stage, backup, retentionRoot, expectedActivationId, expectedTree, owner,
-    ...(currentReplacement ? {currentReplacement:true,candidateTree} : {currentInitial:true,candidateTree}) };
+    ...(currentResumption ? {currentResumption:true,candidateTree} : currentReplacement ? {currentReplacement:true,candidateTree} : {currentInitial:true,candidateTree}) };
   const syncReplacement=async(...parents)=>{
     try{for(const parent of new Set(parents))await syncLockParent(parent);}
     catch(error){error.retainExecutionLock=true;throw error;}
   };
   const move=async(from,to)=>{
-    try{await fs.rename(from,to);}catch(error){if(currentReplacement)error.retainExecutionLock=true;throw error;}
+    try{await fs.rename(from,to);}catch(error){if(currentReplacement||currentResumption)error.retainExecutionLock=true;throw error;}
   };
   let result,markerCreated=false;
   let confirmed = false; let markerWritten = false;
   try {
   result = await withExecutionPublicationLock(workspace, async lease => {
     await assertNoPendingExecutionPublication(workspace);
+    if(currentResumption) {
+      await assertResumptionQuiet({marker:null,lease,phase:'before-marker'});
+      if(!equal(await captureExecutionTree(workspace.executionRoot),expectedTree))fail('documentary resumption source CAS differs');
+      await authorizeDiff(stage,expectedTree);
+      await validateCandidate(stage);
+    }
     await assertPublicationFilesystemBinding(workspace,allocation);
     try {await writeNew(marker, Buffer.from(JSON.stringify(allocation) + '\n'));markerCreated=true;}
-    catch(error) {if(currentReplacement){error.candidateRoot=candidate;error.markerCreationFailed=true;}throw error;}
+    catch(error) {if(currentReplacement||currentResumption){error.candidateRoot=candidate;error.markerCreationFailed=true;}throw error;}
     await fs.mkdir(retentionRoot, { mode: 0o700 });
     if (!equal((await captureExecutionTree(stage)).files, candidateTree.files) || !equal(await captureExecutionTree(candidate), candidateTree)) fail(`candidate changed while staging; retained allocation: ${marker}`);
     await syncReplacement(allocationParent);
@@ -1450,7 +1550,7 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
       fail('EC-1 local review requires one quiet current predecessor');
     let previous = null;
     if (expectedActivationId !== null) {
-      previous = (await readActivated()).activation;
+      previous = (await readActivated({phase:'predecessor'})).activation;
       if (previous.activationId !== expectedActivationId) fail('publication activation CAS conflict');
     }
     if (previous?.activeAttempt) fail('active/uncertain owner blocks replacement');
@@ -1469,19 +1569,26 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
     let moved = false; let installed = false;
     try {
       if (checkpoint) await checkpoint('before-backup', { stage, backup, marker });
-      if(currentReplacement) await recheckRequirements();
+      if(currentResumption)await assertResumptionQuiet({marker,lease,phase:'before-backup'});
+      if(currentReplacement||currentResumption) await recheckRequirements();
       await assertPublicationFilesystemBinding(workspace,allocation);
       if(preparationRecord!==null)await assertRegisteredPreparationAllocation(workspace,preparationRecord);
       if(!equal(await captureExecutionTree(stage),candidateTree))fail('reviewed candidate changed before backup');
       if (!equal(await captureExecutionTree(workspace.executionRoot),before)) fail('publication base changed immediately before swap');
+      if(currentResumption && (!equal(parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8')),allocation)
+        ||await stat(backup)))fail('resumption allocation changed before backup');
       await assertExecutionPublicationLock(lease);
       if (before) { await move(workspace.executionRoot, backup); moved = true;
-        if(currentReplacement)await syncReplacement(path.dirname(workspace.executionRoot),path.dirname(backup)); }
+        if(currentReplacement||currentResumption)await syncReplacement(path.dirname(workspace.executionRoot),path.dirname(backup)); }
       if (checkpoint) await checkpoint('after-backup', { stage, backup, marker });
-      if(currentReplacement) await recheckRequirements();
+      if(currentResumption)await assertResumptionQuiet({marker,lease,phase:'before-install'});
+      if(currentReplacement||currentResumption) await recheckRequirements();
       await assertPublicationFilesystemBinding(workspace,allocation);
       if(preparationRecord!==null)await assertRegisteredPreparationAllocation(workspace,preparationRecord);
       if(!equal(await captureExecutionTree(stage),candidateTree))fail('reviewed candidate changed before promotion');
+      if(currentResumption && (!equal(await captureExecutionTree(backup),before)
+        ||!equal(parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8')),allocation)))
+        fail('resumption backup or allocation changed before promotion');
       if (await stat(workspace.executionRoot)) fail('official target unexpectedly occupied');
       if (currentInitial) {
         // The reviewed source is outside the publication lock. Recheck it after
@@ -1507,19 +1614,34 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
           activeAttempt: previous?.activeAttempt ?? null,
           lastAttempt: currentReplacement ? null : previous?.lastAttempt ?? null };
         if (checkpoint) await checkpoint('before-activation', { stage, backup, marker });
+        if(currentResumption) {
+          await assertResumptionQuiet({marker,lease,phase:'before-activation'});
+          await recheckRequirements();
+          if(!equal(await captureExecutionTree(workspace.executionRoot),candidateTree))fail('resumption installed candidate changed');
+        }
+        if(recheckProducts)await recheckProducts();
         // Any error after entering this call may have installed the marker. Never compensate blindly.
         allocation.expectedInstalledActivation=activation;
         await persistAllocation(marker,allocation);
         markerWritten = true;
         await syncReplacement(path.dirname(marker));
         if(checkpoint) await checkpoint('after-activation-intent',{stage,backup,marker});
+        if(recheckProducts)await recheckProducts();
+        if(currentResumption) {
+          await assertResumptionQuiet({marker,lease,phase:'before-activation-write'});
+          await assertExecutionPublicationLock(lease);
+          await assertPublicationFilesystemBinding(workspace,allocation);
+          if(!equal(await captureExecutionTree(workspace.executionRoot),candidateTree)
+            ||!equal(parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8')),allocation)
+            ||!equal(await captureExecutionTree(backup),before))fail('resumption roles changed before activation');
+        }
         try{await replaceActivation(workspace.executionRoot, activation);}
-        catch(error){if(currentReplacement)error.retainExecutionLock=true;throw error;}
+        catch(error){if(currentReplacement||currentResumption)error.retainExecutionLock=true;throw error;}
         await syncReplacement(workspace.executionRoot);
         if (checkpoint) await checkpoint('after-activation', { stage, backup, marker });
         try{const readback = await readActivated();
           if (!equal(readback.activation, activation)) fail('activation readback uncertain');}
-        catch(error){if(currentReplacement)error.retainExecutionLock=true;throw error;}
+        catch(error){if(currentReplacement||currentResumption)error.retainExecutionLock=true;throw error;}
 
       }
       confirmed = true;
@@ -1541,6 +1663,8 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
           return { publication: 'confirmed', cleanup: 'pending', cleanupDiagnostics: [error.message], retainedBackup: moved ? backup : null, allocation: marker, activation, expectedActivationId: activation?.activationId ?? null };
         }
       }
+      if(currentResumption) return finishDocumentaryResumption({workspace,marker,record:allocation,lease,
+        publication:'confirmed',readActivated,assertResumptionQuiet,checkpoint});
       let retired=null;
       if(preparationRecord!==null) {
         try{retired=await cleanupCurrentReplacement({workspace,marker,record:allocation,lease,readActivated,
@@ -1558,7 +1682,7 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
       return { publication: 'confirmed', cleanup: retired?'complete':currentReplacement?'pending':'complete', retainedBackup: retired?null:moved ? backup : null, allocation: marker,
         activation, expectedActivationId: activation?.activationId ?? null };
     } catch (error) {
-      if (!confirmed && !markerWritten && !error.retainExecutionLock) {
+      if (!currentResumption && !confirmed && !markerWritten && !error.retainExecutionLock) {
         try {
           if (installed) {
             if (!equal((await captureExecutionTree(workspace.executionRoot)).files, candidateTree.files)) fail('cannot prove ownership of installed image; preserve backup');
@@ -1569,17 +1693,17 @@ export async function publishExecutionUpdate({ workspace, candidateExecutionRoot
             if (!equal(await captureExecutionTree(backup), before) || await stat(workspace.executionRoot)) fail('cannot prove restoration ownership');
             if (checkpoint) await checkpoint('before-restore', { stage, backup, marker });
             await move(backup, workspace.executionRoot);
-            if(currentReplacement)await syncReplacement(path.dirname(backup),path.dirname(workspace.executionRoot));
+            if(currentReplacement||currentResumption)await syncReplacement(path.dirname(backup),path.dirname(workspace.executionRoot));
           }
-        } catch (restoreError) { if(currentReplacement)error.retainExecutionLock=true;error.message += `; restore failed: ${restoreError.message}; retained backup ${backup}, stage ${stage}`; }
+        } catch (restoreError) { if(currentReplacement||currentResumption)error.retainExecutionLock=true;error.message += `; restore failed: ${restoreError.message}; retained backup ${backup}, stage ${stage}`; }
       } else error.message += '; activation outcome uncertain; preserve owner and inspect marker before any retry';
       error.allocation = marker;
-      if(currentReplacement) error.candidateRoot=candidate;
+      if(currentReplacement||currentResumption) error.candidateRoot=candidate;
       throw error;
     }
   });
   } catch(error) {
-    if(currentReplacement) {if(markerCreated)error.allocation=marker;error.candidateRoot=candidate;}
+    if(currentReplacement||currentResumption) {if(markerCreated)error.allocation=marker;error.candidateRoot=candidate;}
     throw error;
   }
   if (result.publication === 'confirmed' && result.cleanup === 'pending') {
@@ -1642,7 +1766,8 @@ export async function preparationRegistryPath(workspace) {
   return (await resolveExecutionFilesystemRoots(workspace)).preparationRegistry;
 }
 const preparationBinding = record => Object.fromEntries(['allocationId', 'executionRoot', 'specPath', 'candidate',
-  'candidateIdentity', 'operation', 'source', 'expectedActivationId', 'preparationRevision', 'filesystemContext', 'filesystemBinding'].map(key => [key, record[key]]));
+  'candidateIdentity', 'operation', 'source', 'expectedActivationId', 'preparationRevision', 'filesystemContext', 'filesystemBinding',
+  ...(Object.hasOwn(record,'revalidateCompletedIds')?['revalidateCompletedIds','revalidationBasisSha256']:[])].map(key => [key, record[key]]));
 const preparationFilesystemBinding = roots => ({targetParentIdentity:roots.targetParentIdentity,
   leaseParentIdentity:roots.leaseParentIdentity, materialRootIdentity:roots.materialRootIdentity});
 async function assertPublicationFilesystemBinding(workspace, record) {
@@ -1660,7 +1785,8 @@ export function validatePreparationRegistry(record, workspace) {
   const ids = new Set(), roots = new Set();
   for (const binding of record.allocations) {
     closed(binding, ['allocationId', 'executionRoot', 'specPath', 'candidate', 'candidateIdentity', 'operation',
-      'source', 'expectedActivationId', 'preparationRevision', 'filesystemContext', 'filesystemBinding'], 'preparation association');
+      'source', 'expectedActivationId', 'preparationRevision', 'filesystemContext', 'filesystemBinding',
+      ...(Object.hasOwn(binding,'revalidateCompletedIds')?['revalidateCompletedIds','revalidationBasisSha256']:[])], 'preparation association');
     const envelope = { ...binding, format: 'stnl-preparation-allocation-v2', producer: 'preparation', retentionRoot: binding.candidate };
     if (binding.executionRoot !== workspace.executionRoot || !hasOwnedAllocationEnvelope(envelope, `${binding.candidate}.owner.json`)
       || ids.has(binding.allocationId) || roots.has(binding.candidate)) fail('invalid/duplicate preparation association');
@@ -1728,6 +1854,7 @@ async function cleanupCurrentReplacement({workspace,marker,record,lease,readActi
   const roles=[confirmed?record.backup:record.candidate,record.retentionRoot,marker];
   const persisted=equal(record.cleanup?.paths,roles);
   const paths={marker,stage:record.stage,backup:record.backup,candidate:record.candidate};
+  let revalidationBinding=null;
   const check=async name=>{if(checkpoint)await checkpoint(name,paths);};
   const sync=async parent=>{
     try{await syncLockParent(parent);}catch(error){error.retainExecutionLock=true;throw error;}
@@ -1737,7 +1864,35 @@ async function cleanupCurrentReplacement({workspace,marker,record,lease,readActi
     await assertExecutionPublicationLock(lease);
     await assertPublicationFilesystemBinding(workspace,record);
     const live=await captureExecutionTree(workspace.executionRoot),candidate=await captureExecutionTree(record.candidate),backup=await captureExecutionTree(record.backup);
-    const current=record.currentInitial===true&&!confirmed&&live===null?null:await readActivated();
+    // Only an exact restored predecessor may use the separately registered
+    // historical source. Confirmed candidate readback always stays strict.
+    if(!confirmed&&record.currentReplacement===true) {
+      if(!equal(live,record.expectedTree))fail('replacement aborted source tree differs');
+      const predecessor=validateCurrentActivation(parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot,'activation.json'))).bytes.toString('utf8')));
+      if(predecessor.activationId!==record.expectedActivationId||predecessor.activeAttempt!==null)
+        fail('replacement aborted source activation differs');
+      const materialGone=candidate===null&&backup===null&&await stat(record.retentionRoot)===null;
+      const verified=await replacementPreparation(workspace,record,{targetRevision:predecessor.preparationRevision+1,
+        registeredPreparation,terminal:true,materialGone:equal(record.cleanup?.paths,roles)&&materialGone});
+      if(verified.binding?.revalidateCompletedIds) {
+        if(revalidationBinding&&!equal(revalidationBinding,verified.binding))fail('replacement recovery binding changed');
+        revalidationBinding=structuredClone(verified.binding);
+      } else if(revalidationBinding&&!(equal(record.cleanup?.paths,roles)&&materialGone))
+        fail('replacement recovery binding disappeared before terminal retirement');
+    }
+    if(confirmed&&record.currentReplacement===true&&registeredPreparation) {
+      const materialGone=candidate===null&&backup===null&&await stat(record.retentionRoot)===null;
+      const verified=await replacementPreparation(workspace,record,{targetRevision:record.expectedInstalledActivation.preparationRevision,
+        registeredPreparation,terminal:true,materialGone:equal(record.cleanup?.paths,roles)&&materialGone});
+      if(verified.binding) {
+        if(revalidationBinding&&!equal(revalidationBinding,verified.binding))fail('replacement confirmed binding changed');
+        revalidationBinding=structuredClone(verified.binding);
+      } else if(!(revalidationBinding&&equal(record.cleanup?.paths,roles)&&materialGone))
+        fail('replacement confirmed preparation association is unavailable');
+    }
+    const phase=revalidationBinding?.revalidateCompletedIds
+      ?{phase:confirmed?'confirmed-candidate':'aborted-predecessor',binding:revalidationBinding}:undefined;
+    const current=record.currentInitial===true&&!confirmed&&live===null?null:await readActivated(phase);
     if(current!==null&&current.activation.activeAttempt!==null)fail('replacement cleanup has an active owner');
     if(confirmed) {
       if(!equal(current.activation,record.expectedInstalledActivation)||candidate!==null
@@ -1905,7 +2060,7 @@ export function hasOwnedAllocationEnvelope(record, marker) {
     const publisher=marker===path.join(parent,`.stnl-execution-publication-${record.allocationId}.json`);
     const admission=owned && marker===`${owner.workCapture.path}.owner.json` && inside(owner.workCapture.path,record.retentionRoot);
     if(!publisher && !admission) return false;
-    const localReviewStage=(record.currentReplacement===true||record.currentInitial===true) && record.owner===null
+    const localReviewStage=(record.currentReplacement===true||record.currentInitial===true||record.currentResumption===true) && record.owner===null
       && record.stage===record.candidate && record.candidateTree?.files;
     const publicationOrigin=publisher && Object.hasOwn(record,'expectedActivationId') && Object.hasOwn(record,'expectedTree')
       && path.isAbsolute(record.candidate ?? '') && (localReviewStage
@@ -1917,12 +2072,17 @@ export function hasOwnedAllocationEnvelope(record, marker) {
     const firstInitial = record.owner===null && record.expectedActivationId===null && record.expectedTree===null;
     const quietReplacement=record.owner===null && uuid(record.expectedActivationId) && record.expectedTree?.files;
     return publicationOrigin && ((owned && uuid(record.expectedActivationId) && record.expectedTree?.files)
-      || firstInitial || quietReplacement);
+      || firstInitial || quietReplacement || record.currentResumption===true&&record.expectedActivationId===null&&hasCapturedSource(record.expectedTree));
   }
   if(record.retentionRoot!==record.candidate) return false;
   // v1 is recognized only so an old marked allocation cannot become SPEC_PATH.
   // Operational admission/registry/classification above require v2 explicitly.
   if(['stnl-preparation-allocation-v1','stnl-preparation-allocation-v2'].includes(record.format)) {
+    if(Object.hasOwn(record,'revalidateCompletedIds')||Object.hasOwn(record,'revalidationBasisSha256')) {
+      if(record.operation!=='REPLAN'||!Array.isArray(record.revalidateCompletedIds)||!record.revalidateCompletedIds.length
+        ||record.revalidateCompletedIds.some(id=>!uuid(id))||new Set(record.revalidateCompletedIds).size!==record.revalidateCompletedIds.length
+        ||!/^sha256:[a-f0-9]{64}$/u.test(record.revalidationBasisSha256??''))return false;
+    }
     if(record.format==='stnl-preparation-allocation-v2') {
     let policy;
     try{policy=normalizeExecutionFilesystemPolicy(record.filesystemContext);}catch{return false;}
@@ -1974,6 +2134,121 @@ export async function classifyOwnedAllocation({ workspace, marker=null, activati
   return { classification: soleCopy ? 'diagnostic' : 'disposable', record };
 }
 
+// A resumption creates current authority, never repairs or retires historical proof.
+// Keep its entire predecessor and publication record, but move the latter out of
+// the pending-publication namespace only after an exact, inactive readback.
+async function finishDocumentaryResumption({workspace,marker,record,lease,publication,
+  readActivated,assertResumptionQuiet,checkpoint=null}) {
+  const archive=path.join(record.retentionRoot,'publication.json');
+  const check=async()=>{
+    await assertExecutionPublicationLock(lease);
+    await assertPublicationFilesystemBinding(workspace,record);
+    await assertResumptionQuiet({marker,lease,phase:'recovery'});
+    if(!equal(await captureExecutionTree(record.backup),publication==='confirmed'?record.expectedTree:null))
+      fail('resumption retained predecessor differs');
+    if(publication==='confirmed') {
+      const current=await readActivated();
+      if(!equal(current.activation,record.expectedInstalledActivation)||current.activation.activeAttempt!==null)
+        fail('resumption current authority differs');
+      const live=await captureExecutionTree(workspace.executionRoot);
+      if(!equal(live?.identity,record.candidateTree.identity)
+        ||!equal(live.files.filter(item=>item.path!=='activation.json'),record.candidateTree.files)
+        ||await stat(record.candidate))fail('resumption confirmed tree differs');
+    }else if(!equal(await captureExecutionTree(workspace.executionRoot),record.expectedTree)
+      ||!equal(await captureExecutionTree(record.candidate),record.candidateTree))fail('resumption restored tree differs');
+  };
+  await check();
+  // A crash can occur between exclusive marker creation and mkdir. Recover
+  // only the empty capsule needed to retain that literal marker, never history.
+  if(!await stat(record.retentionRoot)) {
+    if(publication!=='aborted'||marker===archive)fail('resumption retained capsule is absent');
+    await fs.mkdir(record.retentionRoot,{mode:0o700});await syncLockParent(path.dirname(record.retentionRoot));
+  }
+  if(checkpoint)await checkpoint('before-resumption-archive',{marker,archive});
+  await check();
+  const original=await readOwnedFile(marker);
+  if(!equal(parseStrictJson(original.bytes.toString('utf8')),record))fail('resumption marker changed');
+  if(marker!==archive) {
+    if(await stat(archive))fail('resumption archive unexpectedly occupied');
+    // Rename preserves the literal owner record. No history pruning is allowed.
+    await fs.rename(marker,archive);
+    await syncLockParent(path.dirname(marker));await syncLockParent(record.retentionRoot);
+  }
+  return {publication,cleanup:'complete',allocation:archive,
+    retainedBackup:publication==='confirmed'&&record.expectedTree!==null?record.backup:null,
+    activation:publication==='confirmed'?record.expectedInstalledActivation:null,
+    expectedActivationId:publication==='confirmed'?record.expectedInstalledActivation.activationId:null};
+}
+
+export async function recoverDocumentaryResumptionPublication({workspace,marker,readActivated,
+  validateInstalledActivation=validateCurrentActivation,assertResumptionQuiet,checkpoint=null}) {
+  if(typeof assertResumptionQuiet!=='function'||typeof readActivated!=='function')
+    fail('resumption recovery requires current owner and authority guards');
+  const roots=await resolveExecutionFilesystemRoots(workspace);
+  return withExecutionPublicationLock(workspace,async lease=>{
+    if(!await stat(marker)) {
+      const match=/^\.stnl-execution-publication-([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})\.json$/u.exec(path.basename(marker));
+      if(path.dirname(marker)!==roots.materialRoot||!match)fail('resumption recovery marker is absent');
+      marker=path.join(roots.materialRoot,`.stnl-execution-backup-${match[1]}`,'publication.json');
+    }
+    const record=parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8'));
+    const activeMarker=path.join(roots.materialRoot,`.stnl-execution-publication-${record.allocationId}.json`);
+    const archived=marker===path.join(record.retentionRoot??'','publication.json');
+    if(marker!==activeMarker&&!archived||!hasOwnedAllocationEnvelope(record,activeMarker)
+      ||record.currentResumption!==true||record.currentInitial||record.currentReplacement
+      ||record.executionRoot!==workspace.executionRoot||record.expectedActivationId!==null||record.owner!==null
+      ||record.stage!==record.candidate||!hasCapturedSource(record.expectedTree)||!hasCapturedSource(record.candidateTree)
+      ||record.candidateTree===null||record.candidateTree.files.some(item=>item.path==='activation.json'))
+      fail('resumption recovery owner differs');
+    for(const root of [record.candidate,record.retentionRoot,record.backup]) {
+      await ancestry(root);
+      if(inside(root,workspace.specRoot??workspace.executionRoot)||inside(workspace.executionRoot,root))
+        fail('resumption recovery allocation overlaps official execution');
+    }
+    if(inside(record.candidate,record.retentionRoot)||inside(record.retentionRoot,record.candidate))
+      fail('resumption recovery allocation roles overlap');
+    if(record.candidateTree.identity.dev!==roots.targetParentIdentity.dev
+      ||record.expectedTree!==null&&record.expectedTree.identity.dev!==record.candidateTree.identity.dev)
+      fail('resumption recovery crosses filesystem devices');
+    await assertPublicationFilesystemBinding(workspace,record);
+    const check=async()=>{
+      await assertExecutionPublicationLock(lease);await assertPublicationFilesystemBinding(workspace,record);
+      await assertResumptionQuiet({marker,lease,phase:'recovery'});
+      if(!equal(parseStrictJson((await readOwnedFile(marker)).bytes.toString('utf8')),record))fail('resumption recovery marker changed');
+    };
+    await check();
+    let live=await captureExecutionTree(workspace.executionRoot);
+    const candidate=await captureExecutionTree(record.candidate),backup=await captureExecutionTree(record.backup);
+    if(backup!==null&&!equal(backup,record.expectedTree)||candidate!==null&&!equal(candidate,record.candidateTree))
+      fail('resumption recovery physical roles differ');
+    const proposed=live!==null&&equal(live.identity,record.candidateTree.identity)
+      &&equal(live.files.filter(item=>item.path!=='activation.json'),record.candidateTree.files);
+    if(proposed&&live.files.some(item=>item.path==='activation.json')) {
+      validateInstalledActivation(record.expectedInstalledActivation);
+      return finishDocumentaryResumption({workspace,marker,record,lease,publication:'confirmed',readActivated,assertResumptionQuiet,checkpoint});
+    }
+    if(archived) return finishDocumentaryResumption({workspace,marker,record,lease,publication:'aborted',readActivated,assertResumptionQuiet,checkpoint});
+    if(proposed&&candidate===null) {
+      await check();
+      if(!equal(await captureExecutionTree(workspace.executionRoot),live)||await stat(record.candidate))fail('resumption candidate changed before restoration');
+      try {await fs.rename(workspace.executionRoot,record.candidate);
+        await syncLockParent(path.dirname(workspace.executionRoot));await syncLockParent(path.dirname(record.candidate));}
+      catch(error){error.retainExecutionLock=true;throw error;}
+      live=null;
+    }else if(!equal(live,record.expectedTree)&&live!==null||candidate===null)fail('resumption unconfirmed roles differ');
+    if(backup!==null) {
+      if(checkpoint)await checkpoint('before-resumption-restore',{marker});
+      await check();
+      if(await stat(workspace.executionRoot)||!equal(await captureExecutionTree(record.backup),record.expectedTree)
+        ||!equal(await captureExecutionTree(record.candidate),record.candidateTree))fail('resumption source changed before restoration');
+      try {await fs.rename(record.backup,workspace.executionRoot);
+        await syncLockParent(path.dirname(workspace.executionRoot));await syncLockParent(record.retentionRoot);}
+      catch(error){error.retainExecutionLock=true;throw error;}
+    }
+    return finishDocumentaryResumption({workspace,marker,record,lease,publication:'aborted',readActivated,assertResumptionQuiet,checkpoint});
+  });
+}
+
 // The local review promotes its one approved candidate directly. The v1 owner
 // marker already binds the old tree, candidate identity, and activation intent.
 export async function recoverCurrentReplacementPublication({workspace,marker,readActivated,
@@ -2005,13 +2280,16 @@ export async function recoverCurrentReplacementPublication({workspace,marker,rea
     const materialGone=candidate===null&&backup===null&&await stat(record.retentionRoot)===null;
     const retiredRoles=equal(record.cleanup?.paths,[record.backup,record.retentionRoot,marker])
       ||equal(record.cleanup?.paths,[record.candidate,record.retentionRoot,marker]);
-    await replacementPreparation(workspace,record,{targetRevision,registeredPreparation,
+    const association=await replacementPreparation(workspace,record,{targetRevision,registeredPreparation,
       terminal:true,materialGone:materialGone&&retiredRoles});
     if(record.expectedInstalledActivation&&proposedInstalled&&live.files.some(item=>item.path==='activation.json')) {
       validateInstalledActivation(record.expectedInstalledActivation);
       const activation=parseStrictJson((await readOwnedFile(path.join(workspace.executionRoot,'activation.json'))).bytes.toString('utf8'));
       if(!equal(activation,record.expectedInstalledActivation))fail('local review activation outcome is uncertain');
-      const current=await readActivated();
+      if(record.currentReplacement===true&&registeredPreparation&&!association.binding)
+        fail('replacement confirmed preparation association is unavailable');
+      const current=await readActivated(association.binding?.revalidateCompletedIds
+        ?{phase:'confirmed-candidate',binding:association.binding}:undefined);
       if(!equal(current.activation,activation)||current.activation.activeAttempt!==null||candidate!==null)
         fail('local review confirmed readback or roles differ');
       const confirmation={activationId:activation.activationId,

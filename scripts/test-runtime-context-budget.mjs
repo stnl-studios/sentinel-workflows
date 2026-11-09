@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { metrics, validateBaseline, validateCurrent } from "./lib/runtime-context-budget.mjs";
 import test from "node:test";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -34,15 +34,7 @@ const EXPECTED_RUNTIME = Object.freeze({
 
 const manifest = JSON.parse(await readFile(MANIFEST_PATH, "utf8"));
 
-function metrics(buffers) {
-  return {
-    words: buffers.reduce(
-      (total, buffer) => total + buffer.toString("utf8").trim().split(/\s+/u).filter(Boolean).length,
-      0,
-    ),
-    bytes: buffers.reduce((total, buffer) => total + buffer.byteLength, 0),
-  };
-}
+const snapshot = JSON.parse(await readFile(join(dirname(MANIFEST_PATH), "runtime-context-baseline.snapshot.json"), "utf8"));
 
 async function currentMetrics(paths) {
   return metrics(await Promise.all(paths.map((path) => readFile(join(ROOT, path)))));
@@ -75,22 +67,50 @@ test("manifest has canonical runtime dependencies and excludes maintenance resou
   }
 });
 
-test("recorded baseline matches the declared pre-change revision", () => {
-  const revision = manifest.baseline_revision;
+test("recorded baseline matches the pinned public numeric snapshot without Git", () => {
+  validateBaseline(manifest, snapshot);
+});
+
+test("baseline integrity rejects tampering, omissions, and relaxed limits", () => {
+  for (const mutate of [
+    value => { value.files[Object.keys(value.files)[0]].words++; },
+    value => { value.files[Object.keys(value.files)[0]].bytes++; },
+    value => { value.files[Object.keys(value.files)[0]].sha256 = "0".repeat(64); },
+    value => { delete value.files[Object.keys(value.files)[0]]; },
+    value => { delete value.modes.CLOSE; },
+    value => { value.modes.CLOSE.maximum_ceilings.bytes++; },
+  ]) {
+    const changed = structuredClone(snapshot);
+    mutate(changed);
+    assert.throws(() => validateBaseline(manifest, changed), /integrity mismatch/);
+  }
+  for (const mutate of [
+    value => { value.baseline_revision = "0".repeat(40); },
+    value => { delete value.modes.CLOSE; },
+    value => { value.modes.CLOSE.baseline.files.pop(); },
+    value => { value.modes.CLOSE.baseline.words++; },
+    value => { value.modes.CLOSE.baseline.bytes++; },
+    value => { value.modes.CLOSE.ceilings.words++; },
+    value => { value.modes.CLOSE.ceilings.bytes++; },
+    value => { value.modes.CLOSE.required_reduction_percent--; },
+  ]) {
+    const changed = structuredClone(manifest);
+    mutate(changed);
+    assert.throws(() => validateBaseline(changed, snapshot));
+  }
+});
+
+test("runtime overflow and reduction failures remain hard errors", () => {
   for (const [mode, contract] of Object.entries(manifest.modes)) {
-    const buffers = contract.baseline.files.map((path) => {
-      const result = spawnSync("git", ["show", `${revision}:${path}`], {
-        cwd: ROOT,
-        encoding: null,
-      });
-      assert.equal(result.status, 0, result.stderr?.toString("utf8"));
-      return result.stdout;
-    });
-    assert.deepEqual(
-      metrics(buffers),
-      { words: contract.baseline.words, bytes: contract.baseline.bytes },
-      mode,
-    );
+    for (const unit of ["words", "bytes"]) {
+      assert.throws(() => validateCurrent(mode, contract,
+        { words: 0, bytes: 0, [unit]: contract.ceilings[unit] + 1 }), /ceiling exceeded/);
+    }
+  }
+  const contract = { baseline: { words: 100, bytes: 100 }, ceilings: { words: 100, bytes: 100 }, required_reduction_percent: 20 };
+  for (const unit of ["words", "bytes"]) {
+    assert.throws(() => validateCurrent("fixture", contract, { words: 0, bytes: 0, [unit]: 81 }), /19% < 20%/);
+    validateCurrent("fixture", contract, { words: 0, bytes: 0, [unit]: 80 });
   }
 });
 
@@ -98,6 +118,7 @@ test("current runtime remains within explicit instruction ceilings", async () =>
   process.stdout.write("\nMODE FILES WORDS BYTES WORD_DELTA BYTE_DELTA\n");
   for (const [mode, contract] of Object.entries(manifest.modes)) {
     const current = await currentMetrics(contract.runtime_files);
+    validateCurrent(mode, contract, current);
     assert(current.words <= contract.ceilings.words, `${mode}: word ceiling exceeded`);
     assert(current.bytes <= contract.ceilings.bytes, `${mode}: byte ceiling exceeded`);
     assert(contract.ceilings.words <= contract.baseline.words, `${mode}: raised word ceiling`);

@@ -15,8 +15,9 @@ const run=promisify(execFile),json=x=>Buffer.from(JSON.stringify(x)+'\n');
 const raw=x=>`sha256:${createHash('sha256').update(x).digest('hex')}`;
 const section=(text,name,body)=>text.replace(new RegExp(`(^## ${name}\\n\\n)[\\s\\S]*?(?=^## |$(?![\\s\\S]))`,'mu'),(_,head)=>head+body+'\n\n');
 
-export async function currentImage(test,{kind='native-s1',sharedInput=false,sharedInputAll=false,behaviorCheck=false,spaces=false,independent=false,documentarySource=null}={}) {
+export async function currentImage(test,{kind='native-s1',sharedInput=false,sharedInputAll=false,behaviorCheck=false,spaces=false,independent=false,documentarySource=null,pristineLast=false}={}) {
   if(!['native-s1','managed-s1','managed-s2','two-s2','three-s2','s0','disjoint-s0'].includes(kind))throw new Error('unknown current seed profile');
+  if(pristineLast&&kind!=='three-s2')throw new Error('pristine last delivery requires the three-s2 fixture');
   if(independent&&kind!=='two-s2')throw new Error('independent source setup requires the two-s2 fixture');
   const parent=path.resolve(spaces?'tmp/current seeds with spaces':'tmp/current-seeds');await fs.mkdir(parent,{recursive:true});
   const root=await fs.realpath(await fs.mkdtemp(path.join(parent,'ec1-')));
@@ -55,7 +56,7 @@ export async function currentImage(test,{kind='native-s1',sharedInput=false,shar
       if(!behaviorCheck){recipe.checks[0].args=[{literal:'-e'},{literal:'if (2 + 2 !== 4) process.exit(1)'}];recipe.dependencyReview='Mechanical current-state fixture: reviewed literal arithmetic check; not a claim of greeting behavior coverage.';}
       for(const [heading,body] of Object.entries({'Authorized Areas':`- directory: \`${relative(directory)}\``,'Expected Files':`- \`${relative(directory+'/'+product)}\``,'Existing Inputs':deliveryInput?`- \`${relative('shared-config.json')}\``:'- none','Verification Recipe':'- Recipe: '+JSON.stringify(recipe),'Expected Tests':behaviorCheck?'- node --test '+JSON.stringify(directory+'/'+testName):'- Reviewed literal arithmetic check (mechanical fixture only)'}))text=section(text,heading,body);
       if(!two&&name.startsWith('tasks/'))text=section(text,'Acceptance Obligations','- obligation-01 | requirement: AC-001 | contribution: complete | full owner: slice-01 | condition: Greeting is observed | proof: Prepared node test');
-      text=section(text,'Continuity',`- Current validation: ${kind.endsWith('s0')?'unvalidated':'revalidation-required'}\n- Current evidence: none\n- Current action: ${kind.endsWith('s0')?'implement approved delivery':'validate'}`);
+      text=section(text,'Continuity',`- Current validation: ${kind.endsWith('s0')||pristineLast&&second?'unvalidated':'revalidation-required'}\n- Current evidence: none\n- Current action: ${kind.endsWith('s0')||pristineLast&&second?'implement approved delivery':'validate'}`);
     }
     if(name==='plan.md') {
       if(!two)text=text.split('\n').filter(line=>!line.includes('| 02 - Verification |')).join('\n');
@@ -78,7 +79,8 @@ export async function currentImage(test,{kind='native-s1',sharedInput=false,shar
     const thirdId=randomUUID();await fs.mkdir(path.join(root,'third'));await fs.mkdir(path.join(root,'fourth'));await fs.writeFile(path.join(root,'fourth/state.mjs'),'export const state=1;\n');
     for(const group of ['plans','tasks']) {
       const name=`${group}/slice-02.md`,text=artifacts.get(name).toString();
-      const third=text.replaceAll('slice-02','slice-03').replaceAll('Slice 02','Slice 03').replace('- Slice: 02','- Slice: 03').replaceAll(' - Verification',' - Additional').replace(/^- Delivery ID: .+$/mu,'- Delivery ID: '+thirdId).replace('contribution: complete | full owner: slice-03','contribution: partial | full owner: slice-02');
+      let third=text.replaceAll('slice-02','slice-03').replaceAll('Slice 02','Slice 03').replace('- Slice: 02','- Slice: 03').replaceAll(' - Verification',' - Additional').replace(/^- Delivery ID: .+$/mu,'- Delivery ID: '+thirdId).replace('contribution: complete | full owner: slice-03','contribution: partial | full owner: slice-02');
+      if(pristineLast&&group==='tasks')third=section(third,'Continuity','- Current validation: revalidation-required\n- Current evidence: none\n- Current action: validate');
       const relative=x=>path.relative(path.join(execution,group),path.join(root,x)).split(path.sep).join('/');
       artifacts.set(`${group}/slice-03.md`,Buffer.from(section(third,'Authorized Areas',`- directory: \`${relative('other')}\`\n- directory: \`${relative('fourth')}\``)));
       let second=section(text,'Authorized Areas',`- directory: \`${relative('other')}\`\n- directory: \`${relative('third')}\``);
@@ -107,7 +109,7 @@ export async function currentImage(test,{kind='native-s1',sharedInput=false,shar
   const prepared=validateCurrentPreparation({context,requirementsAuthority:before.requirementsAuthority,snapshotBytes:approved.bytes,artifacts,profile:'converted-current'});
   for(const [i,d] of continuity.deliveries.entries()) {
     d.baseline=(await observeCurrentDeliveryWork({context,delivery:approved.snapshot.normativeProjection.deliveries[i],sections:prepared.currentArtifacts.deliveries[i].sections,current:d,bundle:null})).manifest;
-    if(!kind.endsWith('s0')) {
+    if(!kind.endsWith('s0')&&!(pristineLast&&i===continuity.deliveries.length-1)) {
       // Authored high-water marks of the opaque current S2 boundary, not
       // imported receipts or a claim of native implementation proof.
       d.validation='revalidation-required';d.counters.validationAttempts=1;d.counters.implementationChecks=1;

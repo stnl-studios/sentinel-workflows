@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import {
   withExecutionPublicationLock, withLifecycleRecoveryPublicationLock,
   lifecycleCommonLeaseBinding, validateLifecycleCommonLeaseBinding, resolveExecutionFilesystemRoots,
-  captureLifecycleRecoveryControl, readOwnedFile, assertLifecycleExecutionUnowned, executionLockIdentity, ensureExecutionMaterialRoot, validateLifecycleLockPayload, assertNoLegacyExecutionControls, assertNoPendingExecutionPublication,validateCurrentOperationAllocationBinding,validateCurrentOperationRetirementRecord,parseStrictJson,validatePreparationRegistry,validateLifecycleRetirementManifest,beginLifecycleTerminalRetirement,validateLifecycleCloseBinding,captureLifecycleRetirementRoles,
+  captureLifecycleRecoveryControl, readOwnedFile, assertLifecycleExecutionUnowned, executionLockIdentity, ensureExecutionMaterialRoot, validateLifecycleLockPayload, assertNoLegacyExecutionControls, assertNoPendingExecutionPublication,validateCurrentOperationAllocationBinding,validateCurrentOperationRetirementRecord,parseStrictJson,validatePreparationRegistry,validateLifecycleRetirementManifest,beginLifecycleTerminalRetirement,validateLifecycleCloseBinding,captureLifecycleRetirementRoles,createLifecycleCloseArchive,verifyLifecycleCloseArchive,
 } from './execution-publication.mjs';
 import {projectCurrentRequirements} from './execution-workspace.mjs';
 import {inspectLifecycleTerminalRetirement,acquireLifecycleTerminalRetirementLock,assertLifecycleTerminalRetirementState,
@@ -57,7 +57,9 @@ const TRANSACTION_PHASES = new Set([
 ]);
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const TRANSACTION_ID_PATTERN = /^[0-9a-f]{32}$/;
-const MAX_JOURNAL_BYTES = 64 * 1024;
+// The CLOSE journal and ownership sidecar carry the whole operational inventory; a real execution with
+// many native owners exceeded 128 KiB. Same 1 MiB bound as the terminal retirement record.
+const MAX_JOURNAL_BYTES = 1024 * 1024;
 const MAX_LOCK_BYTES = 16 * 1024;
 const JOURNAL_TOKEN = Symbol("journalToken");
 const WINDOWS_TRANSIENT_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
@@ -97,6 +99,7 @@ export const TEST_ONLY_CHECKPOINTS = new Set([
   "LOCK_CLAIM_LINKED",
   "LOCK_BUILD_ALLOCATED",
   "CANDIDATE_STAGED",
+  "CLOSE_HISTORY_DURABLE",
   "DURING_OWNED_REMOVAL",
   "DURING_OWNERSHIP_REMOVAL",
   "JOURNAL_UPDATE_QUARANTINED",
@@ -1552,6 +1555,7 @@ async function writeJournal(target, transaction) {
   await assertPhysicalRoles();
   const journal = journalPath(target);
   const bytes = journalBytes(transaction);
+  if(bytes.length>MAX_JOURNAL_BYTES)fail("transaction journal exceeds its safe size limit before write",journal);
   const token = transaction[JOURNAL_TOKEN] ?? null;
   const candidate = await buildJournalCandidate(
     target,
@@ -2066,6 +2070,8 @@ async function readOwnership(target, transactionId) {
 async function writeOwnership(target, ownership) {
   await assertPhysicalRoles();
   const filePath = ownershipPath(target, ownership.transactionId);
+  const bytes=prettySortedAsciiJson(ownershipPayload(ownership));
+  if(Buffer.byteLength(bytes,'utf8')>MAX_JOURNAL_BYTES)fail("transaction ownership exceeds its safe size limit before write",filePath);
   await settleOwnershipClaim(target, ownership.transactionId);
   const existing = await readOwnershipRecord(target, ownership.transactionId);
   const build = path.join(
@@ -2074,7 +2080,7 @@ async function writeOwnership(target, ownership) {
   );
   const handle = await fs.open(build, "wx", 0o600);
   try {
-    await handle.writeFile(prettySortedAsciiJson(ownershipPayload(ownership)), "utf8");
+    await handle.writeFile(bytes, "utf8");
     await handle.sync();
   } finally {
     await handle.close();
@@ -2273,7 +2279,7 @@ function validateCloseBinding(binding,filePath,{nullable=false}={}) {
 
 async function captureRetirementRoles(root,options={}){return sortedJsonValue(await captureLifecycleRetirementRoles(root,options));}
 
-async function captureCloseOperationalInventory(target,transactionId){
+async function captureCloseOperationalInventory(target,transactionId,{historicalNames=[]}={}){
   await assertPhysicalRoles();
   const names=(await fs.readdir(materialParent(target))).sort(compareCodePoints);
   const own=new Set([path.basename(lockPath(target)),path.basename(journalPath(target)),
@@ -2306,6 +2312,32 @@ async function captureCloseOperationalInventory(target,transactionId){
     const binding=validateCurrentOperationAllocationBinding(record,{operationId:name,specKey:roots.specKey,logicalExecutionRoot:roots.executionRoot,logicalSpecRoot:roots.specRoot,
       ownershipToken:record.binding?.owner?.ownershipToken,namespaceIdentity:roots.materialRootIdentity,filesystemDevice:roots.materialRootIdentity.dev,filesystemContext:policy,
       filesystemBinding:{targetParentIdentity:roots.targetParentIdentity,leaseParentIdentity:roots.leaseParentIdentity,materialRootIdentity:roots.materialRootIdentity}});
+    // Preserve superseded committed allocations in full. This does not prove
+    // a result or admit an operation: the current COMPLETE proof is independent.
+    if(record.phase==='committed'&&Array.from({length:record.runner.round},(_,i)=>i+1)
+      .some(round=>!proofs.some(item=>same(item.origin.admission.binding,binding)&&item.origin.attempt===round))){
+      if(record.commonLease.lockPath!==roots.lockPath
+        ||record.runner.originFile!==path.join(file,`round-${record.runner.round}.origin.json`)
+        ||record.runner.requestFile!==path.join(file,`round-${record.runner.round}.request.json`)
+        ||record.runner.responseFile!==path.join(file,`round-${record.runner.round}.response.json`))fail('CLOSE historical owner common lease or runner paths differ',file);
+      const historicalAllowed=new Set(['owner.json','base.activation.json',...(binding.owner.operation==='VALIDATE_SLICE'?[]:['base.work.json'])]);
+      for(let round=1;round<=record.runner.round;round++){
+        for(const suffix of ['origin','baseline','request','agent','claim','observation','response','tool-result','receipt','verification'])historicalAllowed.add(`round-${round}.${suffix}.json`);
+        const origin=await json(path.join(file,`round-${round}.origin.json`));
+        if(!same(origin.admission?.binding,binding)||!same(origin.owner,binding.owner)||origin.attempt!==round)fail('CLOSE historical source owner association differs',file);
+      }
+      const historicalActual=(await fs.readdir(file)).sort(compareCodePoints);
+      for(const leaf of historicalActual){
+        const metadata=await fs.lstat(path.join(file,leaf),{bigint:true});
+        if(!metadata.isFile()||metadata.isSymbolicLink()||metadata.nlink!==1n)fail('CLOSE historical source must be a single-link regular file',path.join(file,leaf));
+        const removal=/^round-([1-5])\.removal-[a-f0-9]{64}\.json$/u.exec(leaf);
+        if(!historicalAllowed.has(leaf)&&!(removal&&Number(removal[1])<=record.runner.round))fail('CLOSE retirement preserves foreign historical material',path.join(file,leaf));
+      }
+      if([...historicalAllowed].some(leaf=>!historicalActual.includes(leaf)))fail('CLOSE historical capture is incomplete',file);
+      const base=await readOwnedFile(path.join(file,'base.activation.json'));
+      if(binding.baseTree.files.find(row=>row.path==='activation.json')?.sha256!=='sha256:'+createHash('sha256').update(base.bytes).digest('hex'))fail('CLOSE historical base activation differs',file);
+      historicalNames.push(name);continue;
+    }
     const allowed=new Set(['owner.json','base.activation.json',...(binding.owner.operation==='VALIDATE_SLICE'?[]:['base.work.json'])]);
     if(record.phase==='aborted') {
       if(record.commonLease.lockPath!==roots.lockPath)fail('CLOSE abort common lease path differs',file);
@@ -2358,8 +2390,9 @@ async function captureCloseOperationalInventory(target,transactionId){
         if(!proof.capture[key]||!(await readOwnedFile(path.join(file,leaf))).bytes.equals(Buffer.from(proof.capture[key])))fail('CLOSE retirement captured bytes differ from official proof',path.join(file,leaf));
       }
       const leaf=`round-${round}.verification.json`,verification=await json(path.join(file,leaf)),observed=parseStrictJson(Buffer.from(proof.capture.verificationObservation).toString('utf8')),baseline=parseStrictJson(Buffer.from(proof.capture.baselineCapture).toString('utf8'));
-      allowed.add(leaf);exactKeys(verification,['format','status','verification','workStateSha256','checks'],'CLOSE private recipe observation',file);
-      if(verification.format!=='stnl-runner-verification-v1'||verification.status!=='completed'||!same(verification.verification,proof.origin.verification)||!same(verification.checks,observed.checks)
+      allowed.add(leaf);exactKeys(verification,['format','status','verification','workStateSha256','checks',...(verification.format==='stnl-runner-execution-v2'?['executionContext']:[])],'CLOSE private recipe observation',file);
+      if(!['stnl-runner-verification-v1','stnl-runner-execution-v2'].includes(verification.format)||verification.status!=='completed'
+        ||(verification.format==='stnl-runner-execution-v2'&&!same(verification.executionContext,observed.executionContext))||!same(verification.verification,proof.origin.verification)||!same(verification.checks,observed.checks)
         ||verification.workStateSha256!=='sha256:'+createHash('sha256').update(JSON.stringify(observed.before)).digest('hex'))fail('CLOSE retirement private verification is not replicated in the official observation',file);
       for(const bytes of proof.capture.removalProofs){const removal=parseStrictJson(Buffer.from(bytes).toString('utf8')),leaf=`round-${round}.removal-${createHash('sha256').update(removal.path).digest('hex')}.json`;allowed.add(leaf);if(!(await readOwnedFile(path.join(file,leaf))).bytes.equals(Buffer.from(bytes)))fail('CLOSE retirement removal source differs',file);}
       if(binding.owner.operation!=='VALIDATE_SLICE'){
@@ -2446,11 +2479,13 @@ function closePublicationResult(target,transaction,{diagnostics=[]}={}) {
     requirementsAuthority:transaction.closeBinding.requirementsAuthority,
     closedSnapshotSha256:`sha256:${transaction.candidateSnapshotSha256}`,
     sourceExecutionDisposition:transaction.closeBinding.sourceExecutionDisposition,
+    ...(transaction.closeBinding.historicalArchive?{historicalArchive:transaction.closeBinding.historicalArchive.path}:{}),
     ...(diagnostics.length?{cleanupDiagnostics:diagnostics}:{})};
 }
 
 async function prepareCloseTerminalRetirement(target,transaction,ownership,executionLease){
   const {backup}=await transactionPaths(target,transaction);
+  await verifyLifecycleCloseArchive(roots,transaction.transactionId,transaction.closeBinding.historicalArchive,transaction.closeBinding.operationalInventory);
   await validateSourceIdentity(backup,transaction,ownership);
   await validateCandidateIdentity(target,transaction,ownership);
   const selected=[...new Set(transaction.closeBinding.operationalInventory.map(row=>row.path.split('/')[0]))].sort(compareCodePoints);
@@ -2494,7 +2529,8 @@ async function validateTerminalPublisherState(inspection){
 function terminalPublicationResult(witness,cleanup){
   return {target:roots.specRoot,transactionId:witness.transactionId,publication:'confirmed',...cleanup,
     requirementsAuthority:witness.closeBinding.requirementsAuthority,closedSnapshotSha256:witness.closedSnapshotSha256,
-    sourceExecutionDisposition:witness.closeBinding.sourceExecutionDisposition};
+    sourceExecutionDisposition:witness.closeBinding.sourceExecutionDisposition,
+    ...(witness.closeBinding.historicalArchive?{historicalArchive:witness.closeBinding.historicalArchive.path}:{})};
 }
 async function cleanupTerminalRetirement(executionLease,witness){
   try{
@@ -4366,8 +4402,15 @@ async function publishCandidateLocked(mode, target, candidate, {
           `${mode} source`,
         );
       }
-      const closeBinding=mode==='CLOSE'?validateCloseBinding({format:'stnl-lifecycle-close-binding-v1',sourceIdentity:ownership.sourceIdentity,requirementsAuthority:await closeRequirementsAuthority(targetPath),sourceExecutionDisposition:closeDisposition,
-        operationalInventory:await captureCloseOperationalInventory(targetPath,transactionId)},targetPath):null;
+      let closeBinding=null;
+      if(mode==='CLOSE'){
+        const historicalNames=[],operationalInventory=await captureCloseOperationalInventory(targetPath,transactionId,{historicalNames});
+        const historicalArchive=historicalNames.length?await createLifecycleCloseArchive(roots,transactionId,historicalNames,operationalInventory):null;
+        testOnlyCheckpoint('CLOSE_HISTORY_DURABLE');
+        closeBinding=validateCloseBinding({format:'stnl-lifecycle-close-binding-v1',sourceIdentity:ownership.sourceIdentity,
+          requirementsAuthority:await closeRequirementsAuthority(targetPath),sourceExecutionDisposition:closeDisposition,operationalInventory,
+          ...(historicalArchive?{historicalArchive}:{})},targetPath);
+      }
       if(closeBinding!==null){validateCloseBinding(closeBinding,targetPath);if(await closeRequirementsAuthority(stage)!==closeBinding.requirementsAuthority)fail('CLOSE rendered requirements authority differs');}
       ownership = {
         ...ownership,
@@ -4502,6 +4545,7 @@ async function publishCandidateLocked(mode, target, candidate, {
         await validateSourceIdentity(targetPath, transaction, ownership);
         await testOnlyMutateSourceBeforeBackupRename(targetPath);
         if(mode==='CLOSE'){
+          await verifyLifecycleCloseArchive(roots,transactionId,transaction.closeBinding.historicalArchive,transaction.closeBinding.operationalInventory);
           if(compactAsciiJson(await deriveCloseExecutionDisposition(targetPath))!==compactAsciiJson(closeDisposition))fail('CLOSE execution disposition changed at publication barrier');
           if(compactAsciiJson(await captureCloseOperationalInventory(targetPath,transactionId))!==compactAsciiJson(transaction.closeBinding.operationalInventory))fail('CLOSE operational inventory changed at publication barrier');
         }

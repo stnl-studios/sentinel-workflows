@@ -1,3 +1,4 @@
+import {publishPreparationCandidate,approveSyntheticPreparation} from './fixtures/synthetic-preparation-approval.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,10 +9,12 @@ import {promisify} from 'node:util';
 import {pathToFileURL} from 'node:url';
 import {completedNativeCase,reopeningInput} from './fixtures/current-completed-native.mjs';
 import {retireActive} from './fixtures/current-reader-campaign.mjs';
-import {captureCurrentExecution} from '../skills/workflows/stnl-execution-planner/runtime/execution-current-reader.mjs';
+import {captureCurrentExecution,captureCompletedRevalidationSource} from '../skills/workflows/stnl-execution-planner/runtime/execution-current-reader.mjs';
+import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
+import {assertPreparationCandidate,capturePreparationSource} from '../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs';
 import {resolveCurrentExecutionContext} from '../skills/workflows/stnl-execution-planner/runtime/execution-workspace.mjs';
 import {preparePreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
-import {publishPreparationCandidate,recoverPreparationPublication} from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
+import {recoverPreparationPublication} from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
 import {preparationRegistryPath,captureExecutionTree,executionLockIdentity} from '../skills/workflows/stnl-execution-planner/runtime/execution-publication.mjs';
 const decode=bytes=>JSON.parse(Buffer.from(bytes));
 const approve=request=>({...structuredClone(request),decision:'approved',summary:'Controlled publication implementation test; not independent approval.',
@@ -179,11 +182,27 @@ test('crash under the common lease has no automatic takeover or second publicati
  const f=await fixture(t),harness=path.join(f.image.f.root,'tmp/crash-publication.mjs'),locator=path.join(f.image.f.root,'tmp/crash-locator.json');
  const moduleURL=pathToFileURL(path.resolve('skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs')).href;
  await fs.writeFile(harness,`import fs from 'node:fs/promises';\nimport {publishPreparationCandidate} from ${JSON.stringify(moduleURL)};\nawait publishPreparationCandidate({...${JSON.stringify({...f.options,reviewDecision:f.review})},checkpoint:async(phase,paths)=>{if(phase==='after-backup'){await fs.writeFile(${JSON.stringify(locator)},JSON.stringify(paths));process.exit(77);}}});\n`);
- await assert.rejects(promisify(execFile)(process.execPath,[harness]),error=>error.code===77);
- const paths=decode(await fs.readFile(locator)),lock=(await executionLockIdentity(f.workspace)).lockPath,before=await fs.readFile(lock),registry=await fs.readFile(f.registry);
+ const run=()=>promisify(execFile)(process.execPath,[harness]),lock=(await executionLockIdentity(f.workspace)).lockPath;
+ const source=await captureExecutionTree(f.workspace.executionRoot),candidate=await captureExecutionTree(f.root);
+ const ownerBefore=await fs.readFile(`${f.root}.owner.json`),registryBefore=await fs.readFile(f.registry);
+ // The child uses the production entry point: independent review alone must
+ // not reach the crash checkpoint before exact-byte synthetic draft approval.
+ await assert.rejects(run(),error=>error.code===1&&/STALE_APPROVAL/u.test(error.stderr));
+ await absent(locator);await absent(lock);
+ assert.deepEqual(await captureExecutionTree(f.workspace.executionRoot),source);assert.deepEqual(await captureExecutionTree(f.root),candidate);
+ assert.deepEqual(await fs.readFile(`${f.root}.owner.json`),ownerBefore);assert.deepEqual(await fs.readFile(f.registry),registryBefore);
+ await approveSyntheticPreparation(f.options);
+ await assert.rejects(run(),error=>error.code===77);
+ const locatorBytes=await fs.readFile(locator),paths=decode(locatorBytes),before=await fs.readFile(lock),registry=await fs.readFile(f.registry);
+ const marker=await fs.readFile(paths.marker),owner=await fs.readFile(`${f.root}.owner.json`),afterCrashCandidate=await captureExecutionTree(f.root);
+ await absent(f.workspace.executionRoot);
+ assert.deepEqual(await captureExecutionTree(paths.backup),decode(marker).expectedTree);
  await assert.rejects(recoverPreparationPublication({specPath:f.specPath,allocation:paths.marker}),{code:'EXECUTION_PUBLICATION_BLOCKED'});
- assert.deepEqual(await fs.readFile(lock),before);assert.deepEqual(await fs.readFile(f.registry),registry);await fs.access(paths.marker);await fs.access(`${f.root}.owner.json`);
- assert.deepEqual(await captureExecutionTree(paths.backup),decode(await fs.readFile(paths.marker)).expectedTree);
+ await assert.rejects(run(),error=>error.code===1&&/EXECUTION_PUBLICATION_BLOCKED/u.test(error.stderr));
+ assert.deepEqual(await fs.readFile(lock),before);assert.deepEqual(await fs.readFile(f.registry),registry);
+ assert.deepEqual(await fs.readFile(paths.marker),marker);assert.deepEqual(await fs.readFile(`${f.root}.owner.json`),owner);
+ assert.deepEqual(await fs.readFile(locator),locatorBytes);assert.deepEqual(await captureExecutionTree(f.root),afterCrashCandidate);
+ await absent(f.workspace.executionRoot);assert.deepEqual(await captureExecutionTree(paths.backup),decode(marker).expectedTree);
 });
 
 test('failed compensation retains the publisher and lease instead of releasing a lost reservation',async t=>{
@@ -262,3 +281,130 @@ for(const reopening of [false,true])for(const boundary of ['before-backup','afte
   assert.equal(decode(await fs.readFile(f.registry)).allocations.some(item=>item.candidate===f.root),true);
   await absent((await executionLockIdentity(f.workspace)).lockPath);
  });
+
+test('explicit completed revalidation requires a fresh terminal after exact byte restoration',async t=>{
+ const reviewFor=r=>({globalReview:approve(r.globalReview),deliveries:r.deliveries.map(x=>({deliveryId:x.deliveryId,review:approve(x.review)}))});
+ const f=await completedNativeCase(t,{drift:true,independent:true,retire:false});
+ await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+ const original=await captureCurrentExecution(f.specPath);assert.equal(original.inspection.state,'COMPLETE');
+ const snapshot=decode(original.files.get('approved-preparation.json'));
+ const continuity=decode(original.files.get('continuity.json'));
+ const view={...f.view,activation:decode(original.activationBytes),snapshot,files:new Map([...original.files].map(([k,v])=>[k,Buffer.from(v)])),artifacts:new Map(snapshot.reviewedArtifacts.map(x=>[x.path,Buffer.from(x.utf8)])),continuity};
+ await retireActive(view);
+ const retired=await captureCurrentExecution(f.specPath);assert.equal(retired.inspection.state,'COMPLETE');
+ const a=continuity.completed.find(x=>x.slice==='slice-01'),b=continuity.completed.find(x=>x.slice==='slice-02');
+ const product=path.join(f.root,'src/greeting.mjs'),bytes=await fs.readFile(product);
+ await fs.writeFile(product,Buffer.concat([bytes,Buffer.from('// temporary external drift\n')]));
+ const historical=await captureCompletedRevalidationSource(f.specPath,[a.deliveryId]);
+ assert.equal(historical.inspection.completed.find(x=>x.deliveryId===a.deliveryId).observedValidation,'revalidation-required');
+ assert.equal(historical.inspection.completed.find(x=>x.deliveryId===b.deliveryId).observedValidation,'current');
+ for(const ids of [[],[b.deliveryId],[a.deliveryId,b.deliveryId],[a.deliveryId,a.deliveryId],['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']])await assert.rejects(()=>captureCompletedRevalidationSource(f.specPath,ids));
+ const draft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:[b.deliveryId],revalidateCompletedIds:[a.deliveryId]});
+ const options={specPath:f.specPath,candidateExecutionRoot:draft.candidateExecutionRoot};
+ const markerFile=options.candidateExecutionRoot+'.owner.json',markerBytes=await fs.readFile(markerFile),marker=decode(markerBytes);
+ for(const mutate of [x=>{delete x.revalidateCompletedIds;},x=>{delete x.revalidationBasisSha256;},x=>{x.revalidateCompletedIds=[b.deliveryId];},x=>{x.revalidationBasisSha256='sha256:'+'0'.repeat(64);},x=>{x.completedDeliveryIds=[];}]){
+  const bad=structuredClone(marker);mutate(bad);await fs.writeFile(markerFile,JSON.stringify(bad));
+  await assert.rejects(async()=>capturePreparationSource(await assertPreparationCandidate(options.candidateExecutionRoot,f.specPath)));
+  await fs.writeFile(markerFile,markerBytes);
+ }
+ const allocatedProduct=await fs.readFile(product);
+ await fs.appendFile(product,'// second post-allocation change\n');
+ await assert.rejects(async()=>capturePreparationSource(await assertPreparationCandidate(options.candidateExecutionRoot,f.specPath)),{code:'EVIDENCE_STALE'});
+ await fs.writeFile(product,allocatedProduct);
+ const nextRev=retired.inspection.preparationRevision+1;
+ for(const name of ['plan.md','tasks.md','plans/slice-01.md','tasks/slice-01.md']){
+  let text=Buffer.from(original.files.get(name)).toString().replace(/^- Plan revision: .+$/mu,'- Plan revision: '+nextRev).replace(/^- Local revision: .+$/mu,'- Local revision: '+(a.localRevision+1));
+  if(['plan.md','tasks.md'].includes(name))text=text.split('\n').filter(x=>!x.includes('| 02 - ')).join('\n');
+  if(name==='tasks.md')text=text.replaceAll('| [x] |','| [ ] |').replaceAll('| PASS |','| pending |');
+  const p=path.join(options.candidateExecutionRoot,name);await fs.mkdir(path.dirname(p),{recursive:true});await fs.writeFile(p,text);
+ }
+ const proposal=await publishPreparationCandidate(options);
+ const result=await publishPreparationCandidate({...options,reviewDecision:reviewFor(proposal.reviewRequest)});assert.equal(result.publication,'confirmed');
+ const reopened=await captureCurrentExecution(f.specPath);assert.notEqual(reopened.inspection.state,'COMPLETE');
+ await fs.writeFile(product,bytes);
+ const delivery=decode(reopened.files.get('continuity.json')).deliveries[0];
+ await normalizedFormal({...f,delivery},{terminal:false});
+ const final=await captureCurrentExecution(f.specPath);
+ assert.notEqual(final.inspection.state,'COMPLETE','Fresh recovery must require a new terminal, even after restoring the old exact product bytes');
+ assert.equal(final.inspection.state,'VALIDATION_BLOCKED');assert.equal(final.inspection.normalHandoff,null);
+ assert.ok(final.inspection.diagnostics.some(item=>item.reason.includes('terminal judgment precedes current local validation')));
+ const active=decode(final.files.get('continuity.json')).deliveries,all=decode(final.files.get('continuity.json'));
+ const retire=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:[...all.deliveries,...all.completed].map(x=>x.deliveryId)});
+ const retireOptions={specPath:f.specPath,candidateExecutionRoot:retire.candidateExecutionRoot};
+ for(const name of ['plan.md','tasks.md'])await fs.writeFile(path.join(retire.candidateExecutionRoot,name),Buffer.from(final.files.get(name)).toString().split('\n').filter(line=>!active.some(x=>line.includes('| '+x.slice.slice(6)+' - '))).join('\n'));
+ const retireProposal=await publishPreparationCandidate(retireOptions);
+ assert.equal((await publishPreparationCandidate({...retireOptions,reviewDecision:reviewFor(retireProposal.reviewRequest)})).publication,'confirmed');
+ const quiet=await captureCurrentExecution(f.specPath);assert.equal(quiet.inspection.state,'VALIDATION_BLOCKED');assert.equal(quiet.inspection.deliveries.length,0);
+ const q20=reopeningInput(quiet,b.deliveryId,{terminalValidation:true});
+ const terminalDraft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:q20.completedDeliveryIds,terminalValidation:true});
+ const terminalOptions={specPath:f.specPath,candidateExecutionRoot:terminalDraft.candidateExecutionRoot};
+ for(const [name,value]of q20.artifacts){const p=path.join(terminalDraft.candidateExecutionRoot,name);await fs.mkdir(path.dirname(p),{recursive:true});await fs.writeFile(p,value);}
+ const terminalProposal=await publishPreparationCandidate(terminalOptions);
+ assert.equal((await publishPreparationCandidate({...terminalOptions,reviewDecision:reviewFor(terminalProposal.reviewRequest)})).publication,'confirmed');
+ const terminalOpened=await captureCurrentExecution(f.specPath);assert.equal(terminalOpened.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+ const terminalDelivery=decode(terminalOpened.files.get('continuity.json')).deliveries[0];assert.equal(terminalDelivery.deliveryId,b.deliveryId);
+ await normalizedFormal({...f,delivery:terminalDelivery},{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+ const complete=await captureCurrentExecution(f.specPath);assert.equal(complete.inspection.state,'COMPLETE');
+});
+
+for(const boundary of ['after-install','before-activation','after-activation-intent','after-activation','cleanup','confirmed-recovery'])
+ test(`completed revalidation preserves its approved product at ${boundary}`,async t=>{
+ const reviewFor=r=>({globalReview:approve(r.globalReview),deliveries:r.deliveries.map(x=>({deliveryId:x.deliveryId,review:approve(x.review)}))});
+ const f=await completedNativeCase(t,{drift:true,independent:true,retire:false});
+ await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+ const original=await captureCurrentExecution(f.specPath);assert.equal(original.inspection.state,'COMPLETE');
+ const snapshot=decode(original.files.get('approved-preparation.json'));
+ const continuity=decode(original.files.get('continuity.json'));
+ const view={...f.view,activation:decode(original.activationBytes),snapshot,files:new Map([...original.files].map(([k,v])=>[k,Buffer.from(v)])),artifacts:new Map(snapshot.reviewedArtifacts.map(x=>[x.path,Buffer.from(x.utf8)])),continuity};
+ await retireActive(view);
+ const retired=await captureCurrentExecution(f.specPath);assert.equal(retired.inspection.state,'COMPLETE');
+ const a=continuity.completed.find(x=>x.slice==='slice-01'),b=continuity.completed.find(x=>x.slice==='slice-02');
+ const product=path.join(f.root,'src/greeting.mjs'),bytes=await fs.readFile(product);
+ await fs.writeFile(product,Buffer.concat([bytes,Buffer.from('// temporary external drift\n')]));
+ const historical=await captureCompletedRevalidationSource(f.specPath,[a.deliveryId]);
+ assert.equal(historical.inspection.completed.find(x=>x.deliveryId===a.deliveryId).observedValidation,'revalidation-required');
+ assert.equal(historical.inspection.completed.find(x=>x.deliveryId===b.deliveryId).observedValidation,'current');
+ for(const ids of [[],[b.deliveryId],[a.deliveryId,b.deliveryId],[a.deliveryId,a.deliveryId],['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']])await assert.rejects(()=>captureCompletedRevalidationSource(f.specPath,ids));
+ const draft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:[b.deliveryId],revalidateCompletedIds:[a.deliveryId]});
+ const options={specPath:f.specPath,candidateExecutionRoot:draft.candidateExecutionRoot};
+ const nextRev=retired.inspection.preparationRevision+1;
+ for(const name of ['plan.md','tasks.md','plans/slice-01.md','tasks/slice-01.md']){
+  let text=Buffer.from(original.files.get(name)).toString().replace(/^- Plan revision: .+$/mu,'- Plan revision: '+nextRev).replace(/^- Local revision: .+$/mu,'- Local revision: '+(a.localRevision+1));
+  if(['plan.md','tasks.md'].includes(name))text=text.split('\n').filter(x=>!x.includes('| 02 - ')).join('\n');
+  if(name==='tasks.md')text=text.replaceAll('| [x] |','| [ ] |').replaceAll('| PASS |','| pending |');
+  const p=path.join(options.candidateExecutionRoot,name);await fs.mkdir(path.dirname(p),{recursive:true});await fs.writeFile(p,text);
+ }
+ const proposal=await publishPreparationCandidate(options);
+ const approvedProduct=await fs.readFile(product);
+ let result=null,failure=null,injected=0;
+ if(boundary==='confirmed-recovery') {
+  result=await publishPreparationCandidate({...options,reviewDecision:reviewFor(proposal.reviewRequest),checkpoint:phase=>{
+   if(phase==='cleanup'){injected++;throw Error('controlled confirmed cleanup interruption');}
+  }});
+  assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'pending');
+  const markerBefore=await fs.readFile(result.allocation);
+  await fs.appendFile(product,'// unapproved drift before confirmed recovery\n');
+  await assert.rejects(()=>recoverPreparationPublication({specPath:f.specPath,allocation:result.allocation}),{code:'EVIDENCE_STALE'});
+  assert.deepEqual(await fs.readFile(result.allocation),markerBefore);
+  await fs.writeFile(product,approvedProduct);
+  const recovered=await recoverPreparationPublication({specPath:f.specPath,allocation:result.allocation});
+  assert.equal(recovered.publication,'confirmed');assert.equal(recovered.cleanup,'complete');
+  assert.notEqual((await captureCurrentExecution(f.specPath)).inspection.state,'COMPLETE');
+ } else {
+  try { result=await publishPreparationCandidate({...options,reviewDecision:reviewFor(proposal.reviewRequest),checkpoint:async phase=>{
+   if(phase===boundary){injected++;await fs.appendFile(product,'// unapproved boundary drift\n');}
+  }}); } catch(error) { failure=error; }
+  assert.equal(result,null);assert.equal(failure?.code,'EVIDENCE_STALE');
+  assert.ok(failure?.allocation);await fs.access(failure.allocation);
+  if(['after-install','before-activation','after-activation-intent'].includes(boundary)) {
+   await fs.writeFile(product,approvedProduct);
+   const recovered=await recoverPreparationPublication({specPath:f.specPath,allocation:failure.allocation});
+   assert.equal(recovered.publication,'aborted');assert.equal(recovered.cleanup,'complete');
+   assert.deepEqual(await fs.readFile(path.join(original.context.physicalExecutionRoot,'activation.json')),Buffer.from(retired.activationBytes));
+  } else {
+   assert.equal(failure.retainExecutionLock,true,'an uncertain activated boundary preserves its lease');
+   assert.notEqual((await captureCurrentExecution(f.specPath)).inspection.state,'COMPLETE');
+  }
+ }
+ assert.equal(injected,1);
+});

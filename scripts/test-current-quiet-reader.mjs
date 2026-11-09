@@ -1468,7 +1468,7 @@ test('R19 isolated reader closure and copy equivalence',async t=>{
     const api=await import(pathToFileURL(path.join(runtime,'execution-preparation-current.mjs')).href);
     assert.deepEqual(Object.keys(api).sort(),['approveCurrentPreparation','approveInitialPreparation',
       'finalizeCurrentLocalReview','finalizeCurrentSetReplacement','prepareCurrentLocalReview','prepareCurrentSetReplacement',
-      'projectCurrentPreparation','projectInitialPreparation','validateCurrentPreparation',
+      'projectCurrentPreparation','projectDocumentaryPreparation','projectInitialPreparation','restoreDocumentaryPreparationArtifacts','validateCurrentPreparation',
       'validateInitialApprovedPreparation','validateReviewedPreparation']);
     const prepared=api.validateCurrentPreparation({context:{logicalSpecRoot:null,logicalAuthorityPath:f.source,
       logicalExecutionRoot:f.execution,physicalExecutionRoot:f.execution,productRoot:f.project},
@@ -1501,7 +1501,7 @@ test('R19 isolated reader closure and copy equivalence',async t=>{
   await t.test('foreign main basename does not execute the imported reader',async()=>using(authoredImage,async f=>{
     const imported=await workerRun(f,{mode:'import-only'});noAttempts(imported);
     assert.equal(imported.process.status,0,imported.process.stderr);assert.deepEqual(JSON.parse(imported.process.stdout),
-      {exports:['captureCurrentActiveExecution','captureCurrentExecution','inspectCurrentExecution','main','observeCurrentDeliveryWork','validateCurrentReviewCandidate']});
+      {exports:['captureCompletedRevalidationSource','captureCurrentActiveExecution','captureCurrentExecution','currentTerminalProductBasisMatches','inspectCurrentExecution','main','observeCurrentDeliveryWork','preflightCurrentPreparationPaths','validateCurrentReviewCandidate']});
     assert.deepEqual(imported.log.opens,{});
   }));
   for(const label of ['no argument','mutating flag','unknown flag']) await t.test(`CLI usage ${label}`,async()=>using(authoredImage,async f=>{

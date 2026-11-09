@@ -10,6 +10,8 @@ import {nativeOperationCase,reservedOperation} from './fixtures/current-native-o
 import {captureCurrentExecution,captureCurrentActiveExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {captureCurrentExecution as captureQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
 import {inspectPostConversionEvidence} from '../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs';
+import {resolveCurrentExecutionContext,executionWorkspaceFromContext} from '../skills/workflows/stnl-slice-executor/runtime/execution-workspace.mjs';
+import {captureExecutionTree,publishCurrentExecutionOperation,recoverCurrentExecutionOperation} from '../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
 import {begin,bindNative,verifyNative,captureNative,publish,cleanup,resume,reserveDispatch,prepareNativeContinuation} from
   '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 
@@ -261,9 +263,15 @@ test('EC-1 PASS then approved product drift completes a second VALIDATE with its
   assert.deepEqual(cleanA.inspection,cleanB.inspection);
   const cleanDelivery=cleanA.inspection.deliveries.find(item=>item.deliveryId===fixture.delivery.deliveryId);
   assert.equal(cleanDelivery.formalStatus,'PASS');
-  assert.equal(cleanA.inspection.normalHandoff,null);
-  await assert.rejects(()=>begin({specPath:fixture.specPath,slice:fixture.delivery.slice,
+  // Local PASS now offers the missing integral judgment to its live owner.
+  assert.deepEqual(cleanA.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:fixture.delivery.slice,deliveryId:fixture.delivery.deliveryId});
+  assert.notEqual(cleanA.inspection.state,'COMPLETE');
+  assert.deepEqual(cleanA.inspection.diagnostics,[{kind:'evidence',artifact:'continuity.json',field:'terminal',
+    reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]);
+  // Missing terminal proof does not authorize an unrelated findings operation.
+  await assert.rejects(()=>begin({specPath:fixture.specPath,slice:fixture.delivery.slice,operation:'APPLY_FINDINGS',
     expectedActivationId:cleanA.inspection.activationId}),blocked('UNSUPPORTED_FORMAT'));
+  assert.deepEqual(await fs.readFile(path.join(fixture.image.f.execution,'activation.json')),Buffer.from(cleanA.activationBytes));
   const prior=JSON.parse(Buffer.from(cleanA.files.get('continuity.json'))).deliveries
     .find(item=>item.deliveryId===fixture.delivery.deliveryId);
   await fs.appendFile(path.join(fixture.root,'src/greeting.mjs'),'// equivalent approved output drift\n');
@@ -319,7 +327,9 @@ test('EC-1 PASS then approved product drift completes a second VALIDATE with its
   const finalB=await captureQualityExecution(fixture.specPath);
   assert.deepEqual(finalA.inspection,finalB.inspection);
   assert.equal(finalA.inspection.deliveries[0].formalStatus,'PASS');
-  assert.equal(finalA.inspection.normalHandoff,null);
+  assert.deepEqual(finalA.inspection.normalHandoff,cleanA.inspection.normalHandoff);
+  assert.notEqual(finalA.inspection.state,'COMPLETE');
+  assert.deepEqual(finalA.inspection.diagnostics,cleanA.inspection.diagnostics);
   assert.equal(finalA.inspection.deliveries[0].counters.validationAttempts,
     prior.counters.validationAttempts+1);
   assert.equal(JSON.parse(Buffer.from(finalA.activationBytes)).lastAttempt.operationAttemptId,
@@ -413,6 +423,59 @@ test('EC-1 mechanical: registry cleanup failure remains pending and resumes with
   const finished=await cleanup(handle);
   assert.equal(finished.cleanup,'complete');
   assert.equal((await resume(handle)).nextAction,'none');
+});
+
+test('EC-1 mechanical: rejected intermediate readback preserves sealed trees and cannot confirm recovery',async t=>{
+  const fixture=await capturedMechanical(t,'PASS');
+  const handle=fixture.start.handle,root=path.dirname(fixture.dispatch.originFile);
+  // Let the controller compose and validate its real candidate before injecting
+  // a semantic-reader refusal at the publication boundary, after activation.
+  await assert.rejects(publish(handle,{checkpoint:phase=>{
+    if(phase==='before-backup')throw new Error('controlled prepared candidate');
+  }}),/controlled prepared candidate/u);
+  const marker=path.join(root,'owner.json');
+  const allocation=JSON.parse(await fs.readFile(marker));
+  const {context,workspace}=await resolveCurrentExecutionContext(handle.specPath,
+    {filesystemContext:handle.filesystemContext});
+  const official=executionWorkspaceFromContext(context,workspace);
+  const previousPath=path.join(root,allocation.binding.previousPath);
+  const readActive=async owner=>{
+    const image=await captureCurrentActiveExecution(handle.specPath,owner);
+    return {...image,activation:JSON.parse(Buffer.from(image.activationBytes))};
+  };
+  const original=await readActive(fixture.start.owner);
+  const rejected=()=>Object.assign(new Error('controlled semantic carrier readback refusal'),
+    {code:'INVALID_CURRENT_IMAGE'});
+  let activeReads=0,registryCompletions=0;
+  const args={workspace:official,marker,binding:allocation.binding,previousPath,
+    expectedActivationId:original.activation.activationId,owner:original.activation.activeAttempt,
+    readActive:async owner=>{if(++activeReads>1)throw rejected();return readActive(owner);},
+    readQuiet:async()=>assert.fail('refused active image must not reach terminal readback'),
+    registryCompletion:async()=>{registryCompletions++;}};
+  await assert.rejects(publishCurrentExecutionOperation({...args,
+    candidatePath:path.join(root,allocation.binding.candidatePath),
+    validateCandidate:async()=>{},authorizeCandidate:async()=>{}}),
+  error=>error.code==='INVALID_CURRENT_IMAGE'&&/requires readback recovery/u.test(error.message));
+  const pending=await resume(handle);
+  assert.equal(pending.phase,'activation_written');
+  assert.equal(pending.nextAction,'classify-publication');
+  const sealed={owner:await fs.readFile(marker),live:await captureExecutionTree(official.executionRoot),
+    previous:await captureExecutionTree(previousPath),response:await fs.readFile(path.join(root,'round-1.response.json'))};
+  await assert.rejects(recoverCurrentExecutionOperation(args),
+    error=>error.code==='INVALID_CURRENT_IMAGE'&&/semantic carrier readback refusal/u.test(error.message));
+  assert.deepEqual(await fs.readFile(marker),sealed.owner);
+  assert.deepEqual(await captureExecutionTree(official.executionRoot),sealed.live);
+  assert.deepEqual(await captureExecutionTree(previousPath),sealed.previous);
+  assert.deepEqual(await fs.readFile(path.join(root,'round-1.response.json')),sealed.response);
+  assert.equal(registryCompletions,0);
+  await assert.rejects(fs.lstat(path.join(root,'round-2.origin.json')),error=>error.code==='ENOENT');
+  // Once the actual full reader succeeds, the public controller settles the
+  // exact installed bytes. No candidate repair, rollback, or runner is used.
+  const recovered=await publish(handle);
+  assert.equal(recovered.publication,'confirmed');
+  assert.equal(recovered.cleanup,'complete');
+  assert.deepEqual(await fs.readFile(path.join(root,'round-1.response.json')),sealed.response);
+  assert.equal((await resume(handle)).phase,'committed');
 });
 
 test('EC-1 mechanical: quiet proof refuses a stripped admission witness',async t=>{

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {assertPreparationDraftApproval} from './preparation-draft.mjs';
 import {constants} from 'node:fs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -8,6 +10,7 @@ import {serializePlanPathClaims} from './serialize-plan-paths.mjs';
 import {installCurrentInitial} from './install-current-initial.mjs';
 import {finalizeCurrentSetReplacement,validateCurrentPreparation} from './execution-preparation-current.mjs';
 import {validateCurrentReviewCandidate,captureCurrentExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
+import {captureCurrentSetReplacementSource,currentObservedWorkBasisSha256} from './execution-state.mjs';
 import {completedEvidenceContext} from './current-evidence-state.mjs';
 import {resolveCurrentExecutionContext,projectCurrentRequirements} from './execution-workspace.mjs';
 import {validateCurrentActivation} from './execution-current.mjs';
@@ -15,7 +18,19 @@ import {captureExecutionTree,readOwnedFile,publishExecutionUpdate,recoverCurrent
  assertRegisteredPreparationAllocation,parseStrictJson,syncLockParent} from './execution-publication.mjs';
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 function fail(code,message){throw Object.assign(new Error(message),{code});}
-async function activated(specPath){const image=await captureCurrentExecution(specPath);return {activation:parseStrictJson(Buffer.from(image.activationBytes).toString('utf8'))};}
+async function activated(specPath,binding=null) {
+ const image=await captureCurrentExecution(specPath);
+ if(binding?.revalidateCompletedIds && currentObservedWorkBasisSha256(image.observedByDelivery)!==binding.revalidationBasisSha256)
+  fail('EVIDENCE_STALE','Published completed revalidation product differs from its approved observations');
+ return {activation:parseStrictJson(Buffer.from(image.activationBytes).toString('utf8'))};
+}
+async function abortedPredecessor(specPath,binding) {
+ const source=await captureCurrentSetReplacementSource(specPath,{revalidateCompletedIds:binding.revalidateCompletedIds});
+ if(source.inspection.activationId!==binding.expectedActivationId||source.revalidationBasisSha256!==binding.revalidationBasisSha256
+   ||'sha256:'+createHash('sha256').update(source.activationBytes).digest('hex')!==binding.source?.files.find(item=>item.path==='activation.json')?.sha256)
+  fail('EVIDENCE_STALE','Restored completed revalidation source differs from its registered observations');
+ return {activation:parseStrictJson(Buffer.from(source.activationBytes).toString('utf8'))};
+}
 async function exactCandidate(root,expected) {
  const tree=await captureExecutionTree(root);
  if(!tree||tree.files.some(item=>item.type==='directory'?!['plans','tasks','evidence'].includes(item.path):!expected.has(item.path)))
@@ -27,12 +42,14 @@ async function exactCandidate(root,expected) {
 }
 export async function recoverPreparationPublication({specPath,allocation,checkpoint=null,filesystemContext=null}) {
  const {workspace}=await resolveCurrentExecutionContext(specPath,{filesystemContext});
- try{return await recoverCurrentReplacementPublication({workspace,marker:allocation,readActivated:()=>activated(specPath),
+ try{return await recoverCurrentReplacementPublication({workspace,marker:allocation,readActivated:phase=>phase?.phase==='aborted-predecessor'
+   ?abortedPredecessor(specPath,phase.binding):activated(specPath,phase?.phase==='confirmed-candidate'?phase.binding:null),
   validateInstalledActivation:validateCurrentActivation,registeredPreparation:true,checkpoint});}
  catch(error){error.allocation=allocation;throw error;}
 }
 export async function publishPreparationCandidate({specPath,candidateExecutionRoot,reviewDecision=null,checkpoint=null,filesystemContext=null}) {
  const owned=await assertPreparationCandidate(candidateExecutionRoot,specPath,{filesystemContext});
+ if(reviewDecision!==null)await assertPreparationDraftApproval({specPath,candidateExecutionRoot:owned.root,filesystemContext},{required:true});
  if(owned.marker.operation==='REPLAN') {
   await preparePlanCandidate({candidateExecutionRoot:owned.root,filesystemContext});
   const prepared=await serializePlanPathClaims({specPath,candidateExecutionRoot:owned.root,filesystemContext});
@@ -55,22 +72,28 @@ export async function publishPreparationCandidate({specPath,candidateExecutionRo
   const snapshot=parseStrictJson(Buffer.from(source.files.get('approved-preparation.json')).toString('utf8'));
   const continuity=parseStrictJson(Buffer.from(source.files.get('continuity.json')).toString('utf8'));
   const {retainedEvidence}=await completedEvidenceContext({context,snapshotBytes:source.files.get('approved-preparation.json'),continuity,files:source.files});
+  // The full source was validated above. Retained completed Plan/Task pairs
+  // remain in that source, but are not carriers of this preparation review.
   const origin=validateCurrentPreparation({context,requirementsAuthority:prepared.proposal.input.requirementsAuthority,
-   snapshotBytes:source.files.get('approved-preparation.json'),artifacts:new Map([...source.files].filter(([name])=>name.endsWith('.md'))),
+   snapshotBytes:source.files.get('approved-preparation.json'),artifacts:new Map([...source.files].filter(([name])=>snapshot.reviewedArtifacts.some(item=>item.path===name))),
    profile:continuity.completed.length?'completed-current':snapshot.preparationRevision===1?'initial':'converted-current',retainedEvidence});
   const products=[];
   for(const current of [...continuity.deliveries,...continuity.completed]) {
    const delivery=[...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed].find(item=>item.deliveryId===current.deliveryId);
    const sections=origin.currentArtifacts.deliveries.find(item=>item.deliveryId===current.deliveryId)?.sections??{'Expected Files':'- none'};
    const bundle=current.evidence?parseStrictJson(Buffer.from(source.files.get(current.evidence.path)).toString('utf8')):null;
-   const input={context,delivery,sections,current,bundle};
+   const input={context,delivery,sections,current,bundle,initial:owned.marker.revalidateCompletedIds?null:false};
    products.push({input,manifest:(await observeCurrentDeliveryWork(input)).manifest});
   }
+  if(owned.marker.revalidateCompletedIds && currentObservedWorkBasisSha256(new Map(products.map(({input,manifest})=>
+    [input.current.deliveryId,{manifest}])))!==owned.marker.revalidationBasisSha256)
+   fail('EVIDENCE_STALE','Completed revalidation source profile or approved product observations changed');
   const recheckProducts=async()=>{
    for(const {input,manifest} of products)if(!same((await observeCurrentDeliveryWork(input)).manifest,manifest))
     fail('EVIDENCE_STALE','Approved source product or input changed before replacement promotion');
   };
   const authorize=async()=>{
+   await assertPreparationDraftApproval({specPath,candidateExecutionRoot:owned.root,filesystemContext},{required:true});
    const current=await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath,{filesystemContext}));
    if(!Buffer.from(current.activationBytes).equals(Buffer.from(source.activationBytes))
      ||current.files.size!==source.files.size||[...source.files].some(([name,bytes])=>!Buffer.from(current.files.get(name)??[]).equals(Buffer.from(bytes))))
@@ -97,11 +120,18 @@ export async function publishPreparationCandidate({specPath,candidateExecutionRo
   try {
    result=await publishExecutionUpdate({workspace,candidateExecutionRoot:owned.root,
     expectedTree:owned.marker.source,expectedActivationId:owned.marker.expectedActivationId,currentReplacement:true,
-    preparationRecord:owned.marker,checkpoint,readActivated:()=>activated(specPath),recheckRequirements,
+    preparationRecord:owned.marker,checkpoint,readActivated:async phase=>{
+     if(phase?.phase==='predecessor'&&owned.marker.revalidateCompletedIds) {
+      const captured=await capturePreparationSource(await assertPreparationCandidate(owned.root,specPath,{filesystemContext}));
+      return {activation:parseStrictJson(Buffer.from(captured.activationBytes).toString('utf8'))};
+     }
+     if(phase?.phase==='aborted-predecessor')return abortedPredecessor(specPath,phase.binding);
+     return activated(specPath,owned.marker);
+    },recheckRequirements,recheckProducts:owned.marker.revalidateCompletedIds?recheckProducts:null,
     authorizeDiff:authorize,validateCandidate:async root=>{
      const files=await exactCandidate(root,reviewed.files);await validateCurrentReviewCandidate({specPath,files});return reviewed.authority;
     }});
-   const current=await activated(specPath);
+   const current=await activated(specPath,owned.marker);
    if(result.publication!=='confirmed'||!same(current.activation,result.activation))fail('OWNER_UNCERTAIN','Replacement publication readback differs');
   }catch(error){error.candidateRoot=owned.root;if(result?.allocation)error.allocation=result.allocation;throw error;}
   return {...result,candidateExecutionRoot:owned.root,
@@ -116,4 +146,4 @@ export async function publishPreparationCandidate({specPath,candidateExecutionRo
  const publication=await installCurrentInitial({specPath,preparationRoot:owned.root,review:reviewDecision,checkpoint,filesystemContext});
  return {...publication,candidateExecutionRoot:owned.root,preparationDisposition:publication.cleanup==='complete'?'retired':'pending'};
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const a=process.argv.slice(2);if(a.length===4&&a[0]==='--spec-path'&&a[2]==='--recover-allocation')process.stdout.write(JSON.stringify(await recoverPreparationPublication({specPath:a[1],allocation:a[3]}))+'\n');else{if(![4,6].includes(a.length)||a[0]!=='--spec-path'||a[2]!=='--candidate-execution-root'||a.length===6&&a[4]!=='--review-decision-file')throw new Error('Usage: publish-task-candidate.mjs --spec-path SPEC --candidate-execution-root ROOT [--review-decision-file FILE] | --spec-path SPEC --recover-allocation MARKER');const reviewDecision=a.length===6?JSON.parse(await fs.readFile(a[5],'utf8')):null;process.stdout.write(JSON.stringify(await publishPreparationCandidate({specPath:a[1],candidateExecutionRoot:a[3],reviewDecision}))+'\n');}}
+if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){const a=process.argv.slice(2);if(a.length===4&&a[0]==='--spec-path'&&a[2]==='--recover-allocation')process.stdout.write(JSON.stringify(await recoverPreparationPublication({specPath:a[1],allocation:a[3]}))+'\n');else{if(![4,6].includes(a.length)||a[0]!=='--spec-path'||a[2]!=='--candidate-execution-root'||a.length===6&&a[4]!=='--review-decision-file')throw new Error('Usage: publish-task-candidate.mjs --spec-path SPEC --candidate-execution-root ROOT [--review-decision-file FILE] | --spec-path SPEC --recover-allocation MARKER');await assertPreparationDraftApproval({specPath:a[1],candidateExecutionRoot:a[3]},{required:true});const reviewDecision=a.length===6?JSON.parse(await fs.readFile(a[5],'utf8')):null;process.stdout.write(JSON.stringify(await publishPreparationCandidate({specPath:a[1],candidateExecutionRoot:a[3],reviewDecision}))+'\n');}}
