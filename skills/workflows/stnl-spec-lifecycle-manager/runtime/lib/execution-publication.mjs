@@ -1883,8 +1883,7 @@ export async function allocatePreparationCandidate({ workspace, lease, capturePa
   if (!equal(source, await captureExecutionTree(workspace.executionRoot))) fail('preparation source/CAS changed before registration');
   if (existing) await persistAllocation(file, registry);
   else await writeNew(file, Buffer.from(JSON.stringify(registry, null, 2) + '\n'));
-  const directory = await fs.open(path.dirname(file), constants.O_RDONLY);
-  try { await directory.sync(); } finally { await directory.close(); }
+  await syncLockParent(path.dirname(file));
   await assertExecutionPublicationLock(lease);
   await assertRegisteredPreparationAllocation(workspace, record);
   for (const name of ['activation.json', 'approved-preparation.json']) await fs.rm(path.join(root, name), { force: true });
