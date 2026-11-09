@@ -112,7 +112,7 @@ export async function publishCurrentLocalReview({specPath,slice,planBytes,review
       for(const item of [...snapshot.globalReview.evidenceDecisions,...snapshot.deliveries.flatMap(item=>item.review.evidenceDecisions)])
         if(!retained.has(item.deliveryId))retained.set(item.deliveryId,item.evidenceSha256);
       const prepared=validateCurrentPreparation({context,requirementsAuthority:previous.requirementsAuthority,
-        snapshotBytes:files.get('approved-preparation.json'),artifacts:new Map([...files].filter(([name])=>preparationFile(name))),
+        snapshotBytes:files.get('approved-preparation.json'),artifacts:new Map([...files].filter(([name])=>snapshot.reviewedArtifacts.some(item=>item.path===name))),
         profile:snapshot.completed.length?'completed-current':'converted-current',
         retainedEvidence:snapshot.completed.length?[...retained].sort(([a],[b])=>a<b?-1:a>b?1:0)
           .map(([deliveryId,evidenceSha256])=>({deliveryId,evidenceSha256})):null});

@@ -5,16 +5,54 @@ import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createHash} from 'node:crypto';
+import {pathToFileURL} from 'node:url';
 import {overlappingPostImage,retireActive} from './fixtures/current-reader-campaign.mjs';
+import {completedPristineCase,execute} from './fixtures/current-completed-pristine.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {captureCurrentExecution as captureQuality} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
 import {begin,publish,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {inspectPostConversionEvidence,validateCurrentEvidenceCarriers} from '../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs';
 import {validateCurrentPreparation} from '../skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs';
+import {captureExecutionTree} from '../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
 
 const run=promisify(execFile),sha=b=>'sha256:'+createHash('sha256').update(b).digest('hex');
 const body=(text,name)=>text.split(`## ${name}\n\n`)[1].split('\n## ')[0].trim();
+
+test('Initial carrier preflight rejects an incorrect overlap before publication effects',async t=>{
+  const fixture=await completedPristineCase(t),captured=await execute(fixture);
+  const handle=captured.start.handle,ownerRoot=path.dirname(captured.rounds[0].dispatch.originFile);
+  const execution=fixture.view.execution,before=await captureExecutionTree(execution);
+  const activation=await fs.readFile(path.join(execution,'activation.json'));
+  const sources=new Map(await Promise.all(['response','receipt','observation','origin','request','tool-result']
+    .map(async suffix=>[suffix,await fs.readFile(path.join(ownerRoot,`round-1.${suffix}.json`))])));
+  // Fault only a disposable distribution's rendering, leaving the verifier and
+  // captured proof intact. Simulate a composer bug rather than a foreign edit
+  // to a candidate that the publication byte guard would reject independently.
+  const runtime=path.join(fixture.root,'tmp','faulted-composer-runtime');
+  await fs.cp(path.resolve('skills/workflows/stnl-slice-executor/runtime'),runtime,{recursive:true});
+  const module=path.join(runtime,'current-evidence-state.mjs'),source=await fs.readFile(module,'utf8');
+  const start=source.indexOf('export async function composeInitialCurrentOperation(');
+  assert.ok(start>=0);
+  const rendered="['Prior Validation Overlap',priorValidationOverlap(facts.verifiedChanges,priorDeliveries)";
+  const replacement="['Prior Validation Overlap',facts.verifiedChanges.map(name=>['slice-99',name])";
+  const mutated=source.slice(start).replace(rendered,replacement);
+  assert.notEqual(mutated,source.slice(start));
+  await fs.writeFile(module,source.slice(0,start)+mutated);
+  const faulted=await import(pathToFileURL(path.join(runtime,'execution-current-operation.mjs')).href);
+  let reachedBackup=false;
+  await assert.rejects(()=>faulted.publish(handle,{checkpoint:phase=>{
+    if(phase==='before-backup')reachedBackup=true;
+  }}),error=>error.code==='RUNNER_RESULT_REJECTED'&&/Prior Validation Overlap.*overlap differs/u.test(error.message));
+  assert.equal(reachedBackup,false);
+  assert.deepEqual(await captureExecutionTree(execution),before);
+  assert.deepEqual(await fs.readFile(path.join(execution,'activation.json')),activation);
+  for(const [suffix,bytes]of sources)
+    assert.deepEqual(await fs.readFile(path.join(ownerRoot,`round-1.${suffix}.json`)),bytes,suffix);
+  for(const name of ['candidate','previous','round-2.origin.json'])
+    await assert.rejects(fs.lstat(path.join(ownerRoot,name)),error=>error.code==='ENOENT');
+  assert.equal(JSON.parse(await fs.readFile(path.join(ownerRoot,'owner.json'))).phase,'working');
+});
 
 test('controlled controller publishes prior overlap, resumes exact bytes, then clears obsolete overlap',async t=>{
   const fixture=await overlappingPostImage(t,{operationOnly:true});
@@ -114,7 +152,11 @@ syncBuiltinESMExports();\n`);
   const final=await captureCurrentExecution(fixture.specPath);
   assert.equal(body(Buffer.from(final.files.get('tasks/slice-02.md')).toString('utf8'),'Prior Validation Overlap'),'- none');
   assert.equal(final.inspection.deliveries.at(-1).counters.validationAttempts,3);
-  assert.equal(final.inspection.normalHandoff,null);
+  // Clearing obsolete local overlap does not supply the missing integral proof.
+  assert.deepEqual(final.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:fixture.delivery.slice,deliveryId:fixture.delivery.deliveryId});
+  assert.notEqual(final.inspection.state,'COMPLETE');
+  assert.deepEqual(final.inspection.diagnostics,[{kind:'evidence',artifact:'continuity.json',field:'terminal',
+    reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]);
 });
 
 async function captureCurrentExecutionAfterAdmission(fixture) {

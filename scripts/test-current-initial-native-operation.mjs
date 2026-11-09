@@ -1,3 +1,5 @@
+import {preparationDraftPaths} from '../skills/workflows/stnl-execution-planner/runtime/preparation-draft.mjs';
+import {installCurrentInitial,publishPreparationCandidate,approveSyntheticPreparation} from './fixtures/synthetic-preparation-approval.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -10,8 +12,8 @@ import {projectInitialPreparation} from '../skills/workflows/stnl-slice-executor
 import {resolveCurrentExecutionContext} from '../skills/workflows/stnl-slice-executor/runtime/execution-state.mjs';
 import {inspectCurrentExecution,captureCurrentExecution,captureCurrentActiveExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {inspectCurrentExecution as inspectQualityExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
-import {installCurrentInitial,recoverCurrentInitialPublication} from '../skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs';
-import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish,normalizeSuccessor,resume,abort,prepareNativeContinuation} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {recoverCurrentInitialPublication} from '../skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs';
+import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish,normalize,normalizeSuccessor,resume,abort,prepareNativeContinuation} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 import {payload as initialPayload} from './fixtures/current-initial-evidence.mjs';
 import {parseSemanticExecutionPayload,formalRecoveryBudget} from '../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs';
 import {applyPayload} from './fixtures/current-findings-evidence.mjs';
@@ -21,17 +23,21 @@ import {validateWorkspace} from '../skills/workflows/stnl-spec-lifecycle-manager
 import {inspectCurrentEvidence} from '../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs';
 
 import {preparePreparationCandidate} from '../skills/workflows/stnl-slice-executor/runtime/prepare-task-candidate.mjs';
+
+import {reopeningInput} from './fixtures/current-completed-native.mjs';
+import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {captureExecutionTree,resolveExecutionFilesystemRoots,executionLockIdentity} from '../skills/workflows/stnl-slice-executor/runtime/execution-publication.mjs';
 const run=promisify(execFile);
 const repo=path.resolve('.');
 const operationCli=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
 const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-async function fixture({otherInput=false,kind='standalone',entry='file',sharedAncestor=false,missingAncestor=false,single=false,independentAreas=false,productRefs=false,futureLeaf=false,closeReady=false,inputTest=false,coverageOmission=false,staleMode='none'}={}) {
+async function fixture({otherInput=false,kind='standalone',entry='file',sharedAncestor=false,missingAncestor=false,outputRoot='docs/missing',reportPair=false,single=false,independentAreas=false,productRefs=false,futureLeaf=false,closeReady=false,inputTest=false,coverageOmission=false,staleMode='none'}={}) {
   const root=await fs.mkdtemp(path.join(repo,'tmp/stnl Initial test '));
   await run('git',['-C',root,'init','-q']);
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
   const specDirectory=sharedAncestor?'docs/spec':'specs/pay';
-  await fs.mkdir(path.join(root,specDirectory),{recursive:true});
+  // copyTree owns creation of the close-ready destination; precreate only its parent.
+  await fs.mkdir(path.join(root,closeReady?path.dirname(specDirectory):specDirectory),{recursive:true});
   await fs.mkdir(path.join(root,'src'));
   const authorityPath=path.join(root,specDirectory,kind==='lifecycle'?'feature_spec.md':'requirements.md');
   const specPath=kind==='lifecycle'&&entry==='directory'?path.dirname(authorityPath):authorityPath;
@@ -52,11 +58,13 @@ async function fixture({otherInput=false,kind='standalone',entry='file',sharedAn
     if(single)content=content.split('\n').filter(line=>!line.includes('| 02 - Verification |')).join('\n')
       .replaceAll('contribution: partial | full owner: slice-02','contribution: complete | full owner: slice-01');
     if(sharedAncestor) {
-      const document=missingAncestor?'docs/missing/report.md':'docs/report.md';
+      const document=missingAncestor?outputRoot+'/report.md':'docs/report.md';
       if(!independentAreas||!name.includes('slice-02'))content=content.replaceAll('- directory: `../../../../src`','- directory: `../../../../src`\n- file: `../../../../'+document+'`');
       content=content.split('\n').map(line=>independentAreas&&!line.includes('| 01 -')?line:
         line.replaceAll('directory: `../../../src`','directory: `../../../src`; file: `../../../'+document+'`')).join('\n');
     }
+    if(reportPair)content=content.split('\n').map(line=>line.replaceAll('docs/missing/report.md',
+      name.includes('slice-02')||line.includes('| 02 -')?'docs/missing/report-b.md':'docs/missing/report-a.md')).join('\n');
     if(independentAreas){
       if(name.includes('slice-02'))content=content.replaceAll('../../../../src','../../../../other');
       if(name==='plan.md')content=content.split('\n').map(line=>line.includes('| 02 -')?line.replaceAll('../../../src','../../../other'):line).join('\n');
@@ -1051,12 +1059,17 @@ test('shared ancestor file claim has consistent Initial baseline, readback and a
   assert.equal(await fs.readFile(path.join(f.root,'docs/unrelated.txt'),'utf8'),'protected sibling\n');
 });
 
-test('missing claim ancestor refuses before publication and preserves reviewed bytes',async t=>{
+test('future output with missing ancestor publishes without mkdir and preserves reviewed bytes',async t=>{
   const f=await fixture({kind:'lifecycle',sharedAncestor:true,missingAncestor:true});
   t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   const before=await captureExecutionTree(f.preparationRoot);
-  await assert.rejects(installCurrentInitial(f),error=>['EVIDENCE_INCOMPLETE','EVIDENCE_STALE','UNSAFE_PATH'].includes(error.code));
-  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  const installed=await installCurrentInitial(f);
+  assert.equal(installed.publication,'confirmed');
+  const image=await captureCurrentExecution(f.specPath);
+  assert.equal(image.inspection.state,'MATERIALIZED_PRISTINE');
+  const current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
+  assert.deepEqual(current.baseline.entries.find(entry=>entry.path==='docs/missing'),{path:'docs/missing',kind:'absent'});
+  assert.deepEqual(image.observedByDelivery.get(current.deliveryId).manifest,current.baseline);
   assert.deepEqual(await captureExecutionTree(f.preparationRoot),before);
   assert.equal(await fs.stat(path.join(f.root,'docs/missing')).catch(()=>null),null);
 });
@@ -1067,8 +1080,14 @@ test('CLI installs present file and recovers the same activation from another cw
   await fs.writeFile(path.join(f.root,'docs/report.md'),'reviewed product document\n');
   const reviewFile=path.join(f.root,'review.json');await fs.writeFile(reviewFile,JSON.stringify(f.review));
   const installer=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/install-current-initial.mjs');
+  await assert.rejects(run(process.execPath,[installer,'--spec-path',f.specPath,
+    '--preparation-root',f.preparationRoot,'--review-file',reviewFile],{cwd:'/tmp'}),error=>/STALE_APPROVAL/u.test(error.stderr));
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  const allocated=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
+  await fs.cp(f.preparationRoot,allocated.candidateExecutionRoot,{recursive:true});
+  await approveSyntheticPreparation({specPath:f.specPath,candidateExecutionRoot:allocated.candidateExecutionRoot});
   const installed=JSON.parse((await run(process.execPath,[installer,'--spec-path',f.specPath,
-    '--preparation-root',f.preparationRoot,'--review-file',reviewFile],{cwd:'/tmp'})).stdout);
+    '--preparation-root',allocated.candidateExecutionRoot,'--review-file',reviewFile],{cwd:'/tmp'})).stdout);
   assert.equal(installed.publication,'confirmed');assert.equal(installed.cleanup,'complete');
   const image=await captureCurrentExecution(f.specPath);
   const current=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
@@ -1094,12 +1113,13 @@ test('CLI installs present file and recovers the same activation from another cw
   assert.equal(await fs.lstat(allocation).catch(()=>null),null);
 });
 
-for(const unsafe of ['target-symlink','ancestor-symlink','hardlink','file-kind','recipe-kind'])
+for(const unsafe of ['target-symlink','ancestor-symlink','file-ancestor','hardlink','file-kind','recipe-kind'])
 test(`refuses ${unsafe} before Initial writes`,async t=>{
-  const f=await fixture({kind:'lifecycle',sharedAncestor:true,missingAncestor:unsafe==='ancestor-symlink'});
+  const f=await fixture({kind:'lifecycle',sharedAncestor:true,missingAncestor:['ancestor-symlink','file-ancestor'].includes(unsafe)});
   t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   if(unsafe==='target-symlink')await fs.symlink('../src/pay.test.mjs',path.join(f.root,'docs/report.md'));
   if(unsafe==='ancestor-symlink')await fs.symlink('../src',path.join(f.root,'docs/missing'));
+  if(unsafe==='file-ancestor')await fs.writeFile(path.join(f.root,'docs/missing'),'not a directory\n');
   if(unsafe==='hardlink')await fs.link(path.join(f.root,'src/pay.test.mjs'),path.join(f.root,'docs/report.md'));
   if(unsafe==='file-kind')await fs.mkdir(path.join(f.root,'docs/report.md'));
   if(unsafe==='recipe-kind'){
@@ -1146,6 +1166,8 @@ test('full Initial closure survives terminal proof and supported completed publi
     evidenceDecisions:request.evidenceDecisions.map(item=>({...item,reason:'Retain exact source proof.'}))});
   const reviewDecision={globalReview:approve(proposal.reviewRequest.globalReview),
     deliveries:proposal.reviewRequest.deliveries.map(item=>({deliveryId:item.deliveryId,review:approve(item.review)}))};
+  await assert.rejects(publishPreparationCandidate({...options,reviewDecision}),error=>error.code==='STALE_APPROVAL');
+  await approveSyntheticPreparation(options);
   const published=await publishPreparationCandidate({...options,reviewDecision});
   assert.equal(published.publication,'confirmed');assert.equal(published.cleanup,'complete');
   const after=await captureCurrentExecution(f.specPath),completed=JSON.parse(Buffer.from(after.files.get('continuity.json'))).completed[0];
@@ -1359,9 +1381,10 @@ test('Initial resumes exact deterministic files on its same PLAN after a pre-pub
 test('Initial refuses stale generated files on a registered PLAN without overwriting them',async()=>{
   const f=await fixture();const prepared=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
   await fs.cp(f.preparationRoot,prepared.candidateExecutionRoot,{recursive:true});
+  await approveSyntheticPreparation({specPath:f.specPath,candidateExecutionRoot:prepared.candidateExecutionRoot});
   const file=path.join(prepared.candidateExecutionRoot,'continuity.json');await fs.writeFile(file,'foreign generated bytes\n');
   const before=await captureExecutionTree(prepared.candidateExecutionRoot);
-  await assert.rejects(installCurrentInitial({...f,preparationRoot:prepared.candidateExecutionRoot}),error=>error.code==='STALE_APPROVAL');
+  await assert.rejects(installCurrentInitial({...f,preparationRoot:prepared.candidateExecutionRoot}),error=>error.code==='STALE_APPROVAL'&&/Initial generated bytes differ/u.test(error.message));
   assert.deepEqual(await captureExecutionTree(prepared.candidateExecutionRoot),before);
   assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
 });
@@ -1382,12 +1405,21 @@ test('Initial interruption restores absence; explicit own recovery precedes a fr
   assert.equal((await inspectCurrentExecution(f.specPath)).state,'MATERIALIZED_PRISTINE');
 });
 
-test('Initial rejects a reviewed source changed at before-backup under the publication lock',async()=>{
-  const f=await fixture();
-  await assert.rejects(installCurrentInitial({...f,checkpoint:async step=>{
-    if(step==='before-backup') await fs.appendFile(path.join(f.preparationRoot,'plan.md'),'\nlate edit\n');
-  }}),error=>error.code==='STALE_APPROVAL');
+for(const sourceKind of ['draft','capture'])test(`Initial rejects approved ${sourceKind} changed at before-backup under the publication lock`,async()=>{
+  const f=await fixture(),externalBefore=await captureExecutionTree(f.preparationRoot);
+  const prepared=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'});
+  await fs.cp(f.preparationRoot,prepared.candidateExecutionRoot,{recursive:true});
+  const options={specPath:f.specPath,candidateExecutionRoot:prepared.candidateExecutionRoot};
+  await approveSyntheticPreparation(options);
+  const controls=await preparationDraftPaths(options),binding=JSON.parse(await fs.readFile(controls.binding));
+  const approvedRoot=sourceKind==='draft'?binding.draftRoot:prepared.candidateExecutionRoot;
+  await assert.rejects(installCurrentInitial({...f,preparationRoot:prepared.candidateExecutionRoot,checkpoint:async step=>{
+    if(step==='before-backup') await fs.appendFile(path.join(approvedRoot,'plan.md'),'\nlate edit\n');
+  }}),error=>sourceKind==='capture'
+    ?error.code==='EXECUTION_PUBLICATION_BLOCKED'&&/reviewed candidate changed before backup/u.test(error.message)
+    :error.code==='STALE_APPROVAL');
   assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  assert.deepEqual(await captureExecutionTree(f.preparationRoot),externalBefore,'the external import is not the approved source');
 });
 
 test('Initial rejects requirements changed at before-backup under the publication lock',async()=>{
@@ -1694,9 +1726,9 @@ test('lifecycle-family common barrier excludes controller with no orphan operati
 
 
 // These carriers are synthetic mechanical tool results, never native qualification.
-async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResume=false,resolved=false,successor=false,invalid=false}={}) {
+async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResume=false,resolved=false,successor=false,invalid=false,slice='slice-01',captureOnly=false,newFindings=[]}={}) {
   const image=await inspectCurrentExecution(f.specPath);
-  const start={specPath:f.specPath,slice:'slice-01',expectedActivationId:image.activationId,operation:kind};
+  const start={specPath:f.specPath,slice,expectedActivationId:image.activationId,operation:kind};
   const started=successor?await normalizeSuccessor(start):await begin(start);
   const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal});
   const requestBefore=await fs.readFile(dispatch.requestFile);
@@ -1707,16 +1739,20 @@ async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResum
   let result;
   if(kind==='EXECUTE_SLICE') {const {head,...payload}=initialPayload(1);result={...payload,commands:measured.commands};}
   else if(kind==='APPLY_FINDINGS'){const {head,...payload}=applyPayload(JSON.parse(requestBefore).round,'TESTS_PASS',0);result={...payload,commands:measured.commands};if(invalid)result.coverage='none';}
-  else result={status,commands:measured.commands,evidence:'The reviewed pay assertion executed.',findingReferences:resolved?'finding-01':'none',
-    findingDispositions:resolved?'finding-01=resolved':'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
-  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result,...(kind==='VALIDATE_SLICE'?{newFindings:[]}:{})});
+  else result={status,commands:measured.commands,evidence:'The reviewed pay assertion executed.',findingReferences:resolved?'finding-01':newFindings.length?newFindings.map(item=>item.id).join(', '):'none',
+    findingDispositions:resolved?'finding-01=resolved':newFindings.length?newFindings.map(item=>item.id+'=active').join(', '):'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result,...(kind==='VALIDATE_SLICE'?{newFindings}:{})});
   const file=path.join(f.root,agentId+'.json');await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
   const captured=await captureNative(started.handle,file);
   assert.deepEqual(await fs.readFile(dispatch.requestFile),requestBefore,'capture never rewrites its frozen request');
+  if(captureOnly)return {started,dispatch,captured,root:path.dirname(dispatch.originFile)};
   let published;
   if(cliResume) {
     const handleFile=path.join(f.root,'b-handle.json');await fs.writeFile(handleFile,JSON.stringify(started.handle));
-    const call=async command=>JSON.parse((await run(process.execPath,[operationCli,command,'--handle',handleFile])).stdout);
+    const call=async command=>{
+      try{return JSON.parse((await run(process.execPath,[operationCli,command,'--handle',handleFile])).stdout);}
+      catch(error){error.message+='\n'+(error.stdout??'')+'\n'+(error.stderr??'');throw error;}
+    };
     assert.equal((await call('resume')).responseSha256,captured.rawResponseSha256);
     published=await call('publish');
   }else published=await publish(started.handle);
@@ -1993,6 +2029,24 @@ test('Initial unstarted abort retains EXECUTE and permits a new integral formal 
   assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
 });
 
+test('Initial unstarted abort retains a rejected formal without certifying completion',async t=>{
+  const f=await unstartedInitialFormal(t),closed=await abort(f.start.handle,f.tool);
+  await fs.rename(f.operationRoot,f.operationRoot+'.offline');
+  const current={...f,view:{execution:f.before.context.logicalExecutionRoot},delivery:{slice:'slice-01'}};
+  const rejected=await normalizedFormal(current,{terminal:true,responseVariant:'stnl-current-native-judgment-v1',invalid:true});
+  assert.equal(rejected.published.publication,'confirmed');assert.equal(rejected.published.cleanup,'complete');
+  assert.equal(rejected.published.activation.lastAttempt.outcome,'rejected');
+  const image=await captureCurrentExecution(f.specPath);
+  assert.notEqual(image.inspection.state,'COMPLETE');assert.equal(image.inspection.deliveries[0].formalStatus,null);
+  assert.deepEqual((await inspectQualityExecution(f.specPath)),image.inspection);
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json'))),currentDelivery=continuity.deliveries[0];
+  assert.deepEqual(currentDelivery.counters,JSON.parse(Buffer.from(f.before.files.get('continuity.json'))).deliveries[0].counters);
+  assert.equal(currentDelivery.lastDiagnostic.code,'RUNNER_RESULT_REJECTED');
+  const bundle=JSON.parse(Buffer.from(image.files.get(currentDelivery.evidence.path))),record=bundle.support.findLast(item=>item.kind==='rejection');
+  const object=bundle.objects.find(item=>item.id===record.sources.origin),capsule=JSON.parse(Buffer.from(object.bytesBase64,'base64'));
+  assert.deepEqual(JSON.parse(capsule.originUtf8).admission.baseActivation.lastAttempt,closed.activation.lastAttempt);
+});
+
 for(const mutation of ['active','uncertain','foreign','blank','changed-origin','missing-claim','verification','observation','receipt','capture','candidate','drift','registry','authority','predecessor'])
 test(`Initial unstarted abort refuses ${mutation} without effects`,async t=>{
   const f=await unstartedInitialFormal(t);
@@ -2133,4 +2187,654 @@ test('Initial aborted controls survive a CLOSE crash and retire through normal p
   const {recoverIncompletePublication}=await import('../skills/workflows/stnl-spec-lifecycle-manager/runtime/lib/publisher.mjs');
   const recovered=await recoverIncompletePublication(path.dirname(f.specPath));
   assert.equal(recovered.cleanup,'complete');assert.equal((await inspectQualityExecution(f.specPath)).state,'SPEC_CLOSED');
+});
+
+// Synthetic CLOSE path: the Initial (preparation 1) EXECUTE proof is carried through Q18 (every slice completed)
+// and the Q20 terminal reentry. Q18 re-renders the owner representation, so the proof's normative hash no
+// longer equals the reopened delivery's authority even though its delivery and context are unchanged.
+async function publishReviewedReplan({specPath,completedDeliveryIds,artifacts,terminalValidation=undefined,rejectSourceMutations=false}) {
+  const draft=await preparePreparationCandidate({specPath,operation:'REPLAN',completedDeliveryIds,
+    ...(terminalValidation===undefined?{}:{terminalValidation})});
+  for(const [name,bytes] of artifacts) {
+    const target=path.join(draft.candidateExecutionRoot,name);
+    await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,bytes);
+  }
+  const options={specPath,candidateExecutionRoot:draft.candidateExecutionRoot};
+  const prepared=await publishPreparationCandidate(options);
+  assert.equal(prepared.status,'AWAITING_REVIEW');
+  const approve=request=>({...structuredClone(request),decision:'approved',summary:'Controlled exact-artifact review for the Q18/Q20 regression.',
+    evidenceDecisions:request.evidenceDecisions.map(item=>({...item,reason:'Bind the exact reviewed evidence and selected retention or revalidation.'}))});
+  const reviewDecision={globalReview:approve(prepared.reviewRequest.globalReview),
+    deliveries:prepared.reviewRequest.deliveries.map(item=>({deliveryId:item.deliveryId,review:approve(item.review)}))};
+  if(rejectSourceMutations) {
+    await approveSyntheticPreparation(options);
+    const source=await captureCurrentExecution(specPath),root=source.context.physicalExecutionRoot;
+    const continuity=JSON.parse(Buffer.from(source.files.get('continuity.json'))),completed=continuity.completed[0];
+    assert.ok(completed);assert.ok(source.files.has(`plans/${completed.slice}.md`));
+    const activationPath=path.join(root,'activation.json'),activationBytes=await fs.readFile(activationPath);
+    // Rehash layout/evidence mutations too: filtering normative carriers must
+    // not turn unreviewed Markdown into an accepted execution artifact.
+    for(const mutation of [
+      {name:'plans/slice-99.md',bytes:Buffer.from('foreign Markdown\n'),rehash:true},
+      {name:`plans/${completed.slice}.md`,bytes:null,rehash:true},
+      {name:`tasks/${completed.slice}.md`,bytes:Buffer.concat([source.files.get(`tasks/${completed.slice}.md`),Buffer.from('\nchanged retained document\n')])},
+      {name:'plan.md',bytes:Buffer.concat([source.files.get('plan.md'),Buffer.from('\nchanged normative carrier\n')])},
+      {name:completed.evidence.path,bytes:Buffer.concat([source.files.get(completed.evidence.path),Buffer.from(' ')]),rehash:true},
+      {name:null,bytes:Buffer.from('# Changed authority\n\nAC-001: changed contract.\n')},
+    ]) {
+      const file=mutation.name===null?specPath:path.join(root,mutation.name);
+      const original=await fs.readFile(file).catch(error=>{if(error.code==='ENOENT')return null;throw error;});
+      try {
+        if(mutation.bytes===null)await fs.rm(file);else await fs.writeFile(file,mutation.bytes);
+        if(mutation.rehash) {
+          const activation=JSON.parse(activationBytes);
+          activation.artifacts=activation.artifacts.filter(item=>item.path!==mutation.name);
+          if(mutation.bytes!==null)activation.artifacts.push({path:mutation.name,sha256:digest(mutation.bytes)});
+          activation.artifacts.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+          await fs.writeFile(activationPath,JSON.stringify(activation)+'\n');
+        }
+        const before=await captureExecutionTree(root);
+        const invalidSource=error=>['INVALID_CURRENT_IMAGE','REQUIREMENTS_CHANGED','EVIDENCE_STALE'].includes(error.code);
+        await assert.rejects(()=>captureCurrentExecution(specPath),invalidSource,
+          `source mutation must fail full-image inspection: ${mutation.name??'requirements'}`);
+        await assert.rejects(()=>publishPreparationCandidate({...options,reviewDecision}),
+          error=>invalidSource(error)||error.message==='execution publication: preparation source/CAS is stale',
+          `source mutation must not publish: ${mutation.name??'requirements'}`);
+        assert.deepEqual(await captureExecutionTree(root),before,'rejected source mutation must not change execution');
+      } finally {
+        if(original===null)await fs.rm(file,{force:true});else await fs.writeFile(file,original);
+        await fs.writeFile(activationPath,activationBytes);
+      }
+    }
+  }
+  const result=await publishPreparationCandidate({...options,reviewDecision});
+  assert.equal(result.publication,'confirmed');
+}
+async function officialNative(f,slice,operation,agentId,result,{successor=false}={}) {
+  const state=await inspectCurrentExecution(f.specPath);
+  const options={specPath:f.specPath,slice,operation,expectedActivationId:state.activationId};
+  const start=successor?await normalizeSuccessor(options):await begin(options);
+  const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(start.handle,agentId);
+  const observation=await verifyNative(dispatch.originFile);
+  const file=path.join(f.root,`${agentId}.json`);
+  await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse:JSON.stringify(
+    {format:'stnl-current-native-judgment-v1',...result(observation)})})+'\n');
+  await captureNative(start.handle,file);await publish(start.handle);
+}
+const executeResult=(round,mutate=()=>{})=>observation=>{
+  const {head,...result}=initialPayload(round,'TESTS_PASS');result.commands=observation.commands;
+  result.automaticCheckRound=`${round}/5`;mutate(result);assert.ok(head);return {result};
+};
+const formalPass=observation=>({result:{status:'PASS',commands:observation.commands,evidence:'The prepared pay test passes.',
+  findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',
+  persistenceSummary:'The runner made no product edits.'},newFindings:[]});
+test('Initial EXECUTE proof survives Q18 and the Q20 terminal formal after Q18 moved its normative hash',async t=>{
+  const f=await fixture();
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await installCurrentInitial(f);
+  await officialNative(f,'slice-01','EXECUTE_SLICE','official-q18-a-execute',executeResult(1));
+  await officialNative(f,'slice-01','VALIDATE_SLICE','official-q18-a-formal',formalPass);
+  // B keeps a concluded semantic EXECUTE refusal in support before reopening the slice.
+  await officialNative(f,'slice-02','EXECUTE_SLICE','official-q18-b-refused',executeResult(1,result=>{result.coverage='none';}));
+  await officialNative(f,'slice-02','EXECUTE_SLICE','official-q18-b-execute',executeResult(2),{successor:true});
+  await officialNative(f,'slice-02','VALIDATE_SLICE','official-q18-b-formal',formalPass);
+  let image=await captureCurrentExecution(f.specPath);
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const b=continuity.deliveries.find(item=>item.slice==='slice-02');
+  const executed=JSON.parse(Buffer.from(image.files.get(b.evidence.path))),[implementation]=executed.implementation;
+  assert.equal(implementation.origin.preparationRevision,1);
+  assert.deepEqual(executed.support.map(item=>[item.kind,item.origin.operation]),[['rejection','EXECUTE_SLICE']]);
+
+  await publishReviewedReplan({specPath:f.specPath,completedDeliveryIds:continuity.deliveries.map(item=>item.deliveryId),
+    artifacts:new Map(['plan.md','tasks.md'].map(name=>[name,Buffer.from(Buffer.from(image.files.get(name)).toString('utf8')
+      .split('\n').filter(line=>!/\| 0[12] - /u.test(line)).join('\n'))]))});
+  image=await captureCurrentExecution(f.specPath);
+  const reopening=reopeningInput(image,b.deliveryId,{terminalValidation:true});
+  await publishReviewedReplan({specPath:f.specPath,completedDeliveryIds:reopening.completedDeliveryIds,
+    artifacts:reopening.artifacts,terminalValidation:true,rejectSourceMutations:true});
+  image=await captureCurrentExecution(f.specPath);
+  const reopened=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
+  assert.equal(reopened.deliveryId,b.deliveryId);
+  assert.notEqual(implementation.origin.normativeSha256,reopened.authoritySha256);
+
+  const {context}=await resolveCurrentExecutionContext(f.specPath);
+  await normalizedFormal({view:{execution:context.logicalExecutionRoot},specPath:f.specPath,
+    delivery:reopened,root:f.root,head:null},{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+  const final=await captureCurrentExecution(f.specPath);
+  assert.equal(final.inspection.state,'COMPLETE');
+  const current=JSON.parse(Buffer.from(final.files.get('continuity.json'))).deliveries[0];
+  assert.deepEqual(JSON.parse(Buffer.from(final.files.get(current.evidence.path))).implementation,[implementation]);
+});
+
+for(const metadata of ['head','requestSha256']) test(`protocol refusal: Initial ${metadata} is published rejection, never uncertain ownership`,async t=>{
+  const f=await fixture({single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await bindNative(started.handle,'metadata-refusal-agent');
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=initialPayload(1);result.commands=measured.commands;
+  result[metadata]=metadata==='head'?'a'.repeat(40):'sha256:'+'a'.repeat(64);
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+  const file=path.join(f.root,'metadata-refusal-tool.json');
+  await fs.writeFile(file,JSON.stringify({agentId:'metadata-refusal-agent',status:'completed',finalResponse}));
+  const captured=await captureNative(started.handle,file);
+  assert.equal(captured.captureClass,'initial-rejection');
+  assert.equal((await resume(started.handle)).nextAction,'publish');
+  assert.equal(await fs.readFile(path.join(path.dirname(dispatch.originFile),'round-1.response.json'),'utf8'),finalResponse);
+  await publish(started.handle);
+  const image=await captureCurrentExecution(f.specPath);
+  assert.equal(JSON.parse(Buffer.from(image.activationBytes)).activeAttempt,null);
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const bundle=JSON.parse(Buffer.from(image.files.get(continuity.deliveries[0].evidence.path)));
+  assert.equal(bundle.implementation.length,0);
+  assert.equal(bundle.support.at(-1).kind,'rejection');
+  assert.ok(bundle.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')===finalResponse));
+});
+
+test('protocol literal text: Initial capture and publication both accept <3 -> evidence',async t=>{
+  const f=await fixture({single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await bindNative(started.handle,'literal-evidence-agent');const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=initialPayload(1);result.commands=measured.commands;
+  result.coverage='AC-001 literal <3 -> output inspected against the approved behavior.';
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result});
+  const file=path.join(f.root,'literal-evidence-tool.json');
+  await fs.writeFile(file,JSON.stringify({agentId:'literal-evidence-agent',status:'completed',finalResponse}));
+  await captureNative(started.handle,file);await publish(started.handle);
+  const image=await captureCurrentExecution(f.specPath);
+  assert.equal(JSON.parse(Buffer.from(image.activationBytes)).activeAttempt,null);
+  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+  const bundle=JSON.parse(Buffer.from(image.files.get(continuity.deliveries[0].evidence.path)));
+  assert.equal(bundle.implementation.length,1);
+  assert.ok(bundle.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')===finalResponse));
+});
+
+// A real first PASS seals the shared baseline before the second implementation.
+// The carrier must describe overlap from verified evidence, including v2 after
+// a findings correction; merely sharing an authorized directory is insufficient.
+for(const scenario of ['v1-overlap','v2-overlap','v1-disjoint'])
+test(`Initial composer publishes verified prior PASS overlap (${scenario})`,async t=>{
+  const f=await fixture();t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  if(scenario.startsWith('v2')) {
+    await sealedBlockingFormal(f);
+    await bConclude(f,'APPLY_FINDINGS',{edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  } else {
+    await installCurrentInitial(f);
+    await bConclude(f,'EXECUTE_SLICE',{edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  }
+  const prior=await bConclude(f,'VALIDATE_SLICE',{resolved:scenario.startsWith('v2')});
+  assert.equal(JSON.parse(await fs.readFile(prior.dispatch.requestFile)).format,
+    scenario.startsWith('v2')?'stnl-current-validation-request-v2':'stnl-current-validation-request-v1');
+  const continuity=JSON.parse(Buffer.from(prior.image.files.get('continuity.json')));
+  const first=continuity.deliveries[0],priorEvidence=Buffer.from(prior.image.files.get(first.evidence.path));
+  assert.equal(prior.image.inspection.normalHandoff.slice,'slice-02');
+  const overlap=scenario.endsWith('overlap'),changed=overlap?'src/pay.mjs':'src/second.mjs';
+  const current=await bConclude(f,'EXECUTE_SLICE',{slice:'slice-02',captureOnly:scenario==='v1-overlap',edit:()=>fs.writeFile(path.join(f.root,changed),
+    overlap?'export const pay=()=>"paid"; // second delivery\n':'export const second=true;\n')});
+  if(scenario==='v1-overlap') {
+    const sourceNames=['response','receipt','observation','origin','request','tool-result','agent','claim'];
+    const sources=new Map(await Promise.all(sourceNames.map(async name=>[name,await fs.readFile(path.join(current.root,`round-1.${name}.json`))])));
+    const activationPath=path.join(path.dirname(f.specPath),'requirements-execution','activation.json');
+    const admitted=await fs.readFile(activationPath);
+    await assert.rejects(publish(current.started.handle,{checkpoint:phase=>{
+      if(phase==='after-candidate-file')throw new Error('controlled Initial overlap candidate interruption');
+    }}),/controlled Initial overlap candidate interruption/u);
+    assert.deepEqual(await fs.readFile(activationPath),admitted);
+    assert.equal((await resume(current.started.handle)).nextAction,'normalize');
+    await normalize(current.started.handle);
+    await assert.rejects(publish(current.started.handle,{checkpoint:phase=>{
+      if(phase==='after-activation')throw new Error('controlled Initial overlap activation interruption');
+    }}),/controlled Initial overlap activation interruption/u);
+    assert.equal((await resume(current.started.handle)).phase,'activation_written');
+    const recovered=await publish(current.started.handle);
+    assert.equal(recovered.publication,'confirmed');assert.equal(recovered.cleanup,'complete');
+    for(const [name,bytes]of sources)assert.deepEqual(await fs.readFile(path.join(current.root,`round-1.${name}.json`)),bytes,name);
+    await assert.rejects(fs.lstat(path.join(current.root,'round-2.origin.json')),error=>error.code==='ENOENT');
+    current.image=await captureCurrentExecution(f.specPath);
+  }
+  const body=Buffer.from(current.image.files.get('tasks/slice-02.md')).toString('utf8')
+    .split('## Prior Validation Overlap\n\n')[1].split('\n## ')[0].trim();
+  if(overlap)assert.match(body,/^- Slice 01 overlap: `\.\.\/\.\.\/\.\.\/\.\.\/src\/pay\.mjs`;/u);
+  else assert.equal(body,'- none');
+  assert.deepEqual(Buffer.from(current.image.files.get(first.evidence.path)),priorEvidence);
+  assert.equal(current.image.inspection.deliveries[1].auxiliaryStatus,'TESTS_PASS');
+  assert.equal(current.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  assert.deepEqual(await inspectQualityExecution(f.specPath),current.image.inspection);
+  if(scenario==='v1-overlap') {
+    // Revalidate the earlier shared proof in the legal serial handoff order.
+    await bConclude(f,'VALIDATE_SLICE');
+    const blocked=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',status:'NEEDS_FIX',newFindings:[{
+      id:'finding-01',severity:'blocking',originAttempt:'attempt-01',problem:'The controlled second-delivery review requests a correction.',
+      evidence:'Mechanical formal finding for the overlapping current slice.',impact:'The controlled AC-001 review remains open.',relatedAuthority:'AC-001; obligation-01',
+      expectedCorrection:'Restore paid.'}]});
+    assert.equal(blocked.image.inspection.deliveries[1].formalStatus,'NEEDS_FIX');
+    const applied=await bConclude(f,'APPLY_FINDINGS',{slice:'slice-02',edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid"; // corrected second delivery\n')});
+    const task=Buffer.from(applied.image.files.get('tasks/slice-02.md')).toString('utf8');
+    assert.match(task.split('## Prior Validation Overlap\n\n')[1].split('\n## ')[0],/Slice 01 overlap:.*src\/pay\.mjs/u);
+    assert.equal(applied.image.inspection.deliveries[1].auxiliaryStatus,'TESTS_PASS');
+    await bConclude(f,'VALIDATE_SLICE');
+    const resolved=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',resolved:true});
+    assert.equal(JSON.parse(await fs.readFile(resolved.dispatch.requestFile)).format,'stnl-current-validation-request-v2');
+    assert.equal(resolved.image.inspection.deliveries[1].formalStatus,'PASS');
+  }
+});
+
+for(const format of ['v3','v4'])test(`Initial EXECUTE accepts overlapping post-conversion prior PASS (${format})`,async t=>{
+  const {currentImage}=await import('./fixtures/current-native-seed.mjs');
+  const {normalizedFormal}=await import('./fixtures/current-native-normalization.mjs');
+  // The authored current boundary has A/C awaiting formal and pristine B.
+  const image=await currentImage(t,{kind:'three-s2',behaviorCheck:true,pristineLast:true}),f=image.f;
+  const continuity=JSON.parse(image.candidate.files.get('continuity.json'));
+  await bConclude(f,'VALIDATE_SLICE');
+  let prior;
+  if(format==='v4') {
+    await fs.writeFile(path.join(f.root,'other/greeting.mjs'),'export const greeting="broken";\n');
+    await normalizedFormal({image,root:f.root,specPath:f.specPath,delivery:continuity.deliveries[1]},
+      {responseVariant:'stnl-current-native-judgment-v1',status:'NEEDS_FIX',responseMutation:response=>{
+        response.result.findingReferences='finding-01';response.result.findingDispositions='finding-01=active';
+        response.newFindings=[{id:'finding-01',severity:'blocking',originAttempt:'attempt-02',
+          problem:'Greeting differs from AC-001.',evidence:'The prepared assertion observes broken.',
+          impact:'AC-001 is unmet.',relatedAuthority:'AC-001; obligation-01',expectedCorrection:'Restore hello.'}];
+        return response;
+      }});
+    await bConclude(f,'APPLY_FINDINGS',{slice:'slice-03',edit:()=>fs.writeFile(path.join(f.root,'other/greeting.mjs'),'export const greeting="hello";\n')});
+    prior=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-03',resolved:true});
+  } else {
+    await fs.writeFile(path.join(f.root,'other/greeting.mjs'),'export const greeting="hello"; // prior output\n');
+    prior=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-03'});
+  }
+  assert.equal(JSON.parse(await fs.readFile(prior.dispatch.requestFile)).format,`stnl-current-validation-request-${format}`);
+  // A reviewed current preparation retires A and keeps the earlier active C
+  // proof beside a fresh B baseline, as in the existing
+  // completedPristineCase. This is authored fixture setup, not RECONCILE.
+  const {retireActive}=await import('./fixtures/current-reader-campaign.mjs');
+  const snapshot=JSON.parse(Buffer.from(prior.image.files.get('approved-preparation.json')));
+  const view={project:f.root,execution:f.execution,specPath:f.specPath,source:f.specPath,spec:path.dirname(f.specPath),
+    authority:prior.image.requirementsAuthority,activation:JSON.parse(Buffer.from(prior.image.activationBytes)),snapshot,
+    files:new Map([...prior.image.files].map(([name,bytes])=>[name,Buffer.from(bytes)])),
+    artifacts:new Map(snapshot.reviewedArtifacts.map(item=>[item.path,Buffer.from(item.utf8)])),
+    continuity:JSON.parse(Buffer.from(prior.image.files.get('continuity.json')))};
+  const b=view.continuity.deliveries.at(-1);
+  b.baseline=prior.image.observedByDelivery.get(b.deliveryId).manifest;
+  await retireActive(view,['slice-01']);
+  assert.equal((await inspectCurrentExecution(f.specPath)).normalHandoff?.slice,'slice-02');
+  const current=await bConclude(f,'EXECUTE_SLICE',{slice:'slice-02',edit:()=>fs.writeFile(path.join(f.root,'other/greeting.mjs'),'export const greeting="hello"; // later output\n')});
+  const body=Buffer.from(current.image.files.get('tasks/slice-02.md')).toString('utf8')
+    .split('## Prior Validation Overlap\n\n')[1].split('\n## ')[0].trim();
+  assert.match(body,/^- Slice 03 overlap: `[^`]*other\/greeting\.mjs`;/u);
+  assert.doesNotMatch(body,/Slice 01 overlap/u,'continuity order, not numeric slice order, defines predecessors');
+  assert.equal(current.image.inspection.deliveries.at(-1).auxiliaryStatus,'TESTS_PASS');
+  assert.deepEqual(await inspectQualityExecution(f.specPath),current.image.inspection);
+});
+
+test('current evidence composer and execution controller distributions remain synchronized',async()=>{
+  const source=await fs.readFile(path.join(repo,'skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs'));
+  for(const [skill,subdir]of [
+    ['stnl-slice-quality-manager','runtime'],['stnl-plan-reviewer','runtime'],['stnl-execution-planner','runtime'],
+    ['stnl-spec-roadmap','runtime'],['stnl-spec-test-runbook','runtime'],['stnl-spec-lifecycle-manager','runtime/lib'],
+  ])assert.deepEqual(await fs.readFile(path.join(repo,'skills/workflows',skill,subdir,'current-evidence-state.mjs')),source,skill);
+  assert.deepEqual(await fs.readFile(path.join(repo,'skills/workflows/stnl-slice-quality-manager/runtime/execution-current-operation.mjs')),
+    await fs.readFile(path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs')));
+});
+
+test('successor drift exception rejects added package metadata and still admits the owned retry',async t=>{
+  const f=await fixture();t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  await bConclude(f,'EXECUTE_SLICE',{edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  await bConclude(f,'VALIDATE_SLICE');
+  const before=await inspectCurrentExecution(f.specPath);
+  assert.equal(before.normalHandoff.slice,'slice-02');
+  const started=await begin({specPath:f.specPath,slice:'slice-02',operation:'EXECUTE_SLICE',expectedActivationId:before.activationId});
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid"; // owned second delivery change\n');
+  await bindNative(started.handle,'successor-owned-drift-refusal');
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=initialPayload(1);result.commands=measured.commands;result.coverage='none';
+  const responseFile=path.join(f.root,'successor-owned-drift-refusal.json');
+  await fs.writeFile(responseFile,JSON.stringify({agentId:'successor-owned-drift-refusal',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
+  assert.equal((await captureNative(started.handle,responseFile)).captureClass,'initial-rejection');
+  await publish(started.handle);
+  const rejected=await captureCurrentExecution(f.specPath);
+  assert.equal(rejected.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  assert.equal(rejected.inspection.normalHandoff.slice,'slice-01');
+  const activation=Buffer.from(rejected.activationBytes);
+  const packageFile=path.join(f.root,'src/package.json');
+  await fs.writeFile(packageFile,'{"type":"commonjs"}\n');
+  await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:'slice-02',
+    expectedActivationId:rejected.inspection.activationId}),error=>error.code==='UNSUPPORTED_FORMAT');
+  assert.deepEqual(Buffer.from((await captureCurrentExecution(f.specPath)).activationBytes),activation);
+  await fs.rm(packageFile);
+  const successor=await normalizeSuccessor({specPath:f.specPath,slice:'slice-02',
+    expectedActivationId:rejected.inspection.activationId});
+  assert.notEqual(successor.owner.operationAttemptId,started.owner.operationAttemptId);
+  assert.equal(successor.owner.deliveryId,started.owner.deliveryId);
+  const next=await reserveDispatch(successor.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(successor.handle,'successor-owned-drift-corrected');
+  const checked=await verifyNative(next.originFile);
+  const {head:ignored,...corrected}=initialPayload(2);corrected.commands=checked.commands;
+  const correctedFile=path.join(f.root,'successor-owned-drift-corrected.json');
+  await fs.writeFile(correctedFile,JSON.stringify({agentId:'successor-owned-drift-corrected',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:corrected})})+'\n');
+  await captureNative(successor.handle,correctedFile);
+  assert.equal((await publish(successor.handle)).publication,'confirmed');
+  const final=await captureCurrentExecution(f.specPath);
+  assert.equal(final.inspection.deliveries[1].auxiliaryStatus,'TESTS_PASS');
+  assert.equal(final.inspection.normalHandoff.slice,'slice-01');
+});
+
+test('planned distinct reports retain selected original absence after publication',async t=>{
+  const f=await fixture({sharedAncestor:true,missingAncestor:true,reportPair:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const before=await captureCurrentExecution(f.specPath);
+  const original=JSON.parse(Buffer.from(before.files.get('continuity.json')));
+  assert.ok(original.deliveries.every(item=>item.baseline.entries.some(entry=>entry.path==='docs/missing'&&entry.kind==='absent')));
+  await bConclude(f,'EXECUTE_SLICE',{edit:async()=>{
+    await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+    await fs.mkdir(path.join(f.root,'docs/missing'));
+    await fs.writeFile(path.join(f.root,'docs/missing/report-a.md'),'Report A.\n');
+  }});
+  const executed=await captureCurrentExecution(f.specPath);
+  const executedContinuity=JSON.parse(Buffer.from(executed.files.get('continuity.json')));
+  assert.deepEqual(executedContinuity.deliveries[0].baseline,original.deliveries[0].baseline);
+  assert.ok(executedContinuity.deliveries[1].baseline.entries.some(item=>item.path==='docs/missing'&&item.kind==='absent'));
+  await bConclude(f,'VALIDATE_SLICE');
+  const validated=await captureCurrentExecution(f.specPath);
+  const validatedContinuity=JSON.parse(Buffer.from(validated.files.get('continuity.json')));
+  assert.deepEqual(validatedContinuity.deliveries[0].baseline,original.deliveries[0].baseline);
+  assert.ok(validatedContinuity.deliveries[1].baseline.entries.some(item=>item.path==='docs/missing/report-b.md'&&item.kind==='absent'));
+  const second=await bConclude(f,'EXECUTE_SLICE',{slice:'slice-02',edit:()=>fs.writeFile(path.join(f.root,'docs/missing/report-b.md'),'Report B.\n')});
+  assert.equal(second.image.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
+  assert.equal(second.image.inspection.normalHandoff?.slice,'slice-01');
+  assert.deepEqual(second.image.files.get(validatedContinuity.deliveries[0].evidence.path),validated.files.get(validatedContinuity.deliveries[0].evidence.path));
+  await bConclude(f,'VALIDATE_SLICE',{slice:'slice-01'});
+  const completed=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',terminal:true});
+  assert.equal(completed.image.inspection.state,'COMPLETE');
+});
+
+for(const depth of ['docs/missing','docs/missing/deep/nested'])test(`future output creates ${depth} without preparing directories`,async t=>{
+  const f=await fixture({sharedAncestor:true,missingAncestor:true,outputRoot:depth,single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  await bConclude(f,'EXECUTE_SLICE',{edit:async()=>{
+    await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+    await fs.mkdir(path.join(f.root,depth),{recursive:true});
+    await fs.writeFile(path.join(f.root,depth,'report.md'),'Approved report.\n');
+  }});
+  const final=await bConclude(f,'VALIDATE_SLICE',{terminal:true});assert.equal(final.image.inspection.state,'COMPLETE');
+});
+
+for(const stage of ['before-bind','before-verify','before-publish'])for(const extra of ['package.json','shadow.mjs','unowned.txt'])
+test(`future output rejects ${extra} ${stage}`,async t=>{
+  const f=await fixture({sharedAncestor:true,missingAncestor:true,single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+  await fs.mkdir(path.join(f.root,'docs/missing'));
+  await fs.writeFile(path.join(f.root,'docs/missing/report.md'),'Approved report.\n');
+  const hidden=path.join(f.root,'docs/missing',extra),agentId='first-hidden-guard';
+  if(stage==='before-bind') {
+    await fs.writeFile(hidden,'{}\n');
+    await assert.rejects(()=>bindNative(started.handle,agentId),error=>error.code==='EVIDENCE_STALE');
+    await fs.rm(hidden);
+  }
+  await bindNative(started.handle,agentId);
+  if(stage==='before-verify') {
+    await fs.writeFile(hidden,'{}\n');
+    await assert.rejects(()=>verifyNative(dispatch.originFile),error=>error.code==='EVIDENCE_STALE');
+    await fs.rm(hidden);
+  }
+  const checked=await verifyNative(dispatch.originFile),{head,...result}=initialPayload(1);result.commands=checked.commands;
+  const tool=path.join(f.root,'hidden-tool.json');await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+  await captureNative(started.handle,tool);
+  if(stage==='before-publish') {
+    await fs.writeFile(hidden,'{}\n');await assert.rejects(()=>publish(started.handle),error=>error.code==='EVIDENCE_STALE');await fs.rm(hidden);
+  }
+  assert.equal((await publish(started.handle)).publication,'confirmed');
+});
+
+test('explicit missing-ancestor output admits semantic-refusal successor without hiding foreign children',async t=>{
+  const f=await fixture({sharedAncestor:true,missingAncestor:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  await bConclude(f,'EXECUTE_SLICE',{edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  await bConclude(f,'VALIDATE_SLICE');
+  const before=await captureCurrentExecution(f.specPath);
+  const current=JSON.parse(Buffer.from(before.files.get('continuity.json'))).deliveries[1];
+  assert.ok(current.baseline.entries.some(entry=>entry.path==='docs/missing'&&entry.kind==='absent'));
+  assert.ok(!current.baseline.entries.some(entry=>entry.path==='docs/missing/report.md'));
+  const started=await begin({specPath:f.specPath,slice:'slice-02',operation:'EXECUTE_SLICE',expectedActivationId:before.inspection.activationId});
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await fs.mkdir(path.join(f.root,'docs/missing'));
+  await fs.writeFile(path.join(f.root,'docs/missing/report.md'),'Explicitly approved output.\n');
+  await bindNative(started.handle,'missing-ancestor-refusal');
+  const measured=await verifyNative(dispatch.originFile);
+  const {head,...result}=initialPayload(1);result.commands=measured.commands;result.coverage='none';
+  const tool=path.join(f.root,'missing-ancestor-refusal.json');
+  await fs.writeFile(tool,JSON.stringify({agentId:'missing-ancestor-refusal',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})})+'\n');
+  assert.equal((await captureNative(started.handle,tool)).captureClass,'initial-rejection');
+  await publish(started.handle);
+  const rejected=await captureCurrentExecution(f.specPath);
+  assert.equal(rejected.inspection.normalHandoff.slice,'slice-01');
+  const activation=Buffer.from(rejected.activationBytes);
+  // Both deliveries claim only report.md in this tree: their projected manifests
+  // hide siblings. The successor must still inspect and refuse those siblings.
+  for(const name of ['extra.txt','package.json','report.js','sibling.test.mjs']) {
+    const extra=path.join(f.root,'docs/missing',name);await fs.writeFile(extra,'{}\n');
+    await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:'slice-02',
+      expectedActivationId:rejected.inspection.activationId}),error=>error.code==='UNSUPPORTED_FORMAT');
+    assert.deepEqual(Buffer.from((await captureCurrentExecution(f.specPath)).activationBytes),activation);
+    await fs.rm(extra);
+  }
+  const link=path.join(f.root,'docs/missing/hidden-link');await fs.symlink('report.md',link);
+  await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:'slice-02',
+    expectedActivationId:rejected.inspection.activationId}),error=>['UNSUPPORTED_FORMAT','UNSAFE_PATH','TEMP_ROOT_UNPROVEN'].includes(error.code));
+  await fs.rm(link);
+  const successor=await normalizeSuccessor({specPath:f.specPath,slice:'slice-02',expectedActivationId:rejected.inspection.activationId});
+  const next=await reserveDispatch(successor.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(successor.handle,'missing-ancestor-corrected');
+  const checked=await verifyNative(next.originFile);
+  const {head:ignored,...corrected}=initialPayload(2);corrected.commands=checked.commands;
+  const accepted=path.join(f.root,'missing-ancestor-corrected.json');
+  await fs.writeFile(accepted,JSON.stringify({agentId:'missing-ancestor-corrected',status:'completed',
+    finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:corrected})})+'\n');
+  await captureNative(successor.handle,accepted);assert.equal((await publish(successor.handle)).publication,'confirmed');
+  const final=await captureCurrentExecution(f.specPath);
+  assert.equal(final.inspection.deliveries[1].auxiliaryStatus,'TESTS_PASS');
+  assert.equal(final.inspection.normalHandoff.slice,'slice-01');
+});
+
+
+// Regression reproduced COMPLETE after a hidden package on checkpoint39e0404.
+// Current context must stale independently of write claims and require a fresh
+// formal judgment before terminal completion.
+for(const addition of ['package.json','empty-directory','root-mode','chain-mode'])test(`future output foreign ${addition} after settled proof requires revalidation`,async t=>{
+  const outputRoot=addition==='chain-mode'?'docs/missing/deep':'docs/missing';
+  const f=await fixture({sharedAncestor:true,missingAncestor:true,outputRoot,single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  await bConclude(f,'EXECUTE_SLICE',{edit:async()=>{
+    await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+    await fs.mkdir(path.join(f.root,outputRoot),{recursive:true});
+    await fs.writeFile(path.join(f.root,outputRoot,'report.md'),'Approved report.\n');
+  }});
+  const final=await bConclude(f,'VALIDATE_SLICE',{terminal:true});assert.equal(final.image.inspection.state,'COMPLETE');
+  if(addition==='root-mode'||addition==='chain-mode')await fs.chmod(path.join(f.root,addition==='root-mode'?'docs/missing':outputRoot),0o700);
+  else if(addition==='empty-directory')await fs.mkdir(path.join(f.root,'docs/missing/empty-directory'));
+  else await fs.writeFile(path.join(f.root,'docs/missing/package.json'),'{}\n');
+  const changed=await captureCurrentExecution(f.specPath);
+  assert.notEqual(changed.inspection.state,'COMPLETE','an unowned package cannot inherit the earlier formal PASS');
+  assert.equal(changed.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
+  const revalidated=await bConclude(f,'VALIDATE_SLICE',{terminal:true});
+  assert.equal(revalidated.image.inspection.state,'COMPLETE');
+  const current=JSON.parse(Buffer.from(revalidated.image.files.get('continuity.json'))).deliveries[0];
+  const bundle=JSON.parse(Buffer.from(revalidated.image.files.get(current.evidence.path)));
+  const original=JSON.parse(Buffer.from(final.image.files.get(current.evidence.path))).validation.testedWork;
+  assert.notDeepEqual(bundle.validation.testedWork,original);
+  if(addition.endsWith('-mode'))assert.equal(bundle.validation.testedWork.entries.find(entry=>entry.path===(addition==='root-mode'?'docs/missing':outputRoot)).mode,0o700);
+  else assert.notEqual(bundle.validation.testedWork.entries.find(entry=>entry.path==='docs/missing').externalContextSha256,
+    original.entries.find(entry=>entry.path==='docs/missing').externalContextSha256);
+});
+
+test('future output interrupted publication recovers its exact original capture',async t=>{
+  const f=await fixture({sharedAncestor:true,missingAncestor:true,single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const done=await bConclude(f,'EXECUTE_SLICE',{captureOnly:true,edit:async()=>{
+    await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+    await fs.mkdir(path.join(f.root,'docs/missing'));await fs.writeFile(path.join(f.root,'docs/missing/report.md'),'Approved report.\n');
+  }});
+  const observation=await fs.readFile(path.join(done.root,'round-1.observation.json'));
+  await assert.rejects(publish(done.started.handle,{checkpoint:phase=>{
+    if(phase==='after-candidate-file')throw Error('controlled future output candidate interruption');
+  }}),/controlled future output candidate interruption/u);
+  assert.equal((await resume(done.started.handle)).nextAction,'normalize');
+  const hidden=path.join(f.root,'docs/missing/package.json');await fs.writeFile(hidden,'{}\n');
+  await assert.rejects(()=>normalize(done.started.handle),error=>error.code==='EVIDENCE_STALE');
+  await fs.rm(hidden);
+  await normalize(done.started.handle);
+  await assert.rejects(publish(done.started.handle,{checkpoint:phase=>{
+    if(phase==='after-activation')throw Error('controlled future output activation interruption');
+  }}),/controlled future output activation interruption/u);
+  assert.equal((await resume(done.started.handle)).phase,'activation_written');
+  const recovered=await publish(done.started.handle);assert.equal(recovered.publication,'confirmed');assert.equal(recovered.cleanup,'complete');
+  assert.deepEqual(await fs.readFile(path.join(done.root,'round-1.observation.json')),observation);
+  const formal=await bConclude(f,'VALIDATE_SLICE',{terminal:true});assert.equal(formal.image.inspection.state,'COMPLETE');
+});
+
+test('planned distinct output refusal admits only its own stable-context successor',async t=>{
+  const f=await fixture({sharedAncestor:true,missingAncestor:true,reportPair:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  await bConclude(f,'EXECUTE_SLICE',{edit:async()=>{
+    await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+    await fs.mkdir(path.join(f.root,'docs/missing'));await fs.writeFile(path.join(f.root,'docs/missing/report-a.md'),'Report A.\n');
+  }});
+  await bConclude(f,'VALIDATE_SLICE');
+  const before=await captureCurrentExecution(f.specPath);
+  const started=await begin({specPath:f.specPath,slice:'slice-02',operation:'EXECUTE_SLICE',expectedActivationId:before.inspection.activationId});
+  const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await fs.writeFile(path.join(f.root,'docs/missing/report-b.md'),'Report B.\n');
+  await bindNative(started.handle,'distinct-output-refusal');
+  const measured=await verifyNative(dispatch.originFile),{head,...result}=initialPayload(1);result.commands=measured.commands;result.coverage='none';
+  const tool=path.join(f.root,'distinct-output-refusal.json');await fs.writeFile(tool,JSON.stringify({agentId:'distinct-output-refusal',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result})}));
+  assert.equal((await captureNative(started.handle,tool)).captureClass,'initial-rejection');await publish(started.handle);
+  const rejected=await captureCurrentExecution(f.specPath);assert.equal(rejected.inspection.normalHandoff?.slice,'slice-01');
+  const hidden=path.join(f.root,'docs/missing/package.json');await fs.writeFile(hidden,'{}\n');
+  await assert.rejects(()=>normalizeSuccessor({specPath:f.specPath,slice:'slice-02',expectedActivationId:rejected.inspection.activationId}),
+    error=>['UNSUPPORTED_FORMAT','EVIDENCE_STALE'].includes(error.code));
+  await fs.rm(hidden);
+  const successor=await normalizeSuccessor({specPath:f.specPath,slice:'slice-02',expectedActivationId:rejected.inspection.activationId});
+  const next=await reserveDispatch(successor.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+  await bindNative(successor.handle,'distinct-output-corrected');
+  const verified=await verifyNative(next.originFile),{head:ignored,...corrected}=initialPayload(2);corrected.commands=verified.commands;
+  const accepted=path.join(f.root,'distinct-output-corrected.json');await fs.writeFile(accepted,JSON.stringify({agentId:'distinct-output-corrected',status:'completed',finalResponse:JSON.stringify({format:'stnl-current-native-judgment-v1',result:corrected})}));
+  await captureNative(successor.handle,accepted);assert.equal((await publish(successor.handle)).publication,'confirmed');
+  await bConclude(f,'VALIDATE_SLICE',{slice:'slice-01'});
+  const final=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',terminal:true});assert.equal(final.image.inspection.state,'COMPLETE');
+});
+
+for(const missing of ['input-file','input-ancestor'])test(`future-output absence never admits missing ${missing}`,async t=>{
+  const f=await fixture({single:true,inputTest:true,sharedAncestor:true,missingAncestor:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  if(missing==='input-ancestor')await fs.rm(path.join(f.root,'src'),{recursive:true});
+  else await fs.rm(path.join(f.root,'src/pay.test.mjs'));
+  await assert.rejects(()=>installCurrentInitial(f),error=>['EVIDENCE_STALE','EVIDENCE_INCOMPLETE'].includes(error.code));
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+  await assert.rejects(fs.lstat(path.join(f.root,'docs/missing')),error=>error.code==='ENOENT');
+});
+
+test('explicit reviewed reentry revalidates every stale completed structural contribution',async t=>{
+  const f=await fixture({sharedAncestor:true,missingAncestor:true,reportPair:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  await bConclude(f,'EXECUTE_SLICE',{edit:async()=>{
+    await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
+    await fs.mkdir(path.join(f.root,'docs/missing'));await fs.writeFile(path.join(f.root,'docs/missing/report-a.md'),'A\n');
+  }});
+  await bConclude(f,'VALIDATE_SLICE');
+  await bConclude(f,'EXECUTE_SLICE',{slice:'slice-02',edit:()=>fs.writeFile(path.join(f.root,'docs/missing/report-b.md'),'B\n')});
+  await bConclude(f,'VALIDATE_SLICE');
+  const final=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',terminal:true});assert.equal(final.image.inspection.state,'COMPLETE');
+  const original=final.image,prior=JSON.parse(Buffer.from(original.files.get('continuity.json'))),ids=prior.deliveries.map(i=>i.deliveryId);
+  const oldProofs=new Map(prior.deliveries.map(d=>[d.deliveryId,JSON.parse(Buffer.from(original.files.get(d.evidence.path)))]));
+  const approve=r=>({...r,decision:'approved',summary:'Controlled exact stale completed revalidation, not independent semantic qualification.',
+    evidenceDecisions:r.evidenceDecisions.map(i=>({...i,reason:'Retain historical sources only; fresh independent validation is mandatory.'}))});
+  const publishReviewed=async(root,{beforeApproval=null,expectRevalidation=false,interruptAt=null}={})=>{
+    const options={specPath:f.specPath,candidateExecutionRoot:root},proposal=await publishPreparationCandidate(options);
+    assert.equal(proposal.publication,'not-started');
+    if(expectRevalidation)assert.ok(proposal.reviewRequest.deliveries.every(i=>i.review.evidenceDecisions.every(d=>d.disposition==='revalidate')));
+    if(beforeApproval)await beforeApproval(options,proposal);
+    const reviewDecision={globalReview:approve(proposal.reviewRequest.globalReview),deliveries:proposal.reviewRequest.deliveries.map(i=>({deliveryId:i.deliveryId,review:approve(i.review)}))};
+    if(interruptAt) {
+      const {recoverPreparationPublication}=await import('../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs');
+      let failure;try{await publishPreparationCandidate({...options,reviewDecision,checkpoint:phase=>{if(phase===interruptAt)throw Error('controlled stale reentry '+phase);}});}catch(error){failure=error;}
+      assert.ok(failure?.allocation,`interrupted publisher must retain its exact producer allocation: ${failure?.stack??'no failure'}`);
+      if(interruptAt==='before-backup') {
+        let interrupted=0;
+        await assert.rejects(()=>recoverPreparationPublication({specPath:f.specPath,allocation:failure.allocation,checkpoint:phase=>{
+          if(phase==='after-preparation-entry-removal'){interrupted++;throw Error('controlled stale reentry cleanup interruption');}
+        }}),/controlled stale reentry cleanup interruption/u);
+        assert.equal(interrupted,1);
+        await fs.access(failure.allocation);
+      }
+      const recovered=await recoverPreparationPublication({specPath:f.specPath,allocation:failure.allocation});
+      assert.equal(recovered.publication,interruptAt==='after-activation'?'confirmed':'aborted');assert.equal(recovered.cleanup,'complete');
+      return recovered;
+    }
+    assert.equal((await publishPreparationCandidate({...options,reviewDecision})).publication,'confirmed');
+  };
+  const write=async(root,files)=>{for(const[name,bytes]of files){const p=path.join(root,name);await fs.mkdir(path.dirname(p),{recursive:true});await fs.writeFile(p,bytes);}};
+  const retiredDraft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:ids});
+  await write(retiredDraft.candidateExecutionRoot,new Map(['plan.md','tasks.md'].map(name=>[name,Buffer.from(Buffer.from(original.files.get(name)).toString().split('\n')
+    .filter(line=>!prior.deliveries.some(d=>line.includes('| '+d.slice.slice(6)+' - '))).join('\n'))])));
+  await publishReviewed(retiredDraft.candidateExecutionRoot);
+  const retired=await captureCurrentExecution(f.specPath);assert.equal(retired.inspection.state,'COMPLETE');
+  await fs.writeFile(path.join(f.root,'docs/missing/package.json'),'{}\n');
+  await assert.rejects(()=>captureCurrentExecution(f.specPath),e=>e.code==='EVIDENCE_STALE');
+  const activation=await fs.readFile(path.join(original.context.physicalExecutionRoot,'activation.json'));
+  await assert.rejects(()=>preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:[]}),e=>e.code==='EVIDENCE_STALE');
+  await assert.rejects(()=>preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:[ids[1]],revalidateCompletedIds:[ids[0]]}),e=>e.code==='EVIDENCE_STALE'||e.code==='REPLAN_REQUIRED');
+  await assert.rejects(()=>preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:[],revalidateCompletedIds:ids,terminalValidation:true}),e=>e.code==='UNSUPPORTED_FORMAT');
+  assert.deepEqual(await fs.readFile(path.join(original.context.physicalExecutionRoot,'activation.json')),activation);
+  const artifacts=new Map([...original.files].filter(([name])=>name.endsWith('.md')).map(([name,bytes])=>[name,Buffer.from(Buffer.from(bytes).toString()
+    .replace(/^- Plan revision: .+$/mu,'- Plan revision: 3').replace(/^- Local revision: .+$/mu,'- Local revision: 2')
+    .replaceAll('| [x] |','| [ ] |').replaceAll('| PASS | PASS |','| pending | pending |'))]));
+  for(const interruptAt of ['before-backup','after-install','after-activation']) {
+    const draft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:[],revalidateCompletedIds:ids});
+    await write(draft.candidateExecutionRoot,artifacts);
+    const marker=draft.candidateExecutionRoot+'.owner.json',originalMarker=await fs.readFile(marker),owned=JSON.parse(originalMarker);
+    for(const change of [value=>{delete value.revalidateCompletedIds;},value=>{value.revalidateCompletedIds=[ids[0]];},value=>{value.revalidationBasisSha256='sha256:'+'0'.repeat(64);}]) {
+      const changed=structuredClone(owned);change(changed);await fs.writeFile(marker,JSON.stringify(changed));
+      await assert.rejects(()=>publishPreparationCandidate({specPath:f.specPath,candidateExecutionRoot:draft.candidateExecutionRoot}));
+      await fs.writeFile(marker,originalMarker);
+    }
+    const packagePath=path.join(f.root,'docs/missing/package.json');await fs.writeFile(packagePath,'{"late":true}\n');
+    await assert.rejects(()=>publishPreparationCandidate({specPath:f.specPath,candidateExecutionRoot:draft.candidateExecutionRoot}),e=>e.code==='EVIDENCE_STALE');
+    await fs.writeFile(packagePath,'{}\n');
+    await publishReviewed(draft.candidateExecutionRoot,{expectRevalidation:true,interruptAt,beforeApproval:async(options,proposal)=>{
+      await assert.rejects(()=>captureCurrentExecution(f.specPath),e=>e.code==='EVIDENCE_STALE');
+      assert.deepEqual(await fs.readFile(path.join(original.context.physicalExecutionRoot,'activation.json')),activation);
+      await approveSyntheticPreparation(options);
+      await fs.writeFile(packagePath,'{"changedAfterApproval":true}\n');
+      const reviewDecision={globalReview:approve(proposal.reviewRequest.globalReview),deliveries:proposal.reviewRequest.deliveries.map(i=>({deliveryId:i.deliveryId,review:approve(i.review)}))};
+      await assert.rejects(()=>publishPreparationCandidate({...options,reviewDecision}),e=>e.code==='EVIDENCE_STALE');
+      await fs.writeFile(packagePath,'{}\n');
+    }});
+    if(interruptAt!=='after-activation') {
+      await assert.rejects(()=>captureCurrentExecution(f.specPath),e=>e.code==='EVIDENCE_STALE');
+      assert.deepEqual(await fs.readFile(path.join(original.context.physicalExecutionRoot,'activation.json')),activation);
+    }
+  }
+  const opened=await captureCurrentExecution(f.specPath),next=JSON.parse(Buffer.from(opened.files.get('continuity.json')));
+  assert.equal(next.completed.length,0);assert.equal(next.deliveries.length,2);assert.notEqual(opened.inspection.state,'COMPLETE');
+  for(const d of next.deliveries){
+    assert.equal(d.localRevision,2);assert.equal(d.validation,'revalidation-required');assert.equal(d.normalization,null);
+    const old=oldProofs.get(d.deliveryId),now=JSON.parse(Buffer.from(opened.files.get(d.evidence.path)));
+    for(const key of ['implementation','findingsChecks','support','validation','objects'])assert.deepEqual(now[key],old[key],key);
+  }
+  assert.ok(opened.inspection.deliveries.every(d=>d.formalStatus===null&&d.observedValidation==='revalidation-required'));
+  const a=await bConclude(f,'VALIDATE_SLICE');assert.notEqual(a.image.inspection.state,'COMPLETE');
+  const b=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',terminal:true});assert.equal(b.image.inspection.state,'COMPLETE');
+  for(const d of JSON.parse(Buffer.from(b.image.files.get('continuity.json'))).deliveries)
+    assert.equal(d.counters.validationAttempts,prior.deliveries.find(i=>i.deliveryId===d.deliveryId).counters.validationAttempts+1);
 });

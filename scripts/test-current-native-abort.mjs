@@ -4,13 +4,15 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
+import {createHash} from 'node:crypto';
 import {completedNativeCase} from './fixtures/current-completed-native.mjs';
 import {reviewInput} from './fixtures/current-completed-pristine.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {prepareCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs';
 import {publishCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/current-local-review.mjs';
-import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
-import {begin,reserveDispatch,bindNative,verifyNative,abort,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {captureCurrentExecution,captureCurrentActiveExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
+import {begin,reserveDispatch,bindNative,verifyNative,abort,resume,publish} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {captureCurrentExecution as captureQualityExecution,captureCurrentActiveExecution as captureQualityActiveExecution} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-reader.mjs';
 import {abort as qualityAbort} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current-operation.mjs';
 import {validateCurrentActivation,validateCurrentAbortDisposition} from '../skills/workflows/stnl-slice-executor/runtime/execution-current.mjs';
 
@@ -122,6 +124,84 @@ test('native abort closes only the ended unstarted invocation, retaining diagnos
   const admission=JSON.parse(capsule.originUtf8).admission;
   assert.equal(admission.baseActivation.lastAttempt.abort.diagnostic.reason,raw);assert.equal(admission.baseActivation.lastAttempt.abort.consumedInvocations,1);
   assert.equal(current.counters.validationAttempts,decode(f.before.files.get('continuity.json')).deliveries[0].counters.validationAttempts+1);
+});
+
+test('native abort retains only its authenticated rejected successor through intermediate recovery',async t=>{
+  const f=await fixture(t),closed=await abort(f.start.handle,f.tool);
+  await fs.rename(f.operationRoot,f.operationRoot+'.offline');
+  const rejected=await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1',invalid:true,captureOnly:true});
+  assert.equal(rejected.captureError,undefined);
+  const root=path.dirname(rejected.dispatch.originFile),controls=await tree(root);
+  let intermediate;
+  await assert.rejects(publish(rejected.start.handle,{checkpoint:async phase=>{
+    if(phase!=='after-activation')return;
+    const file=path.join(f.image.f.execution,'activation.json'),bytes=await fs.readFile(file);
+    intermediate=decode(bytes);
+    assert.deepEqual(intermediate.lastAttempt,closed.activation.lastAttempt);
+    assert.deepEqual((await captureCurrentActiveExecution(f.specPath,intermediate.activeAttempt)).inspection,
+      (await captureQualityActiveExecution(f.specPath,intermediate.activeAttempt)).inspection);
+    const mutations={
+      owner:value=>value.activeAttempt.ownershipToken='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      allocation:value=>value.activeAttempt.operationRef.allocationSha256='sha256:'+'0'.repeat(64),
+      predecessor:value=>{
+        const tool=decode(value.lastAttempt.abort.toolResultUtf8);tool.finalResponse+=' different predecessor';
+        value.lastAttempt.abort.toolResultUtf8=JSON.stringify(tool);
+        value.lastAttempt.abort.diagnostic.reason=tool.finalResponse;
+      },
+      'predecessor request':value=>{
+        const request=decode(value.lastAttempt.abort.requestUtf8);request.base.counters.validationAttempts++;
+        value.lastAttempt.abort.requestUtf8=JSON.stringify(request);
+        const origin=decode(value.lastAttempt.abort.originUtf8);
+        origin.requestSha256='sha256:'+createHash('sha256').update(value.lastAttempt.abort.requestUtf8).digest('hex');
+        value.lastAttempt.abort.originUtf8=JSON.stringify(origin);
+      },
+      'absent active owner':value=>value.activeAttempt=null,
+    };
+    for(const [name,mutate]of Object.entries(mutations)) {
+      const changed=structuredClone(intermediate);mutate(changed);
+      if(name==='predecessor'||name==='predecessor request')validateCurrentActivation(changed);
+      await fs.writeFile(file,JSON.stringify(changed));
+      const state=await refusalSnapshot(f);
+      for(const read of [captureCurrentActiveExecution,captureQualityActiveExecution])
+        await assert.rejects(read(f.specPath,changed.activeAttempt??intermediate.activeAttempt),name);
+      assert.deepEqual(await refusalSnapshot(f),state,name);
+      await fs.writeFile(file,bytes);
+    }
+    throw Object.assign(Error('controlled rejected successor interruption'),{code:'CONTROLLED_REJECTION_FAULT'});
+  }}),{code:'CONTROLLED_REJECTION_FAULT'});
+  assert.ok(intermediate);assert.equal((await resume(rejected.start.handle)).phase,'activation_written');
+  const recovered=await publish(rejected.start.handle);
+  assert.equal(recovered.publication,'confirmed');assert.equal(recovered.cleanup,'complete');
+  assert.equal(recovered.activation.lastAttempt.outcome,'rejected');
+  assert.equal(recovered.activation.previousActivationId,intermediate.activationId);
+  for(const [name,bytes]of controls)if(name!=='owner.json')assert.deepEqual(await fs.readFile(path.join(root,name)),bytes,name);
+  const after=await captureCurrentExecution(f.specPath);
+  assert.equal(decode(after.activationBytes).activeAttempt,null);
+  assert.equal(after.inspection.deliveries[0].formalStatus,null);
+  const continuity=decode(after.files.get('continuity.json')),current=continuity.deliveries[0];
+  assert.equal(current.lastDiagnostic.code,'RUNNER_RESULT_REJECTED');
+  assert.equal(current.normalization.consumedInvocations,1);
+  assert.deepEqual(current.counters,decode(f.before.files.get('continuity.json')).deliveries[0].counters);
+  const bundle=decode(after.files.get(current.evidence.path)),record=bundle.support.findLast(item=>item.kind==='rejection');
+  const originObject=bundle.objects.find(item=>item.id===record.sources.origin),capsule=decode(Buffer.from(originObject.bytesBase64,'base64'));
+  assert.deepEqual(JSON.parse(capsule.originUtf8).admission.baseActivation.lastAttempt,closed.activation.lastAttempt);
+  assert.deepEqual((await captureQualityExecution(f.specPath)).inspection,after.inspection);
+});
+
+test('native abort successor marks a changed captured request uncertain without publishing',async t=>{
+  const f=await fixture(t);await abort(f.start.handle,f.tool);
+  const rejected=await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1',invalid:true,captureOnly:true});
+  assert.equal(rejected.captureError,undefined);
+  const changed=decode(await fs.readFile(rejected.dispatch.requestFile));changed.base.counters.validationAttempts++;
+  await fs.writeFile(rejected.dispatch.requestFile,JSON.stringify(changed));
+  const root=path.dirname(rejected.dispatch.originFile),controls=await tree(root),before=await refusalSnapshot(f);
+  await assert.rejects(publish(rejected.start.handle),{code:'RUNNER_RESULT_REJECTED'});
+  const after=await refusalSnapshot(f);
+  assert.deepEqual(after.execution,before.execution);assert.deepEqual(after.product,before.product);
+  for(const [name,bytes]of controls)if(name!=='owner.json')assert.deepEqual(await fs.readFile(path.join(root,name)),bytes,name);
+  const owner=decode(await fs.readFile(path.join(root,'owner.json')));
+  assert.equal(owner.runner.status,'uncertain');assert.equal(owner.runner.captureClass,'uncertain');
+  assert.equal(decode(await fs.readFile(path.join(f.image.f.execution,'activation.json'))).activationId,rejected.start.activationA1);
 });
 
 test('native abort refuses active, uncertain, foreign or changed producers and source without effects',async t=>{

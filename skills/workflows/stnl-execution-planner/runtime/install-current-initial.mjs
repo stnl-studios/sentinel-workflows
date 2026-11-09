@@ -3,6 +3,7 @@
 // First EC-1 Initial installation. The reviewed preparation is external to the
 // absent official execution; the existing publisher owns the common lock/swap.
 import fs from 'node:fs/promises';
+import {assertPreparationDraftApproval} from './preparation-draft.mjs';
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {resolveCurrentExecutionContext,executionWorkspaceFromContext} from './execution-workspace.mjs';
@@ -49,6 +50,7 @@ export async function installCurrentInitial({specPath,preparationRoot,review,che
   if(initial.state!=='NO_EXECUTION' || initial.activationId!==null)
     fail('STALE_BASE','Initial installation requires an absent official execution');
   const root=await fs.realpath(preparationRoot);
+  await assertPreparationDraftApproval({specPath,candidateExecutionRoot:root,filesystemContext},{required:true});
   const ownerPresent=await fs.lstat(`${root}.owner.json`).then(()=>true,error=>{if(error.code==='ENOENT')return false;throw error;});
   const ownSource=ownerPresent?await assertPreparationCandidate(root,specPath,{filesystemContext}):null;
   if(ownSource&&(ownSource.marker.operation!=='PLAN'||ownSource.marker.source!==null))
@@ -117,6 +119,7 @@ export async function installCurrentInitial({specPath,preparationRoot,review,che
     expectedTree:null,expectedActivationId:null,currentInitial:true,preparationRecord:owned.marker,checkpoint,
     readActivated:()=>readActivated(specPath),
     authorizeDiff:async()=>{
+      await assertPreparationDraftApproval({specPath,candidateExecutionRoot:root,filesystemContext},{required:true});
       const now=await inspectCurrentExecution(specPath);
       if(now.state!=='NO_EXECUTION' || now.requirementsAuthority!==initial.requirementsAuthority
         || !await sourceStillApproved())
@@ -154,6 +157,7 @@ if(import.meta.url===pathToFileURL(process.argv[1]??'').href) {
   if(args.length!==6 || args[0]!=='--spec-path' || args[2]!=='--preparation-root'
     || args[4]!=='--review-file') throw new Error('usage: install-current-initial.mjs --spec-path SPEC --preparation-root DIR --review-file JSON | --spec-path SPEC --recover-allocation MARKER');
   const review=JSON.parse(await fs.readFile(args[5],'utf8'));
+  await assertPreparationDraftApproval({specPath:args[1],candidateExecutionRoot:args[3]},{required:true});
   process.stdout.write(JSON.stringify(await installCurrentInitial({specPath:args[1],preparationRoot:args[3],review}))+'\n');
   }
 }

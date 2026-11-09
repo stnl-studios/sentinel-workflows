@@ -49,3 +49,31 @@ test("repository contract rejects recreation of agents/base", async (t) => {
   assert.equal(result.status, 1, result.stdout + result.stderr);
   assert.match(result.stderr, /CONTRACT_ERROR\[C019_REMOVED_ROOTS\].*agents\/base/u);
 });
+
+// Documentary preparation is a review-only routing exception, not a bypass
+// of current byte review or the ordinary editable-draft approval boundary.
+test("documentary review routing precedes draft admission and returns to its controller", async () => {
+  const reviewer = await fs.readFile(path.join(repository, "skills/workflows/stnl-plan-reviewer/SKILL.md"), "utf8");
+  const start = reviewer.indexOf("## Select the review route before candidate admission");
+  const end = reviewer.indexOf("## Editable draft and explicit approval");
+  assert(start >= 0 && start < end, "documentary routing must precede mandatory draft admission");
+  const route = reviewer.slice(start, end);
+  for (const token of ["AWAITING_CURRENT_REVIEW", "stnl-documentary-preparation-handle-v1",
+    "awaiting-review", "owner.artifactHashes", "owner.source", "owner.decisionBasis",
+    "captureExecutionTree", "projectInitialPreparation", "computeRequirementsAuthority",
+    "globalReview", "deliveries", "empty evidenceDecisions", "historical approval/proof are unverified",
+    "install-documentary-resumption --handle HANDLE --review-file REVIEW", "recover-documentary-resumption"])
+    assert(route.includes(token), `missing documentary review boundary: ${token}`);
+  assert.match(route, /Do not run prepare-task-candidate, preparation-draft, serialize-plan-paths or publish-task-candidate/u);
+  assert.match(route, /all semantic review criteria still apply/u);
+  assert.match(route, /Do not edit the candidate\/source/u);
+  assert.match(reviewer, /For ordinary PLAN\/REPLAN only, before content reads/u);
+  assert.match(reviewer, /For documentary preparation, return the current review decision\/file/u);
+  assert.match(reviewer, /Only after the user explicitly approves that digest run/u);
+  const guides = await Promise.all(["stnl-slice-executor", "stnl-slice-quality-manager"].map(skill =>
+    fs.readFile(path.join(repository, "skills/workflows", skill, "references/documentary-resumption.md"), "utf8")));
+  assert.equal(guides[0].replace(/^owner: .+$/mu, "owner: caller"), guides[1].replace(/^owner: .+$/mu, "owner: caller"), "both callers must route the same documentary review");
+  assert.match(guides[0], /independent stnl-plan-reviewer using its Documentary preparation handoff route/u);
+  assert.match(guides[0], /complete prepare result \(saved handle, candidateExecutionRoot, authority and resumption\)/u);
+  assert.match(guides[0], /reviewer returns the actual decision\/file to this invoking controller/u);
+});

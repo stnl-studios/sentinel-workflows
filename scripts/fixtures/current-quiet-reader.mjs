@@ -928,8 +928,13 @@ export async function authoredCompletedWithActiveProof({formal=true,historicalSh
   const work=oracle.decode(initial.verificationObservation).after;
   const request=templates.request({baseBytes:first.bytes,counters:first.counters,owner,authority,
     scopePaths:['verify/check.mjs'],priorScopePaths:['verify/check.mjs']});
+  // capture() authors template-coordinate bytes; adapt() relocates them once.
+  // Reusing the already relocated initial cwd would expand /workspace twice
+  // when this checkout itself lives below /workspace.
+  const formalResolved=structuredClone(oracle.decode(initial.verificationObservation).resolved);
+  for(const check of formalResolved.checks)check.cwd=source.PRODUCT;
   const capture=adapt(templates.capture({request,approvedAuthority:authority,work,
-    command:'node verify/check.mjs',resolved:oracle.decode(initial.verificationObservation).resolved}).cap);
+    command:'node verify/check.mjs',resolved:formalResolved}).cap);
   const validation=oracle.authoredFormal(capture,authority);
   const result=authoredBundleFor(oracle,{implementation:[check],validation:formal?validation:null,
     captures:formal?[initial,capture]:[initial],authority,

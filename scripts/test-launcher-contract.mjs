@@ -30,7 +30,8 @@ async function change(root, name, transform) {
 
 test('every human launcher is a compact registered entry with matching platform pairs', async (t) => {
   const root = await fixture(t);
-  assert.equal(check(root).status, 0, check(root).stderr);
+  const result = check(root);
+  assert.equal(result.status, 0, result.stderr);
   const files = (await fs.readdir(root)).filter((name) => name.endsWith('.md'));
   assert.equal(files.length, 17);
   for (const name of files) assert.ok((await fs.readFile(path.join(root, name), 'utf8')).split('\n').length <= 9, name);

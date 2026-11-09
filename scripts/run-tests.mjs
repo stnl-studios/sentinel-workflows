@@ -2,6 +2,7 @@ import {spawn} from 'node:child_process';
 import {promises as fs} from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {validateCatalog} from './lib/test-catalog.mjs';
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const catalogPath=path.join(root,'scripts/test-catalog.json');
@@ -68,46 +69,43 @@ async function runTestFile(file) {
 }
 
 const catalog=JSON.parse(await fs.readFile(catalogPath,'utf8'));
-if(catalog.format!=='sentinel-test-catalog-v1'||!Array.isArray(catalog.files)||!Array.isArray(catalog.excluded))
-  throw new Error('invalid scripts/test-catalog.json format');
-const listed=[...catalog.files];
-if(new Set(listed).size!==listed.length||listed.some((file,index)=>index>0&&listed[index-1]>=file))
-  throw new Error('test catalog must contain unique, sorted paths');
-const excluded=catalog.excluded;
-if(excluded.some(item=>!item||typeof item.file!=='string'||typeof item.reason!=='string'||!item.reason.trim())
-  ||new Set(excluded.map(item=>item.file)).size!==excluded.length
-  ||excluded.some((item,index)=>index>0&&excluded[index-1].file>=item.file)
-  ||listed.some(file=>excluded.some(item=>item.file===file)))
-  throw new Error('test catalog exclusions must be unique, sorted, explained, and separate from included files');
-const actual=await discover();
-const excludedPaths=new Set(excluded.map(item=>item.file));
-const missing=actual.filter(file=>!listed.includes(file)&&!excludedPaths.has(file));
-const stale=[...listed,...excluded.map(item=>item.file)].filter(file=>!actual.includes(file));
-if(missing.length||stale.length) {
-  if(missing.length)console.error('Uncatalogued test files (review and add deliberately):\n'+missing.map(file=>'  '+file).join('\n'));
-  if(stale.length)console.error('Catalog entries no longer discovered (remove or update deliberately):\n'+stale.map(file=>'  '+file).join('\n'));
-  process.exitCode=1;
-} else {
-  console.log(`Audited test catalog: ${listed.length} runnable files; ${excluded.length} explicit fixture exclusion(s)`);
-  for(const item of excluded)console.log(`Excluded fixture: ${item.file} — ${item.reason}`);
-  let failures=0;
-  let nextIndex=0;
-  const worker=async()=>{
-    while(nextIndex<listed.length) {
-      const file=listed[nextIndex++];
-      console.log(`\n=== ${file} ===`);
-      const exitCode=file.endsWith('.sh')?(await run('bash',[file])).code:await runTestFile(file);
-      if(exitCode!==0) {
-        failures++;
-        console.error(`FAIL: ${file} exited ${exitCode}`);
-      }
-    }
+let audited;
+try { audited=validateCatalog(catalog,await discover()); }
+catch(error) { console.error(error.message); process.exitCode=1; }
+if(audited) {
+  const {listed,excluded,delegations}=audited;
+  const results=[];
+  const record=result=>{results.push(result);console.log('[test-result] '+JSON.stringify(result));};
+  const execute=async(file,operation)=>{
+    const began=process.hrtime.bigint();
+    let exitCode=1,error;
+    try { exitCode=await operation(); }
+    catch(cause) { error=cause.message;console.error(cause); }
+    const result={file,status:exitCode===0?'passed':'failed',exitCode,durationSeconds:Number(process.hrtime.bigint()-began)/1e9,...(error?{error}:{})};
+    record(result);
+    if(exitCode!==0)process.exitCode=1;
+    return result;
   };
-  await worker();
-  console.log(`\nTest files: ${listed.length}; failures: ${failures}; duration: ${(Number(process.hrtime.bigint()-started)/1_000_000_000).toFixed(1)}s`);
-  if(failures)process.exitCode=1;
+  console.log(`Audited test catalog: ${listed.length} runnable files; ${delegations.length} tested delegation(s); ${excluded.length} explicit fixture exclusion(s)`);
+  for(const item of excluded) {
+    console.log(`Excluded fixture: ${item.file} — ${item.reason}`);
+    record({file:item.file,status:'excluded-fixture',durationSeconds:0,reason:item.reason});
+  }
+  // Sequential by design: large benchmark scenarios import independent runtime
+  // trees. Do not trade duplicate removal for uncontrolled memory/concurrency.
+  for(const file of listed) {
+    console.log(`\n=== ${file} ===`);
+    await execute(file,()=>file.endsWith('.sh')?run('bash',[file]).then(result=>result.code):runTestFile(file));
+  }
+  for(const item of delegations) {
+    const passed=[item.target,item.coveredBy].every(file=>results.some(result=>result.file===file&&result.status==='passed'));
+    record({file:item.file,status:passed?'passed-delegation':'failed-delegation',exitCode:passed?0:1,durationSeconds:0,target:item.target,coveredBy:item.coveredBy,reason:item.reason});
+    if(!passed)process.exitCode=1;
+  }
   console.log('\n=== Structural validation ===');
-  const result=await run('bash',['scripts/validate.sh','--structure-only']);
-  if(result.code!==0)process.exitCode=1;
-  else console.log(`npm test completed in ${(Number(process.hrtime.bigint()-started)/1_000_000_000).toFixed(1)}s`);
+  await execute('scripts/validate.sh --structure-only',()=>run('bash',['scripts/validate.sh','--structure-only']).then(result=>result.code));
+  const report={format:'sentinel-test-report-v1',status:process.exitCode?'failed':'passed',durationSeconds:Number(process.hrtime.bigint()-started)/1e9,results};
+  if(process.env.SENTINEL_TEST_REPORT)await fs.writeFile(process.env.SENTINEL_TEST_REPORT,JSON.stringify(report,null,2)+'\n');
+  const failures=results.filter(result=>result.status.startsWith('failed')).length;
+  console.log(`\nTest files: ${listed.length}; tested delegations: ${delegations.length}; failures: ${failures}; duration: ${report.durationSeconds.toFixed(1)}s`);
 }

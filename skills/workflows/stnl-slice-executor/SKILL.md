@@ -13,6 +13,10 @@ Run one explicitly selected EXECUTE_SLICE or APPLY_FINDINGS operation on its exa
 
 For a technical approved slice, inspect the native skill catalog descriptions and consult only the primary domain guidance and applicable specializations before implementation or correction. Keep the Approved Slice and authority unchanged; return to this workflow for its execution and evidence rules. Administrative work and documentation without a product change do not load domain guidance by default.
 
+### Portable documentary resumption
+
+For an explicit EXECUTE_SLICE or VALIDATE_SLICE request, consult `references/documentary-resumption.md` and call the existing controller's `inspect-request` before treating absent activation, approved-preparation or continuity controls as a planning failure. Keep a stable current user request ID, preserve original documents/proof, obtain a current review of any new context, and return to the normal native controller. Markdown status is never proof or historical approval.
+
 ## Inputs
 
 SPEC_PATH, the explicitly selected operation and canonical slice are required. Use the exact activation returned by current inspection for begin; preserve the returned handle for all later commands.

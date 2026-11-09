@@ -9,9 +9,9 @@ import {createHash,randomUUID} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify,isDeepStrictEqual} from 'node:util';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {resolveCurrentExecutionContext,executionWorkspaceFromContext} from './execution-workspace.mjs';
-import {captureCurrentExecution,captureCurrentActiveExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
-import {parseCurrentJson,validateCurrentCandidate,currentOperationBindingSha256,currentTerminalProjection,validateCurrentAbortDisposition} from './execution-current.mjs';
+import {computeRequirementsAuthority,resolveCurrentExecutionContext,executionWorkspaceFromContext} from './execution-workspace.mjs';
+import {captureCurrentExecution,captureCurrentActiveExecution,observeCurrentDeliveryWork,preflightCurrentPreparationPaths} from './execution-current-reader.mjs';
+import {parseCurrentJson,validateCurrentCandidate,validateCurrentActivation,validateCurrentImage,validateDocumentaryRequest,currentOperationBindingSha256,currentTerminalProjection,validateCurrentAbortDisposition} from './execution-current.mjs';
 import {verifyWorkObservation,findingsRoundCaptureSha256,NATIVE_JUDGMENT_VARIANT,restoreCaptureSources,
   projectNativeJudgment,currentOutputPaths,validateNativeContinuation,nativeContinuationSha256,validateRemovalPreimage} from './execution-evidence-proof.mjs';
 import {composePostConversionValidation,composePostConversionFindings,
@@ -20,12 +20,14 @@ import {composePostConversionValidation,composePostConversionFindings,
   inspectCurrentFindingsPrefix,
   composeInitialCurrentOperation} from './current-evidence-state.mjs';
 import {composeInitialImplementationEvidence,assertTestCoverageCorrectionWork} from './execution-evidence-current.mjs';
-import {recoverableRunnerResultDiagnostic,MAX_NATIVE_PRODUCER_TURNS,MIN_CORRECTIONS_BEFORE_RECURRENCE} from './runner-result-contract.mjs';
+import {recoverableRunnerResultDiagnostic,MAX_NATIVE_PRODUCER_TURNS,MIN_CORRECTIONS_BEFORE_RECURRENCE,parseSemanticExecutionPayload,assertRunnerVerdictConsistency,hasTemplatePlaceholder} from './runner-result-contract.mjs';
 import {executeRunnerVerification,verificationCommand} from './runner-verification.mjs';
 import {withExecutionPublicationLock,assertNoPendingExecutionPublication,readOwnedFile,writeNew,persistAllocation,captureExecutionTree,
   reserveCurrentExecutionOperation,publishCurrentExecutionOperation,abortCurrentExecutionOperation,copyCurrentCandidateTree,
-  recoverCurrentExecutionOperation,finishCurrentExecutionCleanup,syncLockParent} from './execution-publication.mjs';
+  recoverCurrentExecutionOperation,finishCurrentExecutionCleanup,syncLockParent,publishExecutionUpdate,recoverDocumentaryResumptionPublication} from './execution-publication.mjs';
 import {resolveExecutionFilesystemRoots,resolveExecutionFilesystemContext,ensureExecutionMaterialRoot,validateCurrentOperationAllocationBinding} from './execution-publication.mjs';
+
+import {projectDocumentaryPreparation,restoreDocumentaryPreparationArtifacts,projectInitialPreparation,approveInitialPreparation,validateCurrentPreparation} from './execution-preparation-current.mjs';
 
 const run=promisify(execFile);
 const sha=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -42,8 +44,8 @@ async function active(specPath,owner) {
   const image=await captureCurrentActiveExecution(specPath,owner);
   return {...image,activation:parseCurrentJson(Buffer.from(image.activationBytes).toString('utf8'))};
 }
-async function quiet(specPath) {
-  const image=await captureCurrentExecution(specPath);
+async function quiet(specPath,requestedSlice=null) {
+  const image=await captureCurrentExecution(specPath,{requestedSlice});
   return {...image,activation:parseCurrentJson(Buffer.from(image.activationBytes).toString('utf8'))};
 }
 function baseFiles(image) {return new Map([...image.files].map(([name,bytes])=>[name,Buffer.from(bytes)]));}
@@ -211,14 +213,179 @@ function requireS2(image,slice,operation,{successor=false}={}) {
   }
   return current;
 }
-function requireInitial(image,slice,operation,{successor=false}={}) {
-  if(image.activation.preparationRevision!==1 || image.activation.activeAttempt!==null
-    || !['EXECUTE_SLICE','VALIDATE_SLICE','APPLY_FINDINGS'].includes(operation)
-    || image.inspection.normalHandoff?.operation!==operation
-    || image.inspection.normalHandoff?.slice!==slice)
-    fail('UNSUPPORTED_FORMAT','EC-1 Initial requires the exact official handoff');
+async function initialSuccessorOwnsDrift(image,current,continuity) {
+  const last=image.activation.lastAttempt;
+  if(!current?.evidence || current.normalization?.operation!=='EXECUTE_SLICE'
+    || current.normalization.status!=='settled' || current.normalization.consumedInvocations>=MAX_NATIVE_PRODUCER_TURNS
+    || last?.outcome!=='rejected' || last.operation!=='EXECUTE_SLICE' || last.deliveryId!==current.deliveryId
+    || last.operationAttemptId!==current.normalization.sourceOperationAttemptId
+    || last.operationAttemptId!==current.lastDiagnostic?.operationAttemptId)return false;
+  const snapshot=parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8'));
+  const delivery=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===current.deliveryId);
+  const {areas,inputs}=verifyWorkObservation('initial-implementation',{context:image.context,delivery,slice:current.slice});
+  const ownBaseline=new Map(current.baseline.entries.map(entry=>[entry.path,entry]));
+  const ownObservation=image.observedByDelivery.get(current.deliveryId);
+  if(!ownObservation)return false;
+  const ownNow=new Map(ownObservation.manifest.entries.map(entry=>[entry.path,entry]));
+  // Only a literal absent entry (leaf or ancestor) proves absence here. A
+  // projected directory's omitted children are not a complete inventory.
+  const absent=(entries,name)=>{
+    for(let current=name;current!=='.';current=path.posix.dirname(current)) {
+      const entry=entries.get(current);
+      if(entry?.kind==='absent')return true;
+      if(current===name&&entry)return false;
+    }
+    return false;
+  };
+  const newDirectories=new Set(),newFiles=new Set(),contextRoots=new Set();
+  let found=false;
+  for(const prior of continuity.deliveries) {
+    if(prior===current)continue;
+    const status=image.inspection.deliveries.find(item=>item.deliveryId===prior.deliveryId);
+    if(status?.observedValidation!=='revalidation-required')continue;
+    if(!prior.evidence)return false;
+    const bundle=parseCurrentJson(Buffer.from(image.files.get(prior.evidence.path)).toString('utf8'));
+    if(!bundle.validation || status.formalStatus!=='PASS')return false;
+    const beforeByPath=new Map(bundle.validation.testedWork.entries.map(entry=>[entry.path,entry]));
+    const observed=image.observedByDelivery.get(prior.deliveryId)?.manifest;
+    if(!observed)return false;
+    const now=new Map(observed.entries.map(entry=>[entry.path,entry]));
+    // Check the union: directory child additions are real stale dependencies,
+    // even when another changed file is legitimately owned by this executor.
+    for(const name of new Set([...beforeByPath.keys(),...now.keys()])) {
+      const before=beforeByPath.get(name),after=now.get(name);
+      if(isDeepStrictEqual(before??null,after??null))continue;
+      if(before?.kind==='directory' && after?.kind==='directory') {
+        if(before.mode!==after.mode)return false;
+        if(before.externalContextSha256!==after.externalContextSha256) {
+          const original=ownBaseline.get(name),selected=ownNow.get(name);
+          if(original?.kind!=='directory'||selected?.kind!=='directory'
+            ||original.externalContextSha256===undefined
+            ||original.externalContextSha256!==selected.externalContextSha256
+            ||original.mode!==selected.mode)return false;
+          contextRoots.add(name);
+        }
+        continue;
+      }
+      if(after?.kind==='directory'&&(!before||before.kind==='absent')) {
+        if(!absent(beforeByPath,name)||!absent(ownBaseline,name)
+          ||!isDeepStrictEqual(ownNow.get(name)??null,after))return false;
+        newDirectories.add(name);continue;
+      }
+      // Existing directory replacement/removal is outside this narrow case.
+      if(before?.kind==='directory' || after?.kind==='directory')return false;
+      if(inputs.some(input=>input.path===name)
+        || !areas.some(area=>area.path===name || area.kind==='directory'&&name.startsWith(area.path+'/'))
+        || !isDeepStrictEqual(ownNow.get(name)??null,after??null))return false;
+      const baseline=ownBaseline.get(name);
+      if(!before || before.kind==='absent') {
+        // Broad directory authorization does not prove that an added package,
+        // resolver configuration or discovery input belongs to this attempt.
+        // Only an explicitly approved file with captured absence can qualify.
+        if(after?.kind!=='file' || !absent(ownBaseline,name)
+          || !areas.some(area=>area.kind==='file'&&area.path===name))return false;
+        newFiles.add(name);
+      } else if(!isDeepStrictEqual(baseline??null,before))return false;
+      found=true;
+    }
+  }
+  // A's projected exact-file domain need not contain B's output leaf. An
+  // unchanged B external-context fingerprint over the identical physical root
+  // can explain A's context delta, but only through B's exact owned leaf delta.
+  // This admits correction of the authenticated B refusal, never keeps A PASS.
+  for(const root of contextRoots) {
+    let explained=false;
+    for(const name of new Set([...ownBaseline.keys(),...ownNow.keys()])) {
+      if(name!==root&&!name.startsWith(root+'/'))continue;
+      const before=ownBaseline.get(name),after=ownNow.get(name);
+      if(isDeepStrictEqual(before??null,after??null))continue;
+      if(before?.kind==='directory'||after?.kind==='directory') {
+        if(before?.kind==='directory'&&after?.kind==='directory') {
+          if(before.mode!==after.mode||before.externalContextSha256!==after.externalContextSha256)return false;
+        } else if(after?.kind!=='directory'||!absent(ownBaseline,name))return false;
+        continue;
+      }
+      if(absent(ownBaseline,name)&&absent(ownNow,name))continue;
+      if(inputs.some(input=>input.path===name)||!areas.some(area=>area.kind==='file'&&area.path===name)
+        ||!['file','absent'].includes(after?.kind)
+        ||before?.kind!=='file'&&!absent(ownBaseline,name))return false;
+      explained=true;
+    }
+    if(!explained)return false;
+    found=true;
+  }
+  if(!found)return false;
+  return !newDirectories.size||await verifyInitialStructuralAdditions(image,ownObservation,ownNow,newDirectories,newFiles);
+}
+function documentaryDecision(image,{requestId,requestedSlice,requestedOperation,terminal=false},admitted=null) {
+  if(typeof requestId!=='string'||!requestId.trim()||requestId.length>512)fail('INVALID_ARGUMENTS','a stable current user request ID is required');
+  const handoff=admitted??image.inspection.normalHandoff;
+  if(!handoff)fail('RESUMPTION_TARGET_CURRENT','requested target has no pending operation');
+  if(typeof terminal!=='boolean'||terminal&&requestedOperation!=='VALIDATE_SLICE')fail('INVALID_ARGUMENTS','terminal selection requires explicit validation');
+  const base={format:'stnl-documentary-request-v1',requestId,requestedSlice,requestedOperation,terminal:terminal&&handoff.operation==='VALIDATE_SLICE'&&handoff.slice===requestedSlice,
+    slice:handoff.slice,operation:handoff.operation,activationId:image.activation.activationId,newAttemptLimit:1};
+  return {...base,decisionSha256:sha(json(base))};
+}
+async function assertUnusedDocumentaryRequest(image,location,request) {
+  const matches=value=>value?.requestId===request.requestId&&value.slice===request.slice&&value.operation===request.operation&&value.terminal===request.terminal;
+  if(image.activation.lastAttempt?.abort) {
+    const disposition=validateCurrentAbortDisposition(image.activation.lastAttempt);
+    if(matches(disposition.origin.admission?.binding?.documentaryRequest))fail('RESUMPTION_ATTEMPT_CONSUMED','the retained abort already consumed this user request');
+  }
+  // The ordinary retained operation allocations already hold consumed grants.
+  // No new ledger or retry counter is created by documentary admission.
+  if(location.exists)for(const name of await fs.readdir(location.namespace))if(/^[a-f0-9-]{36}$/u.test(name)) {
+    const file=path.join(location.namespace,name,'owner.json');
+    if(await maybe(file)) {const prior=await readJson(file);if(matches(prior.binding?.documentaryRequest))
+      fail('RESUMPTION_ATTEMPT_CONSUMED','this current user request already admitted an attempt for this phase and slice');}
+  }
+  // Copying a project does not renew grants which survived inside native proof.
+  for(const [name,bytes] of image.files)if(name.startsWith('evidence/')) {
+    const bundle=parseCurrentJson(Buffer.from(bytes).toString('utf8'));
+    for(const object of bundle.objects??[]) {
+      let source;try{source=parseCurrentJson(Buffer.from(object.bytesBase64,'base64').toString('utf8'));}catch{continue;}
+      if(source?.originUtf8) {try{source=parseCurrentJson(source.originUtf8);}catch{continue;}}
+      if(matches(source?.admission?.binding?.documentaryRequest))
+        fail('RESUMPTION_ATTEMPT_CONSUMED','native evidence already consumed this request for this phase and slice');
+    }
+  }
+}
+
+function invocationLimit(op) {
+  const request=op.binding.documentaryRequest;if(!request)return MAX_NATIVE_PRODUCER_TURNS;
+  validateDocumentaryRequest(request);
+  if(request.slice!==op.owner.slice||request.operation!==op.owner.operation||request.activationId!==op.binding.baseActivationId)
+    fail('OWNER_MISMATCH','documentary invocation limit is not bound to this owner');
+  return request.newAttemptLimit;
+}
+function resumptionOf(image) {return parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8')).resumption??null;}
+function assertResumptionBudget(image,slice,operation,{dispatchRound=null}={}) {
+  if(!resumptionOf(image))return;
+  if(dispatchRound!==null&&dispatchRound>1)
+    fail('RESUMPTION_ATTEMPT_CONSUMED','one new attempt was admitted; an additional attempt needs a new current user decision');
+}
+function assertResumptionObservation(image,slice,request=null,operation='EXECUTE_SLICE') {
+  if(operation!=='EXECUTE_SLICE')return;
+  const resumption=resumptionOf(image);if(!resumption)return;
+  const granted=request??{requestedOperation:resumption.operation,requestedSlice:resumption.slice};
+  if(['EXECUTE_SLICE','APPLY_FINDINGS'].includes(granted.requestedOperation)&&granted.requestedSlice===slice)return;
   const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
   const current=continuity.deliveries.find(item=>item.slice===slice);
+  if(!isDeepStrictEqual(current?.baseline,image.observedByDelivery.get(current?.deliveryId)?.manifest))
+    fail('RESUMPTION_SCOPE_CHANGED','validation/dependency bootstrap observes existing implementation; it does not authorize product edits');
+}
+async function requireInitial(image,slice,operation,{successor=false}={}) {
+  assertResumptionBudget(image,slice,operation);
+  const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+  const current=continuity.deliveries.find(item=>item.slice===slice);
+  const ownsDrift=successor && operation==='EXECUTE_SLICE' && image.inspection.state==='EVIDENCE_STALE'
+    && image.inspection.normalHandoff?.operation==='VALIDATE_SLICE'
+    && image.inspection.normalHandoff?.slice!==slice && await initialSuccessorOwnsDrift(image,current,continuity);
+  if(image.activation.preparationRevision!==1 || image.activation.activeAttempt!==null
+    || !['EXECUTE_SLICE','VALIDATE_SLICE','APPLY_FINDINGS'].includes(operation)
+    || !ownsDrift && (image.inspection.normalHandoff?.operation!==operation
+      || image.inspection.normalHandoff?.slice!==slice))
+    fail('UNSUPPORTED_FORMAT','EC-1 Initial requires the exact official handoff');
   if(continuity.completed.length || continuity.deliveries.some(item=>item.localRevision!==1
     || item.normalization!==null && !(successor&&item.slice===slice&&item.normalization.operation===operation
       &&item.normalization.status==='settled'&&item.normalization.round>=1&&item.normalization.round<MAX_NATIVE_PRODUCER_TURNS) || item.validation==='uncertain') || !current)
@@ -270,10 +437,21 @@ async function captureRemovalBefore({root,context,owner,round,manifest,info}) {
     } else await writeNew(filename,proof);
   }
 }
-export async function begin({specPath,slice,expectedActivationId,operation='VALIDATE_SLICE',successor=false,filesystemContext=null}) {
-  const first=await quiet(specPath);
+export async function begin({specPath,slice,expectedActivationId,operation='VALIDATE_SLICE',successor=false,filesystemContext=null,documentaryRequest=null}) {
+  const first=await quiet(specPath,documentaryRequest?.requestedSlice??null);
+  const provenance=resumptionOf(first);
+  let request=null;
+  if(provenance) {
+    if(successor)fail('RESUMPTION_ATTEMPT_CONSUMED','a successor cannot renew a documentary request');
+    const declaration=documentaryRequest??{requestId:provenance.decisionSha256,requestedSlice:provenance.slice,requestedOperation:provenance.operation};
+    requestedOperation(declaration.requestedSlice,declaration.requestedOperation);
+    request=documentaryDecision(first,declaration);
+    if(documentaryRequest&&!same(request,documentaryRequest))fail('STALE_APPROVAL','current user request binding differs');
+    if(request.slice!==slice||request.operation!==operation)fail('UNSUPPORTED_FORMAT','requested phase is not the eligible current documentary handoff');
+    assertResumptionObservation(first,slice,request,operation);
+  } else if(documentaryRequest!==null)fail('INVALID_ARGUMENTS','documentary request is only for a resumed context');
   const initial=first.activation.preparationRevision===1;
-  const current=initial?requireInitial(first,slice,operation,{successor}):requireS2(first,slice,operation,{successor});
+  const current=initial?await requireInitial(first,slice,operation,{successor}):requireS2(first,slice,operation,{successor});
   if(first.activation.activationId!==expectedActivationId) fail('STALE_BASE','begin expectedActivationId differs');
   const {workspace,context}=await resolveCurrentExecutionContext(specPath,{filesystemContext});
   const officialWorkspace=executionWorkspaceFromContext(context,workspace);
@@ -289,14 +467,17 @@ export async function begin({specPath,slice,expectedActivationId,operation='VALI
     baseActivationId:expectedActivationId,baseTree:await captureExecutionTree(context.logicalExecutionRoot),
     candidatePath:'candidate',previousPath:'previous',namespaceIdentity:location.identity,
     filesystemDevice:location.device,filesystemContext:location.filesystemContext,filesystemBinding:location.filesystemBinding,
+    ...(request?{documentaryRequest:request}:{}),
     ...(successor?{normalization:{...current.normalization,
       sourceEvidenceSha256:current.evidence.sha256,sourceActivationId:expectedActivationId}}:{})};
   const marker=path.join(operationRoot,'owner.json');
   const reserved=await reserveCurrentExecutionOperation({workspace:officialWorkspace,
     expectedActivationId,expectedBaseActivation:first.activation,owner,binding,marker,
     bindingSha256:currentOperationBindingSha256(binding),
-    readQuiet:()=>quiet(specPath),readActive:expected=>active(specPath,expected),
+    readQuiet:async()=>{const image=await quiet(specPath,request?.requestedSlice??null);if(initial)await requireInitial(image,slice,operation,{successor});return image;},
+    readActive:expected=>active(specPath,expected),
     registryReservation:async()=>{
+      if(request)await assertUnusedDocumentaryRequest(first,location,request);
       const registry=await registryAt(location,context.logicalExecutionRoot);
       if(registry.operations.length) fail('OWNER_ACTIVE','another current operation or cleanup is pending');
       await fs.mkdir(operationRoot,{mode:0o700});
@@ -351,6 +532,7 @@ async function requireA1(operation) {
   if(image.activation.activeAttempt?.operationRef?.allocationSha256!==currentOperationBindingSha256(operation.binding)
     || image.activation.activeAttempt.originActivationId!==operation.binding.baseActivationId)
     fail('OWNER_MISMATCH','active owner does not bind this operation');
+  assertResumptionObservation(image,operation.owner.slice,operation.binding.documentaryRequest??null,operation.owner.operation);
   return image;
 }
 async function requestInputs(image,operation,dispatchId,round=1,previous=null,terminal=false) {
@@ -428,13 +610,18 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null,te
         'No approved product output paths were present in the captured domain.'}};
     return {request,info,observed,dispatchId,current};
   }
+  // The activation tracks the last operation across all deliveries. Only this
+  // delivery's terminal reference can authenticate its own predecessor proof;
+  // sibling evidence still validates against its complete captured admission.
+  const lastAttempt=image.activation.lastAttempt?.deliveryId===current.deliveryId
+    ?image.activation.lastAttempt:null;
   if(operation.owner.operation==='APPLY_FINDINGS') {
     const snapshotBytes=Buffer.from(image.files.get('approved-preparation.json'));
     const bundleBytes=Buffer.from(image.files.get(current.evidence.path));
     const bundle=parseCurrentJson(bundleBytes.toString('utf8'));
     const facts=await inspectPostConversionEvidence({context:operation.context,snapshotBytes,current,
-      bundleBytes,observedWork:current.baseline,lastAttempt:image.activation.lastAttempt,
-      admissionRef:image.activation.lastAttempt?.operationRef??null});
+      bundleBytes,observedWork:current.baseline,lastAttempt,
+      admissionRef:lastAttempt?.operationRef??null});
     const successor=operation.binding.normalization!==undefined;
     if(facts.formalStatus!=='NEEDS_FIX' || (bundle.validation.id===facts.cycle?.admissionId
       && !(successor && facts.rejection?.origin.operation==='APPLY_FINDINGS'
@@ -462,8 +649,8 @@ async function requestInputs(image,operation,dispatchId,round=1,previous=null,te
     if(bundle.validation?.recordFormat==='stnl-task-record-v2') {
       const facts=await inspectPostConversionEvidence({context:operation.context,
         snapshotBytes:Buffer.from(image.files.get('approved-preparation.json')),current,bundleBytes,
-        observedWork:current.baseline,lastAttempt:image.activation.lastAttempt,
-        admissionRef:image.activation.lastAttempt?.operationRef??null});
+        observedWork:current.baseline,lastAttempt,
+        admissionRef:lastAttempt?.operationRef??null});
       const baselineScope=current.baseline.entries
         .filter(item=>['file','absent'].includes(item.kind)&&output(item.path)).map(item=>item.path);
       const historicalPrior=bundle.validation?.origin?.localRevision<current.localRevision;
@@ -563,6 +750,7 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
   }
   return withExecutionPublicationLock(op.workspace,async()=>{
     const now=await load(handle);
+    if(now.binding.documentaryRequest&&terminal!==now.binding.documentaryRequest.terminal)fail('STALE_APPROVAL','terminal selection differs from the current user request');
     const auxiliary=now.owner.operation!=='VALIDATE_SLICE';
     if(terminal && auxiliary) fail('INVALID_CURRENT_IMAGE','terminal judgment requires VALIDATE_SLICE');
     const previousRound=now.record.runner?.round??0;
@@ -571,7 +759,7 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
     const staleRetry=now.record.runner?.captureClass==='verification-divergence';
     if(staleRetry&&(now.owner.operation!=='EXECUTE_SLICE'||!auxiliary))
       fail('OWNER_UNCERTAIN','stale verification retry is supported only for the same EXECUTE_SLICE owner');
-    if(staleRetry&&previousRound+(now.binding.normalization?.consumedInvocations??0)>=MAX_NATIVE_PRODUCER_TURNS)
+    if(staleRetry&&previousRound+(now.binding.normalization?.consumedInvocations??0)>=invocationLimit(now))
       fail('OWNER_UNCERTAIN','stale verification exhausted the admitted invocation limit');
     const productDrift=now.record.runner?.productDrift??null;
     const coveragePrefix=now.owner.operation==='EXECUTE_SLICE' && previousRound
@@ -582,12 +770,13 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
         || !['TESTS_FAIL',...(productDrift?['TESTS_PASS']:[]),...(coveragePrefix?.testCoverageCorrection||coveragePrefix?.testCoverageClarification?['BLOCKED']:[])].includes(now.record.runner.resultStatus)
         || now.record.runner.resultStatus==='TESTS_PASS'
           && productDrift.sourceRound!==previousRound
-        || previousRound+(now.binding.normalization?.consumedInvocations??0)>=MAX_NATIVE_PRODUCER_TURNS))
+        || previousRound+(now.binding.normalization?.consumedInvocations??0)>=invocationLimit(now)))
       fail('OWNER_UNCERTAIN','dispatch is already reserved, terminal or uncertain');
     const round=auxiliary?previousRound+1:1;
     if(await maybe(path.join(now.root,`round-${round}.origin.json`)))
       fail('OWNER_UNCERTAIN','this round already has an origin');
     const image=await requireA1(now);
+    assertResumptionBudget(image,now.owner.slice,now.owner.operation,{dispatchRound:round});
     const selected=image.inspection.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
     if(!terminal && now.owner.operation==='VALIDATE_SLICE' && selected?.formalStatus==='PASS'
       && selected.observedValidation==='current' && image.inspection.normalHandoff?.operation==='VALIDATE_SLICE'
@@ -752,6 +941,7 @@ export async function bindNative(handle,agentId) {
       if((await readJson(path.join(now.root,`round-${index}.agent.json`))).agentId===agentId && !clarification)
         fail('OWNER_MISMATCH','a fresh native agent is required for each findings round');
     const image=await requireA1(now);
+    await assertInitialStructuralInventory(image,now.owner,(await readJson(path.join(now.root,`round-${round}.baseline.json`))).manifest);
     if(now.binding.normalization && !clarification){
       const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
       const current=continuity.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
@@ -773,6 +963,7 @@ export async function bindNative(handle,agentId) {
 // Only this producer decides local eligibility. The native collector supplies
 // the authenticated concluded turn; the caller reserves cost before admission.
 export async function prepareNativeContinuation(handle,{toolResultFile,binding,firstTurnId,commit=true}) {
+  if((await load(handle)).binding.documentaryRequest)fail('RESUMPTION_ATTEMPT_CONSUMED','a documentary request does not authorize an additional native invocation');
   const op=await load(handle),toolBytes=(await readOwnedFile(toolResultFile)).bytes;
   return withExecutionPublicationLock(op.workspace,async()=>{
     const now=await load(handle),runner=now.record.runner,round=runner?.round;
@@ -883,6 +1074,88 @@ function preflightCorrection(baseline,current,info) {
       fail('EVIDENCE_STALE',`unauthorized correction before recipe: ${name}`);
   }
 }
+function literalAbsence(entries,name) {
+  for(let parent=name;parent!=='.';parent=path.posix.dirname(parent)) {
+    const entry=entries.get(parent);
+    if(entry?.kind==='absent')return true;
+    if(entry&&entry.kind!=='directory')return false;
+  }
+  return false;
+}
+async function verifyInitialStructuralAdditions(image,observation,entries,directories,files) {
+  const metadataIdentity=value=>({dev:String(value.dev),ino:String(value.ino),mode:value.mode&0o777,
+    size:value.size,mtimeMs:value.mtimeMs,ctimeMs:value.ctimeMs});
+  const expected=new Map();
+  const roots=[...directories].filter(name=>![...directories].some(other=>other!==name&&name.startsWith(other+'/')));
+  for(const root of roots) {
+    if(![...files].some(name=>name.startsWith(root+'/')))return false;
+    expected.set(root,'directory');
+    for(const name of files)if(name.startsWith(root+'/')) {
+      expected.set(name,'file');
+      for(let parent=path.posix.dirname(name);parent.startsWith(root+'/');parent=path.posix.dirname(parent))expected.set(parent,'directory');
+    }
+  }
+  if(expected.size>10000)return false;
+  const checkedDirectories=new Map();let total=0;
+  const checkDirectory=async name=>{
+    const absolute=name?path.join(image.context.productRoot,...name.split('/')):image.context.productRoot;
+    const before=await realDirectory(absolute);
+    const bound=name?observation.identities.get(name):observation.rootIdentity;
+    if(!bound||!same(metadataIdentity(before),bound))return false;
+    checkedDirectories.set(absolute,metadataIdentity(before));return true;
+  };
+  for(const root of roots) {
+    if(!await checkDirectory(''))return false;
+    const segments=root.split('/');
+    for(let i=1;i<=segments.length;i++)if(!await checkDirectory(segments.slice(0,i).join('/')))return false;
+  }
+  for(const [name,kind] of expected) {
+    const absolute=path.join(image.context.productRoot,...name.split('/'));
+    if(kind==='directory') {
+      if(!await checkDirectory(name))return false;
+      const children=(await fs.readdir(absolute)).sort(order);
+      const required=[...expected.keys()].filter(child=>path.posix.dirname(child)===name).map(child=>path.posix.basename(child)).sort(order);
+      if(!same(children,required))return false;
+    } else {
+      const before=await fs.lstat(absolute);
+      if(!before.isFile()||before.isSymbolicLink()||before.size>128*1024*1024-total)return false;
+      const captured=await readOwnedFile(absolute);total+=captured.bytes.length;
+      if(total>128*1024*1024||!same(captured.identity,observation.identities.get(name))
+        ||!same({path:name,kind:'file',sha256:sha(captured.bytes),mode:captured.mode},entries.get(name)))return false;
+    }
+  }
+  for(const [absolute,before] of checkedDirectories)
+    if(!same(metadataIdentity(await realDirectory(absolute)),before))return false;
+  return true;
+}
+async function assertInitialStructuralInventory(image,owner,baseline) {
+  if(owner.operation!=='EXECUTE_SLICE')return;
+  const observation=image.observedByDelivery.get(owner.deliveryId);
+  if(!observation)fail('EVIDENCE_INCOMPLETE','selected product observation is absent');
+  const before=new Map(baseline.entries.map(item=>[item.path,item]));
+  const after=new Map(observation.manifest.entries.map(item=>[item.path,item]));
+  for(const [name,entry] of before)if(entry.kind==='directory'&&entry.mode!==undefined
+    &&after.get(name)?.mode!==entry.mode)
+    fail('EVIDENCE_STALE',`output structural directory mode changed before execution: ${name}`);
+  const emptyContext=sha(Buffer.from('stnl-output-external-context-v1\0[]'));
+  for(const [name,entry] of after)if(entry.externalContextSha256!==undefined
+    && entry.externalContextSha256!==(before.get(name)?.externalContextSha256??emptyContext))
+    fail('EVIDENCE_STALE',`external output context changed before execution: ${name}`);
+  for(const [name,entry] of before)if(entry.externalContextSha256!==undefined
+    && after.get(name)?.externalContextSha256===undefined)
+    fail('EVIDENCE_STALE',`external output context omitted before execution: ${name}`);
+  const directories=new Set([...after].filter(([name,item])=>item.kind==='directory'
+    && literalAbsence(before,name)).map(([name])=>name));
+  if(!directories.size)return;
+  const snapshot=parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8'));
+  const delivery=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===owner.deliveryId);
+  const info=verifyWorkObservation('initial-implementation',{context:image.context,delivery,slice:owner.slice});
+  const files=new Set([...after].filter(([name,item])=>item.kind==='file'&&literalAbsence(before,name)
+    && info.areas.some(area=>area.kind==='file'&&area.path===name)
+    && !info.inputs.some(input=>input.path===name)).map(([name])=>name));
+  if(!await verifyInitialStructuralAdditions(image,observation,after,directories,files))
+    fail('EVIDENCE_STALE','new output ancestor contains unproved files or changed physical identities');
+}
 function assertOtherInitialWork(image,origin) {
   if(origin.otherDeliveryWork===undefined && origin.owner.preparationRevision!==1
     && origin.terminalPreparationUtf8===undefined)return;
@@ -918,6 +1191,9 @@ function assertOtherInitialWork(image,origin) {
     const now=new Map(current.entries.map(item=>[item.path,item]));
     for(const name of new Set([...prior.keys(),...now.keys()])) {
       if(same(prior.get(name)??null,now.get(name)??null)) continue;
+      if(other.areas.some(area=>area.kind==='file'&&area.path===name)
+        && ![...other.inputs,...other.refs.filter(ref=>ref.kind==='input')].some(item=>item.path===name)
+        && literalAbsence(prior,name)&&literalAbsence(now,name))continue;
       if(prior.get(name)?.kind==='directory' || now.get(name)?.kind==='directory') continue;
       const selected=selectedInfo.areas.some(area=>area.path===name
         || area.kind==='directory' && name.startsWith(`${area.path}/`));
@@ -1030,6 +1306,7 @@ export async function verifyNative(originFile) {
   const recipe=verifyWorkObservation('initial-implementation',{
     context:op.context,delivery:leaf,slice:op.owner.slice});
   assertOtherInitialWork(image,origin);
+  await assertInitialStructuralInventory(image,op.owner,baseline.manifest);
   if(origin.productDrift && round===origin.productDrift.sourceRound+1) {
     if(!same(origin.productDrift,op.record.runner?.productDrift)
       || currentEvidenceValueSha256(before.manifest)!==origin.productDrift.expectedWorkSha256)
@@ -1044,6 +1321,7 @@ export async function verifyNative(originFile) {
     const current=await requireA1(op);
     if(!same(current.activation,origin.admission.reservedActivation))
       fail('STALE_BASE','native owner or activation changed during recipe');
+    await assertInitialStructuralInventory(current,op.owner,baseline.manifest);
     return current.observedByDelivery.get(op.owner.deliveryId)?.manifest;
   };
   const measuredHead=async()=>{
@@ -1057,6 +1335,8 @@ export async function verifyNative(originFile) {
   let result;
   try { result=await executeRunnerVerification({verification:origin.verification,
     outputFile:path.join(op.root,`round-${round}.verification.json`),observeState,
+    invocationBinding:{owner:op.owner,round,dispatchId:origin.dispatchId,agentId,
+      requestSha256:sha(requestBefore),originSha256:sha((await readOwnedFile(originFile)).bytes)},
     captureChangedState:async()=>workState((await requireA1(op)).observedByDelivery.get(op.owner.deliveryId)),
     startGuard:action=>withExecutionPublicationLock(op.workspace,async()=>{
       const current=await load(op.handle);
@@ -1084,6 +1364,7 @@ export async function verifyNative(originFile) {
   }
   const after=await requireA1(op);
   assertOtherInitialWork(after,origin);
+  await assertInitialStructuralInventory(after,op.owner,baseline.manifest);
   const final=after.observedByDelivery.get(op.owner.deliveryId);
   if(!final)fail('EVIDENCE_INCOMPLETE','product observation is absent after native recipe');
   if(!same(before.manifest,final.manifest)||!same([...before.identities],[...final.identities])) {
@@ -1099,7 +1380,8 @@ export async function verifyNative(originFile) {
   if(headBefore!==head) fail('EVIDENCE_STALE','product Git HEAD changed during native recipe');
   const observation={format:'stnl-runner-verification-v2',status:'completed',owner:op.owner,round,
     recipe:recipe.recipe,
-    resolved:origin.verification,before:before.manifest,after:final.manifest,checks:result.checks};
+    resolved:origin.verification,before:before.manifest,after:final.manifest,checks:result.checks,
+    ...(result.executionContext?{executionContext:result.executionContext}:{})};
   if(origin.responseVariant===NATIVE_JUDGMENT_VARIANT) {
     observation.format='stnl-runner-verification-v3';
     observation.binding={head,requestSha256:origin.requestSha256,dispatchId:origin.dispatchId,agentId};
@@ -1110,7 +1392,43 @@ export async function verifyNative(originFile) {
     if(!same(await readJson(observationFile),observation)) fail('OWNER_UNCERTAIN','native recipe observation differs on replay');
   } else await put(observationFile,observation);
   return {status:'completed',agentId,commands:result.checks.map(item=>({command:verificationCommand(item.request),exit:item.exit})),
-    observationFile,...(correctionFeedback?{correctionFeedback}:{})};
+    observationFile,...(result.format==='stnl-runner-verification-v1'?{replayContext:'legacy-unbound',diagnostic:'Legacy completed verification has no environment/executable fingerprint. Continue only the original same-operation capture with its original observed result, or preserve and diagnose; do not delete output or rerun checks.'}:{}),...(correctionFeedback?{correctionFeedback}:{})};
+}
+
+// Local draft-envelope check BEFORE the agent's first concluded response.
+// It neither captures a response nor grants a second conclusion/continuation.
+export async function validateNativeResponse(originFile,rawText) {
+  const {op,origin,round}=await opFromOrigin(originFile);
+  if(origin.responseVariant!==NATIVE_JUDGMENT_VARIANT)fail('UNSUPPORTED_FORMAT','draft response preflight requires selected native judgment variant');
+  if(op.record.runner?.status!=='running'||await maybe(op.record.runner.responseFile))
+    fail('OWNER_MISMATCH','captured response is immutable; draft preflight is only before first conclusion');
+  if(typeof rawText!=='string'||!rawText||Buffer.byteLength(rawText)>1024*1024)
+    fail('INVALID_ARGUMENTS','bounded raw draft response required');
+  const verificationFile=path.join(op.root,`round-${round}.verification.json`);
+  const observationFile=path.join(op.root,`round-${round}.observation.json`);
+  if(!await maybe(verificationFile)||!await maybe(observationFile))
+    fail('EVIDENCE_INCOMPLETE','complete verify-native before draft response preflight');
+  if((await readJson(verificationFile)).format==='stnl-runner-verification-v1')
+    fail('LEGACY_VERIFICATION_CONTEXT_UNAVAILABLE','Legacy verification has no context fingerprint. This new draft helper is unavailable; preserve the original proof and use the original same-operation verify/capture flow without claiming context-bound replay. Never delete output or rerun checks.');
+  // Existing complete output is replayed, never a new verification execution.
+  const measured=await verifyNative(originFile);
+  const requestBytes=(await readOwnedFile(path.join(op.root,`round-${round}.request.json`))).bytes;
+  const observation=await readJson(observationFile);
+  const projected=projectNativeJudgment({origin,observation,requestBytes,agentId:measured.agentId,
+    rawText,operation:op.owner.operation});
+  let payload;
+  if(op.owner.operation==='VALIDATE_SLICE') {
+    const parsed=parseCurrentValidationResponse(projected);if(parsed.error)throw parsed.error;
+    payload=parsed.payload;
+  } else {
+    const envelope=parseCurrentJson(projected);
+    payload=parseSemanticExecutionPayload(JSON.stringify(op.owner.operation==='EXECUTE_SLICE'?envelope:envelope.result),op.owner.operation);
+  }
+  if(!same(payload.commands,measured.commands))fail('RUNNER_SEMANTIC_RESULT_INVALID','draft commands/exits differ from the completed observation');
+  assertRunnerVerdictConsistency(op.owner.operation,payload.status,payload.commands);
+  for(const [key,value] of Object.entries(payload))if(typeof value==='string'&&hasTemplatePlaceholder(value))
+    fail('RUNNER_SEMANTIC_RESULT_INVALID',`draft ${key} contains an unresolved template marker`);
+  return {status:'valid-envelope',operation:op.owner.operation,responseSha256:sha(Buffer.from(rawText)),captured:false};
 }
 
 async function capturedSources(op,round=1) {
@@ -1229,7 +1547,7 @@ export async function captureNative(handle,toolResultFile,{reviewTriageFile=null
       await persistAllocation(now.marker,now.record);
       return {phase:'captured',status:null,captureClass:'verification-divergence',
         rawResponseSha256:sha(raw),divergenceSha256:sha((await readOwnedFile(divergenceFile)).bytes),
-        nextAction:round+(now.binding.normalization?.consumedInvocations??0)<MAX_NATIVE_PRODUCER_TURNS
+        nextAction:round+(now.binding.normalization?.consumedInvocations??0)<invocationLimit(now)
           ?'reserve-dispatch':'stop-and-diagnose',replayed:false};
     }
     const observation=await readJson(path.join(now.root,`round-${round}.observation.json`));
@@ -1379,7 +1697,7 @@ export async function captureNative(handle,toolResultFile,{reviewTriageFile=null
     if(!parseFailure) now.record.runner.resultStatus=status;
     await persistAllocation(now.marker,now.record);
     if(auxiliary && !parseFailure && !initialRejection && (status==='TESTS_FAIL' || coverageCorrection)
-      && round+(now.binding.normalization?.consumedInvocations??0)<MAX_NATIVE_PRODUCER_TURNS) {
+      && round+(now.binding.normalization?.consumedInvocations??0)<invocationLimit(now)) {
       const info=verifyWorkObservation('initial-implementation',{context:now.context,delivery:request.authority.delivery,slice:now.owner.slice});
       await captureRemovalBefore({root:now.root,context:now.context,owner:now.owner,round:round+1,
         manifest:observation.after,info});
@@ -1395,7 +1713,7 @@ export async function captureNative(handle,toolResultFile,{reviewTriageFile=null
     return {phase:'captured',rawResponseSha256:sha(raw),status,
       nextAction:initialRejection?'publish'
         :initialExecute && parseFailure?'publish':auxiliary && (status==='TESTS_FAIL' || coverageCorrection || coverageClarification)
-        && round+(now.binding.normalization?.consumedInvocations??0)<MAX_NATIVE_PRODUCER_TURNS?'reserve-dispatch'
+        && round+(now.binding.normalization?.consumedInvocations??0)<invocationLimit(now)?'reserve-dispatch'
         :initialExecute && now.owner.preparationRevision===1 && status==='BLOCKED'?'blocked':'publish',
       ...(coverageCorrection?{testCoverageCorrection:coverageCorrection}:{}),
       ...(coverageClarification?{testCoverageClarification:coverageClarification}:{}),captureClass:now.record.runner.captureClass,replayed:false};
@@ -1618,9 +1936,10 @@ async function capturedComposition(op) {
     && op.record.runner?.captureClass==='initial-rejection')
     fail('RUNNER_RESULT_REJECTED','Initial VALIDATE refusal normalization is outside this profile');
   const round=op.record.runner?.round;
+  const resumed=resumptionOf(await requireA1(op))!==null;
   if(op.record.runner?.status!=='captured'
     || auxiliary && op.record.runner.resultStatus==='TESTS_FAIL'
-      && round+(op.binding.normalization?.consumedInvocations??0)<MAX_NATIVE_PRODUCER_TURNS)
+      && !resumed && round+(op.binding.normalization?.consumedInvocations??0)<invocationLimit(op))
     fail('OWNER_UNCERTAIN','native terminal result has not been captured');
   const image=await requireA1(op);
   if(op.owner.operation==='EXECUTE_SLICE' && op.record.runner.resultStatus==='BLOCKED'
@@ -1630,6 +1949,7 @@ async function capturedComposition(op) {
   if(!same(image.activation,origin.admission.reservedActivation))
     fail('STALE_BASE','official A1 differs before composition');
   assertOtherInitialWork(image,origin);
+  await assertInitialStructuralInventory(image,op.owner,(await readJson(path.join(op.root,'round-1.baseline.json'))).manifest);
   const observation=await readJson(path.join(op.root,`round-${round}.observation.json`));
   if(!same(image.observedByDelivery.get(op.owner.deliveryId)?.manifest,observation.after))
     fail('EVIDENCE_STALE','product changed after native capture');
@@ -1643,7 +1963,7 @@ async function capturedComposition(op) {
   let composed;
   try {
     composed=usesCurrentChecks(image,op.owner)
-      ?composeInitialCurrentOperation({...inputs,owner:op.owner,rounds,
+      ?await composeInitialCurrentOperation({...inputs,owner:op.owner,rounds,
         observedByDelivery:image.observedByDelivery})
       :auxiliary?await composePostConversionFindings({...inputs,rounds})
         :await composePostConversionValidation({...inputs,capture:rounds[0]});
@@ -1661,6 +1981,7 @@ async function capturedComposition(op) {
 
 export async function normalize(handle) {
   const op=await load(handle);
+  if(op.binding.documentaryRequest&&!op.record.preparation?.candidateComposition)fail('RESUMPTION_ATTEMPT_CONSUMED','normalization cannot grant another invocation for the current user request');
   if(op.owner.preparationRevision===1 && !op.record.preparation?.candidateComposition)
     fail('NORMALIZATION_NOT_ELIGIBLE','Initial excludes product-drift and rejected-result normalization');
   if(['EXECUTE_SLICE','APPLY_FINDINGS'].includes(op.owner.operation) && op.record.phase==='working'
@@ -1756,11 +2077,12 @@ export async function normalizeSuccessor({specPath,slice,expectedActivationId}) 
 
 export async function publish(handle,{checkpoint=null}={}) {
   const op=await load(handle);
+  const resumed=(await readJson(path.join(op.context.logicalExecutionRoot,'approved-preparation.json'))).resumption!==undefined;
   const auxiliary=op.owner.operation!=='VALIDATE_SLICE';
   const round=op.record.runner?.round;
   if(op.record.runner?.status!=='captured'
     || auxiliary && op.record.runner.resultStatus==='TESTS_FAIL'
-      && round+(op.binding.normalization?.consumedInvocations??0)<MAX_NATIVE_PRODUCER_TURNS)
+      && !resumed && round+(op.binding.normalization?.consumedInvocations??0)<invocationLimit(op))
     fail('OWNER_UNCERTAIN','native terminal result has not been captured');
   if(op.record.phase==='activation_written') {
     const result=await recoverCurrentExecutionOperation({workspace:op.workspace,marker:op.marker,
@@ -1817,6 +2139,7 @@ export async function publish(handle,{checkpoint=null}={}) {
     if(!same(current.observedByDelivery.get(op.owner.deliveryId)?.manifest,observation.after))
       fail('EVIDENCE_STALE','product changed before publication swap');
     assertOtherInitialWork(current,await readJson(path.join(op.root,'round-1.origin.json')));
+    await assertInitialStructuralInventory(current,op.owner,(await readJson(path.join(op.root,'round-1.baseline.json'))).manifest);
   };
   const result=await publishCurrentExecutionOperation({workspace:op.workspace,marker:op.marker,
     binding:op.binding,candidatePath,previousPath,
@@ -1867,7 +2190,7 @@ export async function resume(handle) {
   if(runner?.status==='captured' && op.owner.operation==='EXECUTE_SLICE' && runner.resultStatus==='BLOCKED'
     && runner.captureClass!=='initial-rejection') {
     const prefix=await capturedImplementationPrefix(op),correction=prefix.testCoverageCorrection,clarification=prefix.testCoverageClarification;
-    return {phase:'captured',status:'BLOCKED',nextAction:correction||clarification?'reserve-dispatch':op.owner.preparationRevision===1?'blocked':'publish',
+    return {phase:'captured',status:'BLOCKED',nextAction:correction||clarification?invocationLimit(op)>runner.round?'reserve-dispatch':'stop-and-diagnose':op.owner.preparationRevision===1?'blocked':'publish',
       owner:op.owner,...clarificationSource,...(correction?{testCoverageCorrection:correction}:{}),...(clarification?{testCoverageClarification:clarification}:{}),
       responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes)};
   }
@@ -1875,7 +2198,7 @@ export async function resume(handle) {
     const image=await requireA1(op);
     await checkedStaleDivergence(op,image,runner.round);
     return {phase:'captured',outcome:'verification-stale',nextAction:
-      runner.round+(op.binding.normalization?.consumedInvocations??0)<MAX_NATIVE_PRODUCER_TURNS
+      runner.round+(op.binding.normalization?.consumedInvocations??0)<invocationLimit(op)
         ?'reserve-dispatch':'stop-and-diagnose',owner:op.owner,round:runner.round,
       divergenceSha256:sha((await readOwnedFile(runner.divergenceFile)).bytes)};
   }
@@ -1886,7 +2209,7 @@ export async function resume(handle) {
         && op.record.normalization?.status!=='settled'?'normalize':'publish',owner:op.owner,
     responseSha256:sha((await readOwnedFile(runner.responseFile)).bytes),
     ...(['EXECUTE_SLICE','APPLY_FINDINGS'].includes(op.owner.operation) && runner.resultStatus==='TESTS_FAIL'
-      && runner.round+(op.binding.normalization?.consumedInvocations??0)<MAX_NATIVE_PRODUCER_TURNS
+      && runner.round+(op.binding.normalization?.consumedInvocations??0)<invocationLimit(op)
       ?{nextAction:'reserve-dispatch'}:{}),
     ...(['EXECUTE_SLICE','APPLY_FINDINGS'].includes(op.owner.operation) && runner.productDrift
       && runner.resultStatus==='TESTS_PASS' && runner.round===runner.productDrift.sourceRound
@@ -1899,10 +2222,278 @@ export async function resume(handle) {
 
 export async function inspect(specPath) {return captureCurrentExecution(specPath).then(value=>value.inspection);}
 
+// A requested operation can recover its *current scope* without treating the
+// three control files, Markdown status, or old proof as an approval oracle.
+const resumeControls=['activation.json','approved-preparation.json','continuity.json'];
+function requestedOperation(slice,operation) {
+  if(!/^slice-(?:0[1-9]|[1-9][0-9]+)$/u.test(slice)
+    ||!['EXECUTE_SLICE','VALIDATE_SLICE','APPLY_FINDINGS'].includes(operation))
+    fail('INVALID_ARGUMENTS','documentary resumption requires an exact EXECUTE_SLICE or VALIDATE_SLICE selection');
+}
+async function assertDocumentaryQuiet(context,workspace,ignoreRoot=null,publicationMarker=null) {
+  if(publicationMarker===null)await assertNoPendingExecutionPublication(workspace);
+  const activationFile=path.join(context.logicalExecutionRoot,'activation.json');
+  if(await maybe(activationFile)) {
+    const activation=await readJson(activationFile);
+    // Even an otherwise incomplete activation must never hide a live owner.
+    if(!Object.hasOwn(activation,'activeAttempt')||activation.activeAttempt!==null)
+      fail('OWNER_ACTIVE','activation ownership is active or unknown; preserve it');
+  }
+  const location=await namespaceFor(context,{filesystemContext:workspace.filesystemContext??null});
+  if(publicationMarker!==null) {
+    const record=await readJson(publicationMarker);
+    const activePath=path.join(location.namespace,`.stnl-execution-publication-${record.allocationId}.json`);
+    const archivePath=path.join(record.retentionRoot??'','publication.json');
+    if(record.currentResumption!==true||record.owner!==null||record.executionRoot!==context.logicalExecutionRoot
+      ||publicationMarker!==activePath&&publicationMarker!==archivePath||path.dirname(record.retentionRoot)!==location.namespace)
+      fail('OWNER_MISMATCH','own documentary publication marker does not bind this namespace');
+  }
+  if(location.exists) {
+    if(publicationMarker!==null&&(await fs.readdir(location.namespace)).some(name=>name.startsWith('.stnl-execution-publication-')&&path.join(location.namespace,name)!==publicationMarker))fail('OWNER_ACTIVE','another publication is pending');
+    const registry=await registryAt(location,context.logicalExecutionRoot);
+    if(registry.operations.length)fail('OWNER_ACTIVE','an operation or cleanup remains pending');
+    // No recovery owner is taken over, even after a restart or host change.
+    for(const name of await fs.readdir(location.namespace))if(name.startsWith('documentary-')&&path.join(location.namespace,name)!==ignoreRoot) {
+      const owner=await readJson(path.join(location.namespace,name,'owner.json'));
+      if(owner.phase!=='completed')fail('OWNER_ACTIVE','documentary operation is active or uncertain');
+    }
+  }
+}
+async function documentaryRelocation(context,source) {
+  const files=new Map();for(const entry of source.files)if(entry.type==='file')
+    files.set(entry.path,(await readOwnedFile(path.join(context.logicalExecutionRoot,entry.path))).bytes);
+  const activationBytes=files.get('activation.json');if(!activationBytes)return null;files.delete('activation.json');
+  // This proves only internal integrity and a different recorded location. It
+  // does not make any old check current or authorize takeover of an owner.
+  const checked=validateCurrentImage({activationBytes,files});
+  if(checked.activation.activeAttempt!==null)fail('OWNER_ACTIVE','copied activation still owns an operation');
+  let relocated=null;
+  for(const current of [...checked.continuity.deliveries,...checked.continuity.completed]) {
+    if(!current.evidence)continue;
+    const bundle=parseCurrentJson(Buffer.from(files.get(current.evidence.path)).toString('utf8'));
+    const record=bundle.validation??bundle.findingsChecks.at(-1)??bundle.implementation.at(-1);
+    if(!record)continue;
+    const object=bundle.objects.find(item=>item.id===record.sources.origin);
+    const capsule=parseCurrentJson(Buffer.from(object.bytesBase64,'base64').toString('utf8'));
+    const origin=parseCurrentJson(capsule.originUtf8);
+    if(typeof origin.workspace!=='string'||typeof origin.specPath!=='string'||!path.isAbsolute(origin.workspace)||!path.isAbsolute(origin.specPath))return null;
+    if(origin.workspace===context.productRoot)continue;
+    const relative=path.relative(origin.workspace,origin.specPath);
+    if(relative.startsWith('..')||path.isAbsolute(relative)||relative!==path.relative(context.productRoot,context.logicalAuthorityPath))return null;
+    if(relocated!==null&&relocated!==origin.workspace)return null;
+    relocated=origin.workspace;
+  }
+  return relocated;
+}
+
+async function documentaryScope({specPath,slice,operation}) {
+  requestedOperation(slice,operation);
+  if(operation==='APPLY_FINDINGS')fail('EVIDENCE_INCOMPLETE','missing controls cannot restore findings authority; request a new validation first');
+  const {workspace:resolved,context}=await resolveCurrentExecutionContext(specPath);
+  const workspace=executionWorkspaceFromContext(context,resolved);
+  await assertDocumentaryQuiet(context,workspace);
+  const source=await captureExecutionTree(context.logicalExecutionRoot);
+  if(!source)fail('CURRENT_FORMAT_REQUIRED','documentary resumption requires the existing Plan and Tasks');
+  const artifacts=new Map();
+  for(const entry of source.files)if(entry.type==='file'&&/^(?:plan|tasks)\.md$|^(?:plans|tasks)\/slice-[0-9]{2,}\.md$/u.test(entry.path))
+    artifacts.set(entry.path,(await readOwnedFile(path.join(context.logicalExecutionRoot,entry.path))).bytes);
+  const requirementsAuthority='sha256:'+await computeRequirementsAuthority(specPath);
+  const restored=restoreDocumentaryPreparationArtifacts({context,requirementsAuthority,artifacts});
+  artifacts.clear();for(const [name,bytes] of restored)artifacts.set(name,bytes);
+  const authority=projectDocumentaryPreparation({context,requirementsAuthority,artifacts});
+  const selected=authority.deliveries.find(item=>item.slice===slice);
+  if(!selected)fail('INVALID_ARGUMENTS','requested slice is absent from current documentary scope');
+  const byId=new Map(authority.normativeProjection.deliveries.map(item=>[item.deliveryId,item]));
+  const needed=new Set();
+  function include(id) {if(needed.has(id))return;for(const dep of byId.get(id).dependencies)include(dep);needed.add(id);}
+  include(selected.deliveryId);
+  const deliveries=authority.deliveries.filter(item=>needed.has(item.deliveryId));
+  const scopedAuthority={...authority,deliveries};
+  const preflight=await preflightCurrentPreparationPaths({context,authority:scopedAuthority,artifacts});
+  if(!same(source,await captureExecutionTree(context.logicalExecutionRoot))
+    ||requirementsAuthority!=='sha256:'+await computeRequirementsAuthority(specPath))
+    fail('STALE_BASE','documentary source changed during inspection');
+  const missingControls=resumeControls.filter(name=>!source.files.some(entry=>entry.path===name));
+  const relocatedFrom=missingControls.length?null:await documentaryRelocation(context,source);
+  if(!missingControls.length&&relocatedFrom===null)fail('CURRENT_FORMAT_REQUIRED','an integral local context must use its normal admission');
+  const basis={format:'stnl-documentary-operation-v1',operation,slice,
+    requirementsAuthority,artifactHashes:authority.artifactHashes,
+    sourceFiles:source.files,observations:preflight.observations,
+    historicalBudget:'unknown',historicalProof:'unverified',historicalApproval:'unverified',
+    newAttemptLimit:1,deliveries:deliveries.map(item=>({slice:item.slice,deliveryId:item.deliveryId})),
+    missingControls,...(relocatedFrom===null?{}:{relocatedFrom})};
+  // This hash deliberately excludes physical paths/inodes/hostname. New checks
+  // still fingerprint the actual local executable/environment and product.
+  const decisionSha256=sha(json(basis));
+  return {workspace,context,authority,artifacts,source,basis,decisionSha256};
+}
+export async function inspectRequestedOperation({specPath,slice,operation,requestId=null,terminal=false}) {
+  requestedOperation(slice,operation);
+  const {context}=await resolveCurrentExecutionContext(specPath);
+  const present=await Promise.all(resumeControls.map(name=>maybe(path.join(context.logicalExecutionRoot,name))));
+  if(present.every(Boolean)) {
+    // Integral current state keeps the original strict semantics and results.
+    let current;
+    try {current=await quiet(specPath,slice);}
+    catch(error) {
+      await assertDocumentaryQuiet(context,executionWorkspaceFromContext(context));
+      const source=await captureExecutionTree(context.logicalExecutionRoot);
+      if(source===null||await documentaryRelocation(context,source)===null)throw error;
+      const scope=await documentaryScope({specPath,slice,operation});
+      return {mode:'documentary-resumption',...scope.basis,decisionSha256:scope.decisionSha256,nextAction:'prepare-documentary-resumption',formalStatus:'not-established'};
+    }
+    const provenance=resumptionOf(current);
+    return {mode:'current',inspection:current.inspection,...(provenance&&current.inspection.normalHandoff
+      ?{documentaryRequest:documentaryDecision(current,{requestId:requestId??provenance.decisionSha256,requestedSlice:slice,requestedOperation:operation,terminal})}:{})};
+  }
+  const scope=await documentaryScope({specPath,slice,operation});
+  return {mode:'documentary-resumption',...scope.basis,decisionSha256:scope.decisionSha256,
+    nextAction:'prepare-documentary-resumption',formalStatus:'not-established'};
+}
+// Normalization creates NEW carriers for a new locally reviewed context. The
+// old tree is retained byte-for-byte by publication, never edited in place.
+function resumedCarriers(artifacts) {
+  const result=new Map();
+  const section=(text,name,body)=>text.replace(new RegExp('(^## '+name+'\\r?\\n)[\\s\\S]*?(?=^## |$(?![\\s\\S]))','mu'),'$1\n'+body+'\n\n');
+  for(const [name,bytes] of artifacts) {
+    let text=Buffer.from(bytes).toString('utf8');
+    if(!/^status: ready$/mu.test(text))fail('RESUMPTION_DECISION_REQUIRED','a draft document requires a current scope decision before admission');
+    text=text.replace(/^- Plan revision: .+$/gmu,'- Plan revision: 1').replace(/^- Local revision: .+$/gmu,'- Local revision: 1');
+    if(name==='tasks.md')text=text.split('\n').map(line=>{
+      if(!/^\| \[[ x]\] \|/u.test(line))return line;
+      const cols=line.split('|');cols[1]=' [ ] ';cols[6]=' pending ';cols[7]=' pending ';return cols.join('|');
+    }).join('\n');
+    if(/^tasks\//u.test(name)) {
+      const checklist=/^## Checklist\r?\n([\s\S]*?)(?=^## |$(?![\s\S]))/mu.exec(text);
+      if(!checklist)fail('INVALID_CURRENT_IMAGE','Task checklist missing');
+      text=section(text,'Checklist',checklist[1].trim().replace(/^- \[x\]/gmu,'- [ ]'));
+      text=section(text,'Continuity','- Current validation: unvalidated\n- Current evidence: none\n- Current action: implement approved delivery');
+      for(const name of ['Operational Changes','Scope Expansion','Prior Validation Overlap','Divergences','Delegation Blocker',
+        'Implementation Test Evidence','Findings Test Evidence','Validation Attempts','Validation Findings','Corrections Applied','Effective Validation Base'])
+        text=section(text,name,'- none');
+      for(const name of ['Changed Areas','Diff Summary','Final Result'])text=section(text,name,'- pending');
+    }
+    result.set(name,Buffer.from(text));
+  }
+  return result;
+}
+export async function prepareDocumentaryResumption({specPath,slice,operation,expectedDecisionSha256}) {
+  const scope=await documentaryScope({specPath,slice,operation});
+  if(!scope.basis.missingControls.length&&!scope.basis.relocatedFrom)fail('CURRENT_FORMAT_REQUIRED','the integral controller must retain its normal admission');
+  if(scope.decisionSha256!==expectedDecisionSha256)fail('STALE_APPROVAL','documentary decision differs; inspect current scope');
+  // The first supported ingress keeps every documentary delivery and lets the
+  // existing dependency/serial admission select the first new proof.
+  const artifacts=resumedCarriers(scope.artifacts);
+  const authority=projectInitialPreparation({context:scope.context,requirementsAuthority:scope.basis.requirementsAuthority,artifacts});
+  const location=await namespaceFor(scope.context,{create:true,filesystemContext:scope.workspace.filesystemContext??null});
+  return withExecutionPublicationLock(scope.workspace,async()=>{
+    await assertDocumentaryQuiet(scope.context,scope.workspace);
+    if(!same(scope.source,await captureExecutionTree(scope.context.logicalExecutionRoot)))fail('STALE_BASE','documentary tree changed');
+    const root=await fs.mkdtemp(path.join(location.namespace,'documentary-preparation-'));
+    const candidate=path.join(root,'candidate'),token=randomUUID();await fs.mkdir(candidate,{mode:0o700});
+    const resumption={format:'stnl-documentary-resumption-v1',sourceSha256:sha(json(scope.source.files)),
+      decisionSha256:scope.decisionSha256,operation,slice,historicalBudget:'unknown',historicalProof:'unverified',historicalApproval:'unverified',newAttemptLimit:1};
+    await put(path.join(root,'owner.json'),{format:'stnl-documentary-preparation-v1',phase:'awaiting-review',token,
+      specPath:scope.context.logicalAuthorityPath,source:scope.source,decisionBasis:scope.basis,resumption,artifactHashes:authority.artifactHashes});
+    for(const [name,bytes] of artifacts) {const target=path.join(candidate,name);await fs.mkdir(path.dirname(target),{recursive:true});await writeNew(target,bytes,0o644);}
+    return {status:'AWAITING_CURRENT_REVIEW',candidateExecutionRoot:candidate,authority,resumption,
+      handle:{format:'stnl-documentary-preparation-handle-v1',specPath:scope.context.logicalAuthorityPath,root,token},
+      nextAction:'install-documentary-resumption',historicalApproval:'unverified'};
+  });
+}
+export async function installDocumentaryResumption({handle,review,checkpoint=null}) {
+  if(handle?.format!=='stnl-documentary-preparation-handle-v1')fail('OWNER_MISMATCH','invalid documentary preparation handle');
+  const {workspace:resolved,context}=await resolveCurrentExecutionContext(handle.specPath);
+  const workspace=executionWorkspaceFromContext(context,resolved),location=await namespaceFor(context);
+  if(path.dirname(handle.root)!==location.namespace||!path.basename(handle.root).startsWith('documentary-preparation-'))
+    fail('OWNER_MISMATCH','documentary preparation belongs to another namespace');
+  const ownerFile=path.join(handle.root,'owner.json'),owner=await readJson(ownerFile);
+  if(owner.format!=='stnl-documentary-preparation-v1'||owner.token!==handle.token||owner.specPath!==context.logicalAuthorityPath||owner.phase!=='awaiting-review')
+    fail('OWNER_MISMATCH','documentary preparation is not awaiting this current review');
+  if(owner.resumption.sourceSha256!==sha(json(owner.source.files))||owner.resumption.decisionSha256!==sha(json(owner.decisionBasis))
+    ||!same(owner.source.files,owner.decisionBasis.sourceFiles)||owner.resumption.slice!==owner.decisionBasis.slice||owner.resumption.operation!==owner.decisionBasis.operation)
+    fail('STALE_APPROVAL','new decision is not bound to its retained documentary source');
+  await assertDocumentaryQuiet(context,workspace,handle.root);
+  const candidate=path.join(handle.root,'candidate'),artifacts=new Map();
+  for(const item of owner.artifactHashes) {
+    const bytes=(await readOwnedFile(path.join(candidate,item.path))).bytes;
+    if(sha(bytes)!==item.sha256)fail('STALE_APPROVAL','new documentary carriers changed before review publication');
+    artifacts.set(item.path,bytes);
+  }
+  const requirementsAuthority='sha256:'+await computeRequirementsAuthority(handle.specPath);
+  const approved=approveInitialPreparation({context,requirementsAuthority,artifacts,review});
+  // The caller supplies a real current review. Neither historical JSON nor a
+  // Markdown "approved" label manufactures this decision.
+  approved.snapshot.resumption=owner.resumption;
+  const snapshotBytes=json(approved.snapshot);
+  const prepared=validateCurrentPreparation({context,requirementsAuthority,snapshotBytes,artifacts});
+  const observed=await preflightCurrentPreparationPaths({context,authority:approved.authority,artifacts});
+  const snapshot=approved.snapshot;
+  const continuity={format:'stnl-delivery-continuity-v2',nextSliceOrdinal:Number(snapshot.deliveries.at(-1).slice.slice(6))+1,
+    deliveries:snapshot.deliveries.map((item,index)=>({slice:item.slice,deliveryId:item.deliveryId,localRevision:1,
+      authoritySha256:item.review.authoritySha256,validation:'unvalidated',evidence:null,
+      counters:{implementationChecks:0,findingsChecks:0,validationAttempts:0,findings:0},baseline:observed.observations[index].manifest,
+      normalization:null,lastDiagnostic:null})),completed:[]};
+  const files=new Map([...artifacts,['approved-preparation.json',snapshotBytes],['continuity.json',json(continuity)]]);
+  validateCurrentCandidate({files});
+  for(const name of ['approved-preparation.json','continuity.json']) {
+    const target=path.join(candidate,name);
+    if(await maybe(target)) {if(!(await readOwnedFile(target)).bytes.equals(files.get(name)))fail('STALE_APPROVAL','generated resumed candidate differs');}
+    else await writeNew(target,files.get(name),0o644);
+  }
+  const recheck=async()=>{
+    if(requirementsAuthority!=='sha256:'+await computeRequirementsAuthority(handle.specPath))fail('REQUIREMENTS_CHANGED','requirements changed before resumption');
+    const now=await preflightCurrentPreparationPaths({context,authority:approved.authority,artifacts});
+    if(!same(now.observations,observed.observations))fail('EVIDENCE_STALE','product changed before new local admission');
+  };
+  const publication=await publishExecutionUpdate({workspace,candidateExecutionRoot:candidate,expectedTree:owner.source,
+    expectedActivationId:null,currentResumption:true,checkpoint,
+    readActivated:async()=>{const image=await quiet(handle.specPath);return {activation:image.activation};},
+    authorizeDiff:recheck,
+    assertResumptionQuiet:({marker})=>assertDocumentaryQuiet(context,workspace,handle.root,marker),
+    recheckRequirements:recheck,recheckProducts:recheck,
+    validateCandidate:async stage=>{
+      const tree=await captureExecutionTree(stage);
+      if(tree.files.filter(item=>item.type==='file').length!==files.size)fail('STALE_APPROVAL','resumed candidate layout changed');
+      for(const [name,bytes] of files)if(!(await readOwnedFile(path.join(stage,name))).bytes.equals(bytes))fail('STALE_APPROVAL','resumed candidate changed');
+      return {preparationRevision:1,requirementsAuthority,normativeSha256:snapshot.normativeSha256};
+    }});
+  await persistAllocation(ownerFile,{...owner,phase:'completed',publication});
+  return {...publication,inspection:await inspect(handle.specPath),resumption:owner.resumption,nextAction:'begin'};
+}
+
+export async function recoverDocumentaryResumption({handle,allocation,checkpoint=null}) {
+  if(handle?.format!=='stnl-documentary-preparation-handle-v1')fail('OWNER_MISMATCH','invalid documentary preparation handle');
+  const {workspace:resolved,context}=await resolveCurrentExecutionContext(handle.specPath);
+  const workspace=executionWorkspaceFromContext(context,resolved),location=await namespaceFor(context);
+  if(path.dirname(handle.root)!==location.namespace||!path.basename(handle.root).startsWith('documentary-preparation-'))
+    fail('OWNER_MISMATCH','documentary recovery belongs to another namespace');
+  const ownerFile=path.join(handle.root,'owner.json'),owner=await readJson(ownerFile);
+  let recordPath=allocation;
+  if(!await maybe(recordPath)) {
+    const match=/^\.stnl-execution-publication-([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})\.json$/u.exec(path.basename(recordPath));
+    if(path.dirname(recordPath)!==location.namespace||!match)fail('OWNER_MISMATCH','documentary recovery marker is absent');
+    recordPath=path.join(location.namespace,`.stnl-execution-backup-${match[1]}`,'publication.json');
+  }
+  const record=await readJson(recordPath);
+  if(owner.token!==handle.token||owner.specPath!==context.logicalAuthorityPath||record.candidate!==path.join(handle.root,'candidate')
+    ||!isDeepStrictEqual(record.expectedTree,owner.source))fail('OWNER_MISMATCH','documentary recovery differs from admitted source and candidate');
+  const result=await recoverDocumentaryResumptionPublication({workspace,marker:allocation,checkpoint,
+    readActivated:async()=>{const image=await quiet(handle.specPath);return {activation:image.activation};},
+    validateInstalledActivation:validateCurrentActivation,
+    assertResumptionQuiet:({marker})=>assertDocumentaryQuiet(context,workspace,handle.root,marker)});
+  await persistAllocation(ownerFile,{...owner,phase:'completed',publication:result});
+  return result;
+}
+
 function commandArguments(argv) {
-  const rules={inspect:[['--spec-path'],[]],begin:[['--spec-path','--slice','--expected-activation-id','--operation'],[]],
+  const rules={'inspect-request':[['--spec-path','--slice','--operation'],['--request-id','--terminal']],
+    'prepare-documentary-resumption':[['--spec-path','--slice','--operation','--expected-decision-sha256'],[]],
+    'install-documentary-resumption':[['--handle','--review-file'],[]],
+    'recover-documentary-resumption':[['--handle','--allocation'],[]],inspect:[['--spec-path'],[]],begin:[['--spec-path','--slice','--expected-activation-id','--operation'],['--documentary-request-file']],
     'reserve-dispatch':[['--handle'],['--response-variant','--terminal']],
     'bind-native':[['--handle','--agent-id'],[]],'verify-native':[['--origin-file'],[]],
+    'validate-native-response':[['--origin-file','--response-json'],[]],
     'capture-native':[['--handle','--tool-result-file'],['--review-triage-file']],abort:[['--handle'],['--tool-result-file']],
     publish:[['--handle'],[]],cleanup:[['--handle'],[]],resume:[['--handle'],[]],
     normalize:[[],['--handle','--spec-path','--slice','--expected-activation-id']]};
@@ -1933,13 +2524,18 @@ export async function main(argv=process.argv.slice(2)) {
     const handleFile=flag('--handle');
     const handle=handleFile?await readJson(handleFile):null;
     let result;
-    if(command==='inspect') result=await inspect(flag('--spec-path'));
+    if(command==='inspect-request') result=await inspectRequestedOperation({specPath:flag('--spec-path'),slice:flag('--slice'),operation:flag('--operation'),requestId:flag('--request-id'),terminal:options['--terminal']??false});
+    else if(command==='prepare-documentary-resumption') result=await prepareDocumentaryResumption({specPath:flag('--spec-path'),slice:flag('--slice'),operation:flag('--operation'),expectedDecisionSha256:flag('--expected-decision-sha256')});
+    else if(command==='recover-documentary-resumption') result=await recoverDocumentaryResumption({handle,allocation:flag('--allocation')});
+    else if(command==='install-documentary-resumption') result=await installDocumentaryResumption({handle,review:await readJson(flag('--review-file'))});
+    else if(command==='inspect') result=await inspect(flag('--spec-path'));
     else if(command==='begin') result=await begin({specPath:flag('--spec-path'),
-      slice:flag('--slice'),expectedActivationId:flag('--expected-activation-id'),operation:flag('--operation')});
+      slice:flag('--slice'),expectedActivationId:flag('--expected-activation-id'),operation:flag('--operation'),documentaryRequest:flag('--documentary-request-file')?await readJson(flag('--documentary-request-file')):null});
     else if(command==='reserve-dispatch') result=await reserveDispatch(handle,
       {responseVariant:flag('--response-variant'),terminal:options['--terminal']??false});
     else if(command==='bind-native') result=await bindNative(handle,flag('--agent-id'));
     else if(command==='verify-native') result=await verifyNative(flag('--origin-file'));
+    else if(command==='validate-native-response') result=await validateNativeResponse(flag('--origin-file'),flag('--response-json'));
     else if(command==='capture-native') result=await captureNative(handle,flag('--tool-result-file'),{reviewTriageFile:flag('--review-triage-file')});
     else if(command==='normalize' && handle) result=await normalize(handle);
     else if(command==='normalize') result=await normalizeSuccessor({specPath:flag('--spec-path'),
@@ -1948,7 +2544,7 @@ export async function main(argv=process.argv.slice(2)) {
     else if(command==='abort') result=await abort(handle,flag('--tool-result-file'));
     else if(command==='cleanup') result=await cleanup(handle);
     else if(command==='resume') result=await resume(handle);
-    else {process.stderr.write('Usage: execution-current-operation.mjs inspect|begin|reserve-dispatch|bind-native|verify-native|capture-native|normalize|publish|abort|cleanup|resume ...\n');return 2;}
+    else {process.stderr.write('Usage: execution-current-operation.mjs inspect|begin|reserve-dispatch|bind-native|verify-native|validate-native-response|capture-native|normalize|publish|abort|cleanup|resume ...\n');return 2;}
     process.stdout.write(JSON.stringify(result)+'\n');return 0;
   } catch(error) {
     process.stdout.write(JSON.stringify({code:error.code??'CURRENT_OPERATION_BLOCKED',reason:error.message})+'\n');

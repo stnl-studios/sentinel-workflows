@@ -3,11 +3,13 @@
   "private": true,
   "scripts": {
     "test": "node scripts/run-tests.mjs",
+    "test:runtime-context-budget": "node scripts/test-runtime-context-budget.mjs",
     "sentinel:install": "node scripts/sentinel-install.mjs",
     "benchmark": "node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs --functional",
     "benchmark:campaign": "node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs",
     "benchmark:verify": "node benchmarks/sentinel-todo/runtime/benchmark.mjs verify",
-    "benchmark:status": "node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status"
+    "benchmark:status": "node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status",
+    "verify:sqlserver-native": "node scripts/verify-native-sqlserver.mjs"
   },
   "devDependencies": {
     "ajv": "https://registry.npmjs.org/ajv/-/ajv-8.17.1.tgz"

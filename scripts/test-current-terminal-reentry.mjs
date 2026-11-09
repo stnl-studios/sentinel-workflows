@@ -1,3 +1,4 @@
+import {publishPreparationCandidate} from './fixtures/synthetic-preparation-approval.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,14 +8,14 @@ import {completedNativeCase,reopeningInput} from './fixtures/current-completed-n
 import {retireActive} from './fixtures/current-reader-campaign.mjs';
 import {prepareCurrentSetReplacement,finalizeCurrentSetReplacement} from '../skills/workflows/stnl-execution-planner/runtime/execution-preparation-current.mjs';
 import {captureCurrentExecution,validateCurrentReviewCandidate} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
-import {retainedQ20TerminalReplacement} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current.mjs';
+import {retainedQ20TerminalReplacement,validateCurrentCandidate} from '../skills/workflows/stnl-slice-quality-manager/runtime/execution-current.mjs';
 import {preparePreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
 import {currentImage} from './fixtures/current-native-seed.mjs';
 import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {promisify} from 'node:util';
-import {publishPreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
+
 import {preparePlanCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs';
 import {serializePlanPathClaims} from '../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs';
 import {begin,reserveDispatch} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
@@ -79,7 +80,7 @@ test('Q20 public admission refuses an already current integral certificate befor
     error=>error.code==='REPLAN_REQUIRED');
 });
 
-test('Q20 retained native v2 implementation binding accepts exact predecessor and rejects altered authority',async t=>{
+async function retainedImplementationCase(t) {
   const f=await emptyFixture(t),input=reopeningInput(f.source,f.delivery.deliveryId,{terminalValidation:true});
   const draft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',
     completedDeliveryIds:input.completedDeliveryIds,terminalValidation:true});
@@ -127,6 +128,11 @@ test('Q20 retained native v2 implementation binding accepts exact predecessor an
     return {current,decision,bundle,record,approvedDelivery:approved.deliveries[0],leaf:approved.normativeProjection.deliveries[0],
       global:approved.normativeProjection.global,snapshot:approved,files:new Map([['approved-preparation.json',Buffer.from(JSON.stringify(approved)+'\n')]])};
   };
+  return {makeCase,complete};
+}
+
+test('Q20 retained native v2 implementation binding accepts exact predecessor and rejects altered authority',async t=>{
+  const {makeCase}=await retainedImplementationCase(t);
   const accepted=makeCase();assert.equal(retainedQ20TerminalReplacement(accepted),true);
   const rejected=mutate=>{const sample=makeCase();mutate(sample);assert.equal(retainedQ20TerminalReplacement(sample),false);};
   rejected(sample=>{sample.decision.evidenceSha256='sha256:'+'0'.repeat(64);});
@@ -140,6 +146,47 @@ test('Q20 retained native v2 implementation binding accepts exact predecessor an
   rejected(sample=>{sample.record.contract.delivery.taskResult='altered contract';});
   rejected(sample=>{sample.bundle.implementation[0].origin.operationAttemptId=sample.record.origin.operationAttemptId;});
   rejected(sample=>{sample.bundle.implementation[0].contract.recipe.dependencyReview='altered evidence contract';});
+});
+
+// Q18 re-prepares the delivery before the Q20 terminal reentry. A concluded native EXECUTE refusal of the
+// earlier preparation stays in support and must not block the retained terminal replacement during CLOSE.
+const withExecutionRefusal=(sample,mutate=()=>{})=>{
+  const implementation=sample.bundle.implementation[0],origin=structuredClone(implementation.origin);
+  origin.operationAttemptId=`2b222222-2222-4222-8222-${String(sample.bundle.support.length).padStart(12,'2')}`;
+  const refusal={kind:'rejection',operationAttemptId:origin.operationAttemptId,origin,
+    diagnostic:'Concluded malformed EXECUTE response retained before Q18.',consumedInvocations:1,round:1,
+    sources:{...structuredClone(implementation.sources),verificationObservation:null}};
+  mutate(refusal);sample.bundle.support.push(refusal);return sample;
+};
+test('Q20 retained replacement admits a superseded native EXECUTE refusal and nothing broader',async t=>{
+  const {makeCase,complete}=await retainedImplementationCase(t);
+  assert.equal(retainedQ20TerminalReplacement(withExecutionRefusal(makeCase())),true);
+  const rejected=mutate=>assert.equal(retainedQ20TerminalReplacement(withExecutionRefusal(makeCase(),mutate)),false);
+  rejected(item=>{item.origin.operation='VALIDATE_SLICE';});
+  rejected(item=>{item.origin.transport='legacy';});
+  rejected(item=>{item.origin.preparationRevision+=1;});
+  rejected(item=>{item.origin.localRevision+=1;});
+  rejected(item=>{item.origin.slice='slice-99';});
+  rejected(item=>{item.origin.deliveryId='00000000-0000-4000-8000-000000000000';});
+  const tooMany=withExecutionRefusal(makeCase());
+  for(let index=2;index<=6;index+=1)withExecutionRefusal(tooMany);
+  assert.equal(retainedQ20TerminalReplacement(tooMany),false);
+
+  // The candidate reader reaches the same bundle through replacementFor: its support gate must agree.
+  const candidate=sample=>{
+    const files=new Map([...complete.files].map(([name,bytes])=>[name,Buffer.from(bytes)]));
+    const continuity=decode(files.get('continuity.json'));
+    const bundleBytes=Buffer.from(JSON.stringify(sample.bundle)+'\n');
+    sample.current.evidence.sha256=`sha256:${createHash('sha256').update(bundleBytes).digest('hex')}`;
+    continuity.deliveries[0]=sample.current;
+    files.set(sample.current.evidence.path,bundleBytes);
+    files.set('continuity.json',Buffer.from(JSON.stringify(continuity)+'\n'));
+    files.set('approved-preparation.json',Buffer.from(JSON.stringify(sample.snapshot)+'\n'));
+    return {files};
+  };
+  validateCurrentCandidate(candidate(makeCase()));
+  validateCurrentCandidate(candidate(withExecutionRefusal(makeCase())));
+  assert.throws(()=>validateCurrentCandidate(candidate(withExecutionRefusal(makeCase(),item=>{item.origin.localRevision+=1;}))));
 });
 
 for(const {single=false,independent=true}of [{},{single:true},{independent:false}])
@@ -172,7 +219,26 @@ for(const {single=false,independent=true}of [{},{single:true},{independent:false
   assert.deepEqual(current.counters,old.completed.find(item=>item.deliveryId===current.deliveryId).counters);
   assert.equal(reopened.inspection.state,'IMPLEMENTED_AWAITING_VALIDATION');assert.equal(reopened.inspection.deliveries[0].formalStatus,'PASS');
   assert.ok(reopened.inspection.diagnostics.some(item=>item.field==='terminal'));
-  assert.equal(reopened.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  assert.deepEqual(reopened.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:current.slice,deliveryId:current.deliveryId});
+  if(single) {
+    assert.equal(reopened.inspection.deliveries[0].observedValidation,'current');
+    assert.deepEqual(reopened.inspection.diagnostics,[{kind:'evidence',artifact:'continuity.json',field:'terminal',
+      reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]);
+    const product=path.join(f.root,'src/greeting.mjs'),productBytes=await fs.readFile(product);
+    await fs.appendFile(product,'// unvalidated sole-owner drift\n');
+    const drifted=await captureCurrentExecution(f.specPath);
+    assert.equal(drifted.inspection.state,'EVIDENCE_STALE');
+    assert.equal(drifted.inspection.deliveries[0].observedValidation,'revalidation-required');
+    assert.deepEqual(drifted.inspection.normalHandoff,reopened.inspection.normalHandoff);
+    await fs.writeFile(product,productBytes);
+    const evidence=path.join(f.image.f.execution,current.evidence.path),evidenceBytes=await fs.readFile(evidence);
+    await fs.writeFile(evidence,'{}\n');
+    await assert.rejects(()=>captureCurrentExecution(f.specPath));
+    await fs.writeFile(evidence,evidenceBytes);
+    const restored=await captureCurrentExecution(f.specPath);
+    assert.deepEqual(restored.inspection,reopened.inspection);
+    assert.deepEqual(restored.activationBytes,reopened.activationBytes);
+  }
   // Controlled response below is a mechanical protocol proof, never live model acceptance.
   await normalizedFormal({...f,delivery:current},{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
   const complete=await captureCurrentExecution(f.specPath),after=decode(complete.files.get('continuity.json')).deliveries[0];

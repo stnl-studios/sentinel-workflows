@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
+import {hasTemplatePlaceholder} from './runner-result-contract.mjs';
 import path from 'node:path';
 import { parseCurrentJson, logicalArtifactPath, resolveLogicalProductClaim, validateCurrentContinuity,
-  validateCurrentEvidence,validateCurrentImage,validateCurrentCandidate } from './execution-current.mjs';
+  validateCurrentEvidence,validateCurrentImage,validateCurrentCandidate,validateDocumentaryResumption } from './execution-current.mjs';
 import {composeRetainedValidationCarriers,retainOperationalSupport,replaceCurrentCarrierSection,replaceCurrentTaskIndexStatus} from './current-evidence-state.mjs';
 
 const HASH = /^sha256:[a-f0-9]{64}$/u;
@@ -79,7 +80,7 @@ function slice(value, label) {
 }
 function populated(value, label) {
   string(value, label);
-  if (/<[^>]*>|\b(?:TODO|TBD)\b/u.test(value)) invalid(`${label}: placeholder`);
+  if (hasTemplatePlaceholder(value) || /\b(?:TODO|TBD)\b/u.test(value)) invalid(`${label}: placeholder`);
   return value;
 }
 const normalized = value => value.replaceAll('\r\n', '\n').trim();
@@ -582,6 +583,87 @@ function approvePreparation(value, currentRevision = false) {
 }
 export function approveInitialPreparation(value) { return approvePreparation(value); }
 export function projectCurrentPreparation(value) { return project(value, false, true).authority; }
+// Documentary resumption parses authority, never approval or historical PASS.
+// Carrier counters/checkmarks remain text and are not projected as evidence.
+// Rebuild only the disposable serial index from the durable Plan/Task pairs.
+// Older completed pairs can carry their original revision. These transient
+// carriers are submitted to a NEW review; the source files stay literal.
+export function restoreDocumentaryPreparationArtifacts(value) {
+  const artifacts=input(value,false),planBytes=artifacts.get('plan.md'),taskBytes=artifacts.get('tasks.md');
+  if(!planBytes||!taskBytes)invalid('documentary resumption requires global Plan and Tasks');
+  const plan=carrier(decode(planBytes,'plan.md'),'plan.md','Execution Plan',PLAN_SECTIONS);
+  carrier(decode(taskBytes,'tasks.md'),'tasks.md','Execution Tasks');
+  const originalRows=table(plan.sections['Serial Slice Order'],PLAN_TABLE,'documentary Plan index',true);
+  const originalTasks=table(carrier(decode(taskBytes,'tasks.md'),'tasks.md','Execution Tasks').body,TASK_TABLE,'documentary Task index',true);
+  const globalRevision=Number(/^- Plan revision: ([0-9]+)$/mu.exec(plan.sections['Global Context'])?.[1]);
+  const pairs=[];
+  for(const [name,bytes] of artifacts) {
+    const found=/^plans\/(slice-([0-9]{2,}))\.md$/u.exec(name);if(!found)continue;
+    const text=decode(bytes,name),title=/^# Slice ([0-9]{2,}) - (.+)$/mu.exec(text);
+    if(!title||title[1]!==found[2])invalid('retained detailed Plan title differs');
+    const taskName=`tasks/${found[1]}.md`,task=artifacts.get(taskName);
+    if(!task)invalid(`${found[1]}: detailed Task is missing`);
+    const detail=carrier(text,name,`Slice ${found[2]} - ${title[2]}`,DETAIL_SECTIONS);
+    const taskCarrier=carrier(decode(task,taskName),taskName,`Slice ${found[2]} Tasks - ${title[2]}`,TASK_SECTIONS,true);
+    const id=/^- Delivery ID: (.+)$/mu.exec(detail.sections.References)?.[1];uuid(id,'retained delivery identity');
+    const deps=detail.sections.Dependencies==='- none'?[]:lines(detail.sections.Dependencies,name).map(line=>{
+      const parsed=/^- (slice-[0-9]{2,})$/u.exec(line);if(!parsed)invalid('retained dependency differs');return parsed[1];});
+    const req=[...new Set(obligations(taskCarrier.sections['Acceptance Obligations'],taskName).map(item=>item.requirement))];
+    const areas=lines(detail.sections['Authorized Areas'],name).map(line=>{
+      const parsed=/^- (file|directory): `([^`]+)`$/u.exec(line);if(!parsed)invalid('retained area differs');
+      return `${parsed[1]}: \`${path.posix.normalize(path.posix.join('plans',parsed[2]))}\``;
+    }).join('; ');
+    const detailRevision=Number(/^- Plan revision: ([0-9]+)$/mu.exec(detail.sections.References)?.[1]);
+    const taskRevision=Number(/^- Plan revision: ([0-9]+)$/mu.exec(taskCarrier.sections.References)?.[1]);
+    const existing=originalRows.find(row=>serial(row[0],'documentary index').slice===found[1]);
+    if(!Number.isSafeInteger(detailRevision)||detailRevision<1||detailRevision!==taskRevision||detailRevision>globalRevision
+      ||existing&&detailRevision!==globalRevision)invalid('documentary revision disagreement requires a current decision');
+    if(existing&&!same(existing,[`${found[2]} - ${title[2]}`,taskCarrier.sections.Result,deps.join(', ')||'-',req.join(', '),areas,name]))
+      invalid('documentary global and detailed Plan disagree');
+    const existingTask=originalTasks.find(row=>serial(row[1],'documentary Task index').slice===found[1]);
+    if(existingTask&&!same(existingTask.slice(1,5),[`${found[2]} - ${title[2]}`,taskCarrier.sections.Result,deps.join(', ')||'-',taskName]))
+      invalid('documentary global and detailed Task disagree');
+    pairs.push({slice:found[1],number:found[2],name:title[2],id,deps,req,areas,result:taskCarrier.sections.Result});
+  }
+  const priorPlan=originalRows.map(row=>serial(row[0],'documentary Plan index').slice),priorTask=originalTasks.map(row=>serial(row[1],'documentary Task index').slice);
+  if(new Set(priorPlan).size!==priorPlan.length||!same(priorPlan,priorTask)||priorPlan.some(selector=>!pairs.some(item=>item.slice===selector)))
+    invalid('documentary indexes disagree or reference a missing Plan/Task pair');
+  pairs.sort((a,b)=>Number(a.number)-Number(b.number));
+  const expected=new Set(['plan.md','tasks.md',...pairs.flatMap(item=>[`plans/${item.slice}.md`,`tasks/${item.slice}.md`])]);
+  if(!pairs.length||artifacts.size!==expected.size||[...artifacts.keys()].some(name=>!expected.has(name)))invalid('documentary Plan/Task pair inventory differs');
+  const byId=new Map(pairs.map(item=>[item.id,item.slice]));
+  if(byId.size!==pairs.length)invalid('duplicate retained delivery identity');
+  const serialTable=[...PLAN_TABLE,...pairs.map(item=>`| ${item.number} - ${item.name} | ${item.result} | ${item.deps.join(', ')||'-'} | ${item.req.join(', ')} | ${item.areas} | plans/${item.slice}.md |`)].join('\n');
+  const index=[...TASK_TABLE,...pairs.map(item=>`| [ ] | ${item.number} - ${item.name} | ${item.result} | ${item.deps.join(', ')||'-'} | tasks/${item.slice}.md | unvalidated | pending |`)].join('\n');
+  const replaceSection=replaceCurrentCarrierSection;
+  const restored=new Map();
+  for(const [name,bytes] of artifacts) {
+    let text=decode(bytes,name).replace(/^- Plan revision: .+$/gmu,'- Plan revision: 1');
+    if(name==='plan.md')text=replaceSection(text,'Serial Slice Order',serialTable);
+    else if(name==='tasks.md') {
+      const current=carrier(text,name,'Execution Tasks');
+      text=text.slice(0,text.indexOf(current.body))+index+'\n';
+    } else if(name.startsWith('tasks/')) {
+      text=text.replace(/\| full owner: delivery:([a-f0-9-]+) \|/gu,(_,id)=>{
+        const owner=byId.get(id);if(!owner)invalid('retained integral owner has no documentary pair');return `| full owner: ${owner} |`;
+      });
+    }
+    restored.set(name,Buffer.from(text));
+  }
+  return restored;
+}
+
+export function projectDocumentaryPreparation(value) {
+  const artifacts=input(value,false),revisions=new Map(),retainedPass=new Set();
+  for(const [name,bytes] of artifacts) {
+    const found=/^plans\/(slice-[0-9]{2,})\.md$/u.exec(name);
+    if(!found)continue;
+    const document=decode(bytes,name),revision=/^- Local revision: ([1-9][0-9]*)$/mu.exec(document);
+    if(!revision)invalid(name+': missing local revision');
+    revisions.set(found[1],Number(revision[1]));retainedPass.add(found[1]);
+  }
+  return project(value,false,true,{revisions,retainedPass}).authority;
+}
 export function approveCurrentPreparation(value) { return approvePreparation(value, true); }
 
 export function validateInitialApprovedPreparation(value) {
@@ -595,7 +677,8 @@ export function validateInitialApprovedPreparation(value) {
   if (snapshot.format === 'stnl-preparation-v2') fail('UNSUPPORTED_FORMAT', 'approved-preparation.json: legacy format');
   if (snapshot.format !== 'stnl-preparation-v3') fail('UNSUPPORTED_FORMAT', 'approved-preparation.json: unsupported format');
   exact(snapshot, ['format', 'preparationRevision', 'requirementsAuthority', 'normativeSha256', 'normativeProjection',
-    'globalReview', 'deliveries', 'completed', 'reviewedArtifacts'], 'approved-preparation.json');
+    'globalReview', 'deliveries', 'completed', 'reviewedArtifacts', ...(snapshot.resumption===undefined?[]:['resumption'])], 'approved-preparation.json');
+  if(snapshot.resumption!==undefined)validateDocumentaryResumption(snapshot.resumption);
   if (snapshot.preparationRevision !== 1 || array(snapshot.completed, 'snapshot completed').length !== 0) invalid('approved-preparation.json: not initial');
   array(snapshot.reviewedArtifacts, 'reviewedArtifacts');
   const artifacts = new Map();
@@ -617,6 +700,7 @@ export function validateInitialApprovedPreparation(value) {
         if (item.localRevision !== 1) invalid('snapshot delivery: not initial');
         return {deliveryId: item.deliveryId, review: item.review};
       })}});
+  if(snapshot.resumption!==undefined)rebuilt.snapshot.resumption=snapshot.resumption;
   if (!same(snapshot, rebuilt.snapshot)) invalid('approved-preparation.json: projection or binding differs');
   return {authority: rebuilt.authority, snapshot: rebuilt.snapshot, bytes, sha256: raw(bytes)};
 }
@@ -629,7 +713,8 @@ export function validateReviewedPreparation(value) {
     : invalid('snapshot bytes required'));
   const snapshot = parseCurrentJson(decode(bytes, 'approved-preparation.json'));
   exact(snapshot, ['format', 'preparationRevision', 'requirementsAuthority', 'normativeSha256', 'normativeProjection',
-    'globalReview', 'deliveries', 'completed', 'reviewedArtifacts'], 'currentRevision snapshot');
+    'globalReview', 'deliveries', 'completed', 'reviewedArtifacts', ...(snapshot.resumption===undefined?[]:['resumption'])], 'currentRevision snapshot');
+  if(snapshot.resumption!==undefined)validateDocumentaryResumption(snapshot.resumption);
   if (snapshot.format !== 'stnl-preparation-v3' || !Number.isSafeInteger(snapshot.preparationRevision)
     || snapshot.preparationRevision < 1 || array(snapshot.completed, 'snapshot completed').length)
     invalid('currentRevision snapshot: format, revision or completed differs');
@@ -657,6 +742,7 @@ export function validateReviewedPreparation(value) {
         if (item.localRevision !== 1) invalid('snapshot delivery: invalid local revision');
         return {deliveryId:item.deliveryId,review:item.review};
       })}});
+  if(snapshot.resumption!==undefined){rebuilt.snapshot.resumption=snapshot.resumption;rebuilt.bytes=Buffer.from(canonical(rebuilt.snapshot)+'\n');}
   if (!same(snapshot, rebuilt.snapshot) || !bytes.equals(rebuilt.bytes))
     invalid('currentRevision snapshot: projection, review or bytes differ');
   return {authority:rebuilt.authority,snapshot:rebuilt.snapshot,bytes,sha256:raw(bytes)};
@@ -855,7 +941,8 @@ function validateConvertedSnapshotIntrinsic({context,requirementsAuthority,snaps
   const bytes=Buffer.from(snapshotBytes instanceof Uint8Array ? snapshotBytes : invalid('snapshot bytes required'));
   const snapshot=parseCurrentJson(decode(bytes,'approved-preparation.json'));
   exact(snapshot,['format','preparationRevision','requirementsAuthority','normativeSha256','normativeProjection',
-    'globalReview','deliveries','completed','reviewedArtifacts'],'converted snapshot');
+    'globalReview','deliveries','completed','reviewedArtifacts',...(snapshot.resumption===undefined?[]:['resumption'])],'converted snapshot');
+  if(snapshot.resumption!==undefined)validateDocumentaryResumption(snapshot.resumption);
   const completed=array(snapshot.completed,'snapshot completed');
   if(snapshot.format!=='stnl-preparation-v3' || !Number.isSafeInteger(snapshot.preparationRevision)
     || snapshot.preparationRevision<1 || completed.length && (!allowCompleted || snapshot.preparationRevision<2)
@@ -1014,7 +1101,7 @@ function assertPrivateLocalDelta({context,slice,original,revised,siblings}) {
   }
 }
 
-function composeCurrentLocalReviewEvidence({files,updatedFiles,next,taskName,currentTaskBytes,indexBytes}) {
+function composeCurrentLocalReviewEvidence({files,updatedFiles,next,taskName,currentTaskBytes,indexBytes,preserveHistory=false,context=null,priorBundles=[]}) {
   const slice=next.slice;
   let evidenceDecision=[];
   if(next.evidence) {
@@ -1031,9 +1118,9 @@ function composeCurrentLocalReviewEvidence({files,updatedFiles,next,taskName,cur
       || ['stnl-current-validation-request-v1','stnl-current-validation-request-v2'].includes(formalRequest?.format);
     // Semantic selection may compact a closed refusal. Operational roots are
     // restored below while their controller-owned captures still need retirement.
-    if(bundle.openFindings.length===0&&bundle.validation?.recordFormat==='stnl-task-record-v2')
+    if(!preserveHistory&&bundle.openFindings.length===0&&bundle.validation?.recordFormat==='stnl-task-record-v2')
       bundle.support=bundle.support.filter(item=>item.kind!=='rejection'||item.origin.operation!=='VALIDATE_SLICE');
-    if(currentChecks&&formalRequest?.format==='stnl-current-validation-request-v2'
+    if(!preserveHistory&&currentChecks&&formalRequest?.format==='stnl-current-validation-request-v2'
       &&bundle.findingsChecks.length>0&&bundle.openFindings.length===0) {
       const check=bundle.findingsChecks[0];
       const source=bundle.objects.find(item=>item.id===check.sources[check.sources.transport==='native'?'origin':'started']);
@@ -1043,7 +1130,7 @@ function composeCurrentLocalReviewEvidence({files,updatedFiles,next,taskName,cur
         ...request.base.openFindings.map(item=>item.originAttempt)]);
       bundle.support=bundle.support.filter(item=>item.kind!=='validation'||roots.has(item.id));
     }
-    if((currentChecks||bundle.validation?.recordFormat==='stnl-task-record-v2')
+    if(!preserveHistory&&(currentChecks||bundle.validation?.recordFormat==='stnl-task-record-v2')
       &&bundle.findingsChecks.length===0&&bundle.openFindings.length===0) {
       const roots=new Set();
       for(const check of bundle.support.filter(item=>item.kind==='findings-check')) {
@@ -1062,13 +1149,20 @@ function composeCurrentLocalReviewEvidence({files,updatedFiles,next,taskName,cur
       [...bundle.implementation,...bundle.findingsChecks,bundle.validation].filter(Boolean));
     const ids=new Set([...bundle.implementation,...bundle.findingsChecks,...bundle.support,bundle.validation].filter(Boolean)
       .flatMap(item=>Object.values(item.sources).flat()).filter(item=>typeof item==='string'&&HASH.test(item)));
-    bundle.objects=bundle.objects.filter(item=>ids.has(item.id));
+    if(!preserveHistory)bundle.objects=bundle.objects.filter(item=>ids.has(item.id));
     const bytes=Buffer.from(canonical(bundle)+'\n','utf8');
     updatedFiles.set(next.evidence.path,bytes);
     next.evidence.sha256=raw(bytes);
     evidenceDecision=[{deliveryId:next.deliveryId,evidenceSha256:next.evidence.sha256,
       disposition:'revalidate',reason:''}];
-    const carriers=composeCurrentLocalReviewCarriers({task:Buffer.from(currentTaskBytes).toString('utf8'),
+    let carriers;
+    if(preserveHistory) {
+      const historical=composeRetainedValidationCarriers({context,current:next,bundleBytes:bytes,
+        taskBytes:currentTaskBytes,indexBytes,priorBundles});
+      carriers=composeCurrentLocalReviewCarriers({task:historical.task.toString('utf8'),index:historical.index.toString('utf8'),
+        slice,evidenceSha256:currentChecks?next.evidence.path:next.evidence.sha256,
+        validationRecords:[...bundle.support.filter(item=>item.kind==='validation'),bundle.validation].filter(Boolean)});
+    } else carriers=composeCurrentLocalReviewCarriers({task:Buffer.from(currentTaskBytes).toString('utf8'),
       index:Buffer.from(indexBytes).toString('utf8'),slice,evidenceSha256:currentChecks?next.evidence.path:next.evidence.sha256,
       validationRecords:currentChecks||bundle.validation?.recordFormat==='stnl-task-record-v2'?[...bundle.support.filter(item=>item.kind==='validation'),bundle.validation].filter(Boolean):null});
     updatedFiles.set(taskName,carriers.task);
@@ -1181,9 +1275,11 @@ export function finalizeCurrentLocalReview({proposal,review:decision}) {
 // capture and the full semantic reader gate. No admission or publication here.
 export function prepareCurrentSetReplacement(value) {
   exact(value,['context','requirementsAuthority','previous','artifacts','completedDeliveryIds',
-    ...(Object.hasOwn(value??{},'terminalValidation')?['terminalValidation']:[])],
+    ...(Object.hasOwn(value??{},'terminalValidation')?['terminalValidation']:[]),
+    ...(Object.hasOwn(value??{},'revalidateCompletedIds')?['revalidateCompletedIds']:[])],
     'set replacement input');
   const terminalValidation=Object.hasOwn(value,'terminalValidation')?value.terminalValidation:false;
+  const revalidateCompletedIds=value.revalidateCompletedIds??null;
   if(typeof terminalValidation!=='boolean')invalid('terminal validation selection must be boolean');
   const {context,requirementsAuthority,previous}=value;
   hash(requirementsAuthority,'set replacement requirements authority');
@@ -1203,7 +1299,14 @@ export function prepareCurrentSetReplacement(value) {
   if(ids.some(id=>!ordered.some(item=>item.deliveryId===id)))invalid('completed selection has a foreign identity');
   const completedIds=new Set(ids),active=ordered.filter(item=>!completedIds.has(item.deliveryId));
   const retiring=continuity.deliveries.length>0&&active.length===0;
-  const reopening=continuity.deliveries.length===0&&active.length===1&&(ids.length>0||terminalValidation);
+  const revalidation=revalidateCompletedIds!==null;
+  if(revalidation) {
+    const selectedIds=array(revalidateCompletedIds,'completed revalidation selection').map(id=>uuid(id,'completed revalidation identity'));
+    if(terminalValidation||continuity.deliveries.length||!selectedIds.length||new Set(selectedIds).size!==selectedIds.length
+      ||active.length!==selectedIds.length||active.some(item=>!selectedIds.includes(item.deliveryId)||item.normalization!==null))
+      fail('REPLAN_REQUIRED','completed revalidation requires the exact selected quiet identities');
+  }
+  const reopening=continuity.deliveries.length===0&&(revalidation||active.length===1&&(ids.length>0||terminalValidation));
   if(terminalValidation&&!reopening)fail('REPLAN_REQUIRED','terminal reentry requires one selected completed contribution and empty queue');
   if(!retiring&&!reopening)
     fail('UNSUPPORTED_FORMAT','set replacement supports Q18 retirement, Q19 private reopening or explicit Q20 terminal reentry');
@@ -1211,6 +1314,13 @@ export function prepareCurrentSetReplacement(value) {
   if(selected&&selected.normalization!==null)
     fail('UNSUPPORTED_FORMAT','Q19 requires a quiet contribution without normalization');
   const expectedPaths=['plan.md','tasks.md',...active.flatMap(item=>[`plans/${item.slice}.md`,`tasks/${item.slice}.md`])];
+  const retainedDocuments=new Map();
+  for(const current of members.filter(item=>completedIds.has(item.deliveryId)))for(const group of ['plans','tasks']) {
+    const name=`${group}/${current.slice}.md`,prior=files.get(name),supplied=artifacts.get(name);
+    if(supplied&&(!prior||!Buffer.from(supplied).equals(Buffer.from(prior))))stale('retained completed document was changed');
+    if(prior)retainedDocuments.set(name,Buffer.from(prior));
+    artifacts.delete(name);
+  }
   if(!same([...artifacts.keys()].sort(ordinal),expectedPaths.sort(ordinal)))
     invalid('set replacement reviewed artifact membership differs');
   for(const current of members) {
@@ -1254,18 +1364,20 @@ export function prepareCurrentSetReplacement(value) {
     retainedPass:new Set(terminalValidation?[selected.slice]:[])};
   let {authority,status}=project({context,requirementsAuthority,artifacts},false,true,local);
   if(status!=='ready')stale('set replacement is not ready for review');
-  if(!same(authority.deliveries.map(item=>[item.deliveryId,item.slice]),active.map(item=>[item.deliveryId,item.slice])))
+  if(!same((revalidation?[...authority.deliveries].sort((a,b)=>ordinal(a.deliveryId,b.deliveryId)):authority.deliveries).map(item=>[item.deliveryId,item.slice]),active.map(item=>[item.deliveryId,item.slice])))
     invalid('set replacement active identities differ from the captured set');
   const beforeGlobal=snapshot.normativeProjection.global,afterGlobal=authority.normativeProjection.global;
   if(['objective','strategy','risks'].some(key=>!same(beforeGlobal[key],afterGlobal[key])))
     fail('UNSUPPORTED_FORMAT','set replacement preserves global objective, strategy and risks');
   if(terminalValidation&&!same(leaves.get(selected.deliveryId),authority.normativeProjection.deliveries[0]))
     fail('REPLAN_REQUIRED','terminal reentry preserves the complete local normative contract');
-  if(selected&&!terminalValidation)assertPrivateLocalDelta({context,slice:selected.slice,original:leaves.get(selected.deliveryId),
+  if(revalidation&&active.some(item=>!same(leaves.get(item.deliveryId),authority.normativeProjection.deliveries.find(leaf=>leaf.deliveryId===item.deliveryId))))
+    fail('REPLAN_REQUIRED','completed revalidation preserves every complete local normative contract');
+  if(selected&&!terminalValidation&&!revalidation)assertPrivateLocalDelta({context,slice:selected.slice,original:leaves.get(selected.deliveryId),
     revised:authority.normativeProjection.deliveries[0],
     siblings:completed.map(item=>({slice:item.slice,leaf:leaves.get(item.deliveryId)}))});
-  const nextContinuity={...structuredClone(continuity),deliveries:structuredClone(active),completed:structuredClone(completed)};
-  const proposed=new Map(artifacts),localDecisions=new Map();
+  const nextContinuity={...structuredClone(continuity),deliveries:structuredClone(revalidation?authority.deliveries.map(item=>active.find(old=>old.deliveryId===item.deliveryId)):active),completed:structuredClone(completed)};
+  const proposed=new Map([...artifacts,...retainedDocuments]),localDecisions=new Map();
   for(const current of nextContinuity.completed) {
     const authoritySha256=projected('delivery',leaves.get(current.deliveryId));
     let bytes=files.get(current.evidence.path);
@@ -1298,7 +1410,9 @@ export function prepareCurrentSetReplacement(value) {
     current.validation='revalidation-required';
     const taskName=`tasks/${current.slice}.md`;
     localDecisions.set(current.deliveryId,composeCurrentLocalReviewEvidence({files,updatedFiles:proposed,next:current,
-      taskName,currentTaskBytes:artifacts.get(taskName),indexBytes:artifacts.get('tasks.md')}));
+      taskName,currentTaskBytes:artifacts.get(taskName),indexBytes:proposed.get('tasks.md'),preserveHistory:revalidation,context,
+      priorBundles:[...nextContinuity.completed,...nextContinuity.deliveries.slice(0,nextContinuity.deliveries.indexOf(current))]
+        .map(item=>({slice:item.slice,bundleBytes:proposed.get(item.evidence.path)??files.get(item.evidence.path)}))}));
   }
   // Review the final current carriers, including the exact revalidation digest.
   const finalArtifacts=new Map([...proposed].filter(([name])=>expectedPaths.includes(name)));
@@ -1351,6 +1465,8 @@ export function finalizeCurrentSetReplacement({proposal,review:decision}) {
     globalReview:parseCurrentJson(canonical(decision.globalReview)),deliveries,completed:fresh.completed,
     reviewedArtifacts:fresh.authority.artifactHashes.map(item=>({path:item.path,sha256:item.sha256,
       utf8:fresh.files.get(item.path).toString('utf8')}))};
+  const provenance=parseCurrentJson(decode(fresh.input.previous.files.get('approved-preparation.json'),'previous snapshot')).resumption;
+  if(provenance!==undefined)snapshot.resumption=provenance;
   const bytes=Buffer.from(canonical(snapshot)+'\n','utf8'),files=new Map(fresh.files);
   files.set('approved-preparation.json',bytes);
   validateCurrentCandidate({files});

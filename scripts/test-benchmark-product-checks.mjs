@@ -32,7 +32,8 @@ async function replace(workspace, file, before, after) {
 for (const caseId of ['A', 'B']) {
   test(`fixed product oracle ${caseId}: correct reference and existing internal tests pass`, async (t) => {
     const workspace = await candidate(t, caseId);
-    const internal = spawnSync(process.execPath, ['--test'], { cwd: workspace, env: testEnvironment, encoding: 'utf8' });
+    // This oracle parses TAP counts; scope its reporter to this subprocess, not NODE_OPTIONS.
+    const internal = spawnSync(process.execPath, ['--test', '--test-reporter=tap'], { cwd: workspace, env: testEnvironment, encoding: 'utf8' });
     assert.equal(internal.status, 0, internal.stdout + internal.stderr);
     assert.match(internal.stdout, /# pass [1-9][0-9]*/u, 'internal tests really execute');
     const evidence = await checkProductAcceptance(workspace, caseId);
@@ -117,7 +118,8 @@ test('fixed product oracle B rejects added external dependency', async (t) => {
 
 test('fixed product oracle C: correct archive reference and unmodified seed tests pass', async t => {
   const workspace = await candidate(t, 'C');
-  const internal = spawnSync(process.execPath, ['--test'], { cwd: workspace, env: testEnvironment, encoding: 'utf8' });
+  // This oracle parses TAP counts; scope its reporter to this subprocess, not NODE_OPTIONS.
+  const internal = spawnSync(process.execPath, ['--test', '--test-reporter=tap'], { cwd: workspace, env: testEnvironment, encoding: 'utf8' });
   assert.equal(internal.status, 0, internal.stdout + internal.stderr);
   assert.match(internal.stdout, /# pass [1-9][0-9]*/u);
   const evidence = await checkProductAcceptance(workspace, 'C');

@@ -371,8 +371,11 @@ export async function validateRetainedSource({ product, evidence, specPath, work
   const snapshotBytes = files.get('approved-preparation.json');
   const {retainedEvidence,fresh} = await product.completedEvidenceContext({context,snapshotBytes,continuity,files});
   const converted = activation.preparationRevision > 1;
+  // Full image integrity was checked above; completed documents are retained
+  // context, not carriers of the current preparation review.
+  const reviewedPaths = new Set(JSON.parse(snapshotBytes).reviewedArtifacts.map(item=>item.path));
   const prepared = product.validateCurrentPreparation({context,requirementsAuthority:activation.requirementsAuthority,
-    snapshotBytes,artifacts:new Map([...files].filter(([name])=>name.endsWith('.md'))),
+    snapshotBytes,artifacts:new Map([...files].filter(([name])=>reviewedPaths.has(name))),
     profile:continuity.completed.length?'completed-current':converted?'converted-current':'initial',retainedEvidence});
   const snapshot=prepared.snapshot, global=snapshot.normativeProjection.global, verified=[];
   const members=[...continuity.deliveries,...continuity.completed];

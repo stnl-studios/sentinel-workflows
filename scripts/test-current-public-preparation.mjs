@@ -1,3 +1,4 @@
+import {publishPreparationCandidate} from './fixtures/synthetic-preparation-approval.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -6,7 +7,7 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {initialArtifacts,REQUIREMENTS} from './fixtures/current-initial-preparation.mjs';
 import {preparePreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-task-candidate.mjs';
-import {publishPreparationCandidate} from '../skills/workflows/stnl-execution-planner/runtime/publish-task-candidate.mjs';
+
 import {serializePlanPathClaims} from '../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs';
 import {inspectCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {begin,reserveDispatch,bindNative,verifyNative,captureNative,publish} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
@@ -248,9 +249,7 @@ for(const form of ['lifecycle','standalone'])for(const variant of ['escape','sym
  await editDetails(f,text=>text.replace('## Existing Inputs\n\n- none','## Existing Inputs\n\n- `'+input+'`'));
  if(variant==='escape')await assert.rejects(publishPreparationCandidate(f),error=>error.code==='UNSAFE_PATH'&&/escapes productRoot/u.test(error.message));
  else{
-  await publishPreparationCandidate(f);
-  const {authority}=await serializePlanPathClaims(f);
-  await assert.rejects(publishPreparationCandidate({...f,reviewDecision:reviewFor(authority)}),error=>error.code==='UNSAFE_PATH'&&/symlink/u.test(error.message));
+  await assert.rejects(publishPreparationCandidate(f),error=>error.code==='UNSAFE_PATH'&&/symlink/u.test(error.message));
   assert.ok((await fs.lstat(alias)).isSymbolicLink());assert.equal(await fs.readlink(alias),f.specPath);
  }
  assert.deepEqual(await fs.readFile(f.specPath),authorityBefore);

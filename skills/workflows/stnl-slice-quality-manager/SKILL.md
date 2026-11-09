@@ -13,6 +13,10 @@ Run one explicitly selected VALIDATE_SLICE operation on its exact current EC-1 h
 
 When validating a technical change, inspect the native skill catalog descriptions and consult only the primary domain guidance and applicable specializations for that slice. Use them to assess relevant domain risks and evidence coverage without changing the Approved Slice, requirements or authority. Administrative work and documentation without a product change do not load domain guidance by default.
 
+### Portable documentary resumption
+
+For an explicit EXECUTE_SLICE or VALIDATE_SLICE request, consult `references/documentary-resumption.md` and call the existing controller's `inspect-request` before treating absent activation, approved-preparation or continuity controls as a planning failure. Keep a stable current user request ID, preserve original documents/proof, obtain a current review of any new context, and return to the normal native controller. Markdown status is never proof or historical approval.
+
 ## Inputs
 
 SPEC_PATH, the explicitly selected operation and canonical slice are required. Use the exact activation returned by current inspection for begin; preserve the returned handle for all later commands.
@@ -68,6 +72,8 @@ Converted v3/v4 and recognized imported predecessors use the existing local-revi
 
 
 A bounded `abort --handle HANDLE_FILE --tool-result-file TOOL_RESULT_FILE` closes a concluded native S2 VALIDATE_SLICE invocation whose private-review base is still revalidation-required, with no prior lastAttempt, one consumed call and no verification start/observation/receipt/candidate. Supply only the exact official completed tool result for the bound agent, including its literal first finalResponse. Active, uncertain, foreign or already started producers block. This entry does not parse shell diagnostics, judge the result, or create a formal attempt. Under the common lock it persists the expected forward activation before CAS, retains an aborted lastAttempt with native sources/diagnosis/consumption, reads back, then retires only its registry association. It preserves all product/artifact bytes and formal counters, never restores A0, and keeps the original controls. `resume` may direct `resume-abort`; repeat `abort --handle` from its sealed disposition or `cleanup --handle` for pending retirement, without another producer. The next invocation requires a separate authorized legal admission; abort never dispatches it. Other operations, rejected/observed invocations and publication stages are outside this entry.
+
+When all local proofs are PASS/current but the reader offers VALIDATE_SLICE with the terminal diagnostic `local PASS has no terminal judgment`, keep the approved preparation and use that exact handoff with `reserve-dispatch --terminal`. This route requires the reader's unique approved live integral owner and authenticated current local proof. Spawn a fresh independent reviewer, verify and publish a new integral judgment through the normal controller; do not rerun earlier slices or synthesize terminal proof from their PASS results. If no such handoff exists, do not choose or promote an owner yourself. Changed authority, ambiguous or retired owners and invalid proof remain blocked for their applicable review/planning route.
 
 A reviewed Q20 terminal reentry may hand off VALIDATE_SLICE while the selected local proof remains PASS/current. The planner/reviewer owns that explicit REPLAN and its exact final-artifact/evidence review. Preserve the same UUID/selector, complete local contract, recipe, inputs, local revision, counters, baseline and literal records/objects; preparation alone advances. This handoff requires `reserve-dispatch --terminal` and the independent integral judgment described in the runner guide. A retained local PASS does not certify the combination, and review/publication does not close the execution or SPEC.
 

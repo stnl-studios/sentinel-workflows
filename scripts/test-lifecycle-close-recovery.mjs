@@ -73,3 +73,35 @@ for(const checkpoint of ['JOURNAL_PREPARED','TARGET_TO_BACKUP_RENAMED','STAGE_TO
    assert.equal(result,true);assert.equal(snapshot(f.target),source);assert.equal((await fs.lstat(f.target)).ino,sourceIdentity.ino);assert.equal(await recover(f),false);
  }
 });
+
+// A real CLOSE with many native owners wrote an ownership sidecar above 128 KiB; the reader refused its own
+// sidecar by size ("transaction ownership role changed while being read"). The bound now matches the 1 MiB
+// terminal retirement record, so the sidecar is read and its binding is judged on content.
+test('pending CLOSE reads a journal and ownership sidecar above 64 KiB and judges their binding on content',async t=>{
+ const f=await fixture(t),result=await cli(f),ownershipFile=path.join(f.roots.materialRoot,`.target.lifecycle-ownership-${result.transactionId}.json`);
+ const sorted=value=>Array.isArray(value)?value.map(sorted):value&&typeof value==='object'?Object.fromEntries(Object.keys(value).sort().map(key=>[key,sorted(value[key])])):value;
+ const render=value=>JSON.stringify(sorted(value),null,2)+'\n';
+ for(const file of [f.roots.lifecycleJournal,ownershipFile])assert.equal(render(JSON.parse(await fs.readFile(file,'utf8'))),await fs.readFile(file,'utf8'));
+ const inventory=Array.from({length:300},(_,i)=>{const owner=`owner-${String(i).padStart(4,'0')}`;return [
+   {path:owner,kind:'directory',identity:{dev:'1',ino:String(2*i+1)},mode:0o700,sha256:null,linkTarget:null},
+   {path:`${owner}/round-1.response.json`,kind:'file',identity:{dev:'1',ino:String(2*i+2)},mode:0o600,sha256:'sha256:'+'0'.repeat(64),linkTarget:null}];}).flat();
+ for(const file of [f.roots.lifecycleJournal,ownershipFile]){
+   const value=JSON.parse(await fs.readFile(file,'utf8'));value.close_binding.operationalInventory=inventory;
+   const bytes=render(value);assert.ok(Buffer.byteLength(bytes)>64*1024&&Buffer.byteLength(bytes)<1024*1024);
+   const handle=await fs.open(file,'r+');try{await handle.truncate(0);await handle.write(bytes,0);}finally{await handle.close();}
+ }
+ const published=snapshot(f.target);
+ // Past the size gate, recovery compares the bound inventory with the material root and finds no owner-0000.
+ await assert.rejects(recover(f),error=>/operational inventory changed after admission|owner-0000/u.test(error.stderr)
+   &&!/safe size limit|changed while being read/u.test(error.stderr));
+ assert.equal(snapshot(f.target),published);
+});
+
+for(const target of ['journal','ownership'])test(`CLOSE preserves an oversized ${target} instead of reading or cleaning it`,async t=>{
+ const f=await fixture(t),result=await cli(f);
+ const file=target==='journal'?f.roots.lifecycleJournal:path.join(f.roots.materialRoot,`.target.lifecycle-ownership-${result.transactionId}.json`);
+ const original=await fs.readFile(file),oversized=Buffer.concat([original,Buffer.alloc(1024*1024,0x20)]);
+ await fs.writeFile(file,oversized);const before=await controls(f),published=snapshot(f.target);
+ await assert.rejects(recover(f),error=>/size limit|changed while being read/u.test(error.stderr??error.message));
+ assert.deepEqual(await fs.readFile(file),oversized);assert.deepEqual(await controls(f),before);assert.equal(snapshot(f.target),published);
+});

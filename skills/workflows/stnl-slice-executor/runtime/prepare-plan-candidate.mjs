@@ -1,18 +1,26 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import {resolveCurrentExecutionContext,resolveExecutionWorkspace} from './execution-workspace.mjs';
 import {assertOwnedPreparationCandidate,readOwnedFile,persistAllocation} from './execution-publication.mjs';
 import {captureCurrentSetReplacementSource} from './execution-state.mjs';
 export async function assertPreparationCandidate(root,specPath=null,{filesystemContext=null}={}){return assertOwnedPreparationCandidate({candidateExecutionRoot:root,specPath,resolveWorkspace:spec=>resolveExecutionWorkspace(spec,{filesystemContext})});}
 function fail(code,message){throw Object.assign(new Error(message),{code});}
-export function setPreparationMembers(source,ids,{terminalValidation=false}={}) {
+export function setPreparationMembers(source,ids,{terminalValidation=false,revalidateCompletedIds=null}={}) {
  const continuity=JSON.parse(Buffer.from(source.files.get('continuity.json'))),members=[...continuity.deliveries,...continuity.completed];
  if(!Array.isArray(ids)||new Set(ids).size!==ids.length||ids.some(id=>!members.some(item=>item.deliveryId===id)))
   fail('INVALID_CURRENT_IMAGE','Completed selection differs from the captured source');
  const active=members.filter(item=>!ids.includes(item.deliveryId));
+ if(revalidateCompletedIds!==null) {
+  const stale=source.inspection.completed.filter(item=>item.observedValidation!=='current');
+  if(terminalValidation||continuity.deliveries.length||!Array.isArray(revalidateCompletedIds)||!revalidateCompletedIds.length
+    ||active.length!==revalidateCompletedIds.length||stale.length!==active.length
+    ||active.some(item=>item.normalization!==null||!revalidateCompletedIds.includes(item.deliveryId)||!stale.some(other=>other.deliveryId===item.deliveryId)))
+   fail('REPLAN_REQUIRED','Completed revalidation must reopen the exact complete stale set');
+  return active;
+ }
  if(typeof terminalValidation!=='boolean')fail('INVALID_CURRENT_IMAGE','Terminal validation selection must be boolean');
  if(terminalValidation) {
   const snapshot=JSON.parse(Buffer.from(source.files.get('approved-preparation.json')));
@@ -29,24 +37,24 @@ export function setPreparationMembers(source,ids,{terminalValidation=false}={}) 
 }
 export async function capturePreparationSource(owned) {
  if(owned.marker.operation!=='REPLAN')fail('REPLAN_REQUIRED','Expected a registered REPLAN allocation');
- const source=await captureCurrentSetReplacementSource(owned.marker.specPath);
+ const source=await captureCurrentSetReplacementSource(owned.marker.specPath,{revalidateCompletedIds:owned.marker.revalidateCompletedIds??null});
+ if(owned.marker.revalidateCompletedIds!==undefined&&'sha256:'+createHash('sha256').update(source.activationBytes).digest('hex')!==owned.marker.source?.files.find(item=>item.path==='activation.json')?.sha256)
+  fail('STALE_BASE','Completed revalidation activation differs from the exact registered predecessor');
  if(owned.marker.expectedActivationId!==source.inspection.activationId
    ||owned.marker.preparationRevision!==source.inspection.preparationRevision+1)
   fail('STALE_BASE','Preparation activation or revision differs from its official source');
- setPreparationMembers(source,owned.marker.completedDeliveryIds,{terminalValidation:owned.marker.terminalValidation??false});
+ if(owned.marker.revalidateCompletedIds!==undefined&&owned.marker.revalidationBasisSha256!==source.revalidationBasisSha256)
+  fail('EVIDENCE_STALE','Explicit completed revalidation observations changed after allocation');
+ setPreparationMembers(source,owned.marker.completedDeliveryIds,{terminalValidation:owned.marker.terminalValidation??false,revalidateCompletedIds:owned.marker.revalidateCompletedIds??null});
  return source;
 }
 export async function preparePlanCandidate({candidateExecutionRoot,filesystemContext=null}) {
  const owned=await assertPreparationCandidate(candidateExecutionRoot,null,{filesystemContext}),{context}=await resolveCurrentExecutionContext(owned.marker.specPath,{filesystemContext});
  if(owned.marker.operation==='REPLAN') {
   const source=await capturePreparationSource(owned),active=setPreparationMembers(source,owned.marker.completedDeliveryIds,
-   {terminalValidation:owned.marker.terminalValidation??false});
-  const continuity=JSON.parse(Buffer.from(source.files.get('continuity.json')));
-  for(const member of [...continuity.deliveries,...continuity.completed].filter(item=>!active.some(value=>value.deliveryId===item.deliveryId)))
-   for(const group of ['plans','tasks']) {
-    const name=`${group}/${member.slice}.md`;
-    if(source.files.has(name))await fs.rm(path.join(owned.root,name),{force:true});
-   }
+   {terminalValidation:owned.marker.terminalValidation??false,revalidateCompletedIds:owned.marker.revalidateCompletedIds??null});
+  // Completed documents remain literal context for portable resumption.
+  // They do not contribute approval or PASS to the active preparation.
   const revision=owned.marker.preparationRevision;
   const writeRevision=(text,previous)=>{
    const supplied=text.match(/^- Plan revision: (.+)$/mu)?.[1];

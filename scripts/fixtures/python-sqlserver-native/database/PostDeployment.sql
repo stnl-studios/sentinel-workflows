@@ -1,0 +1,3 @@
+INSERT INTO dbo.Summary (Id, Total) VALUES (1, 0);
+INSERT INTO dbo.DeploymentEvidence (Id, Marker) VALUES (1, N'STNL_POST_DEPLOY_BASELINE');
+PRINT N'STNL_POST_DEPLOY_BASELINE';

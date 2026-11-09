@@ -30,7 +30,11 @@ test('C01 completed A stays literal while two legal B native validations publish
   assert.deepEqual(Buffer.from(after.files.get('approved-preparation.json')),snapshot);
   assert.deepEqual(Buffer.from(after.files.get(a.evidence.path)),Buffer.from(before.files.get(a.evidence.path)));
   assert.equal(after.inspection.deliveries[0].counters.validationAttempts,3);
-  assert.equal(after.inspection.normalHandoff,null);
+  // A local PASS is not terminal proof; only the still-live integral B may finish.
+  assert.deepEqual(after.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:f.delivery.slice,deliveryId:f.delivery.deliveryId});
+  assert.equal(after.inspection.state,'IMPLEMENTED_AWAITING_VALIDATION');
+  assert.deepEqual(after.inspection.diagnostics,[{kind:'evidence',artifact:'continuity.json',field:'terminal',
+    reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]);
   // Retire all transient allocations. Fresh reads and the next operation must
   // rely on the proof's self-contained sources, not a previous namespace.
   await fs.rename(path.join(f.root,'tmp/sentinel'),path.join(f.root,'tmp/retired-controls'));
@@ -40,7 +44,9 @@ test('C01 completed A stays literal while two legal B native validations publish
   const final=await captureCurrentExecution(f.specPath);
   assert.equal(final.inspection.deliveries[0].counters.validationAttempts,4);
   assert.equal(final.inspection.completed[0].observedValidation,'current');
-  assert.equal(final.inspection.state,'VALIDATION_BLOCKED');
+  assert.equal(final.inspection.state,'IMPLEMENTED_AWAITING_VALIDATION');
+  assert.deepEqual(final.inspection.normalHandoff,after.inspection.normalHandoff);
+  assert.deepEqual(final.inspection.diagnostics,after.inspection.diagnostics);
 });
 
 for(const status of ['NEEDS_FIX','BLOCKED'])test(`C03 valid ${status} publishes literally and exposes only the legal handoff`,async t=>{

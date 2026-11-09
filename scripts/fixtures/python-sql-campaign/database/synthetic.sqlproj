@@ -1,0 +1,1 @@
+<Project><ItemGroup><Build Include="schema.sql" /><PreDeploy Include="PreDeployment.sql" /><PostDeploy Include="PostDeployment.sql" /></ItemGroup></Project>

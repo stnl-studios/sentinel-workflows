@@ -144,7 +144,9 @@ function workEntries(value, label) {
       closed(entry, ['path', 'kind', 'sha256', 'mode'], `${label}.entry`);
       token(entry.sha256, HASH, `${label}.hash`); integer(entry.mode, `${label}.mode`, 0, 511);
     } else if (entry.kind === 'directory') {
-      closed(entry, ['path', 'kind', 'children'], `${label}.entry`);
+      closed(entry, ['path', 'kind', 'children',...(Object.hasOwn(entry,'externalContextSha256')?['externalContextSha256']:[]),...(Object.hasOwn(entry,'mode')?['mode']:[])], `${label}.entry`);
+      if(Object.hasOwn(entry,'externalContextSha256'))token(entry.externalContextSha256,HASH,`${label}.externalContextSha256`);
+      if(Object.hasOwn(entry,'mode'))integer(entry.mode,`${label}.mode`,0,511);
       dense(entry.children, `${label}.children`);
       let prev = null;
       for (const child of entry.children) {
@@ -178,11 +180,68 @@ function work(value,label) {
   }
   return byPath;
 }
+function structuralOutputContext(entries,claims,label) {
+  const inputs=new Set(claims.filter(item=>item.kind==='input').map(item=>item.path));
+  const outputs=claims.filter(item=>item.kind==='file'&&!inputs.has(item.path)).map(item=>item.path);
+  const roots=entries.filter(entry=>entry.externalContextSha256!==undefined);
+  for(const root of roots)if(root.kind!=='directory'||!outputs.some(name=>name.startsWith(root.path+'/')))
+    stale(`${label}: external context is not an approved output ancestor ${root.path}`);
+  return name=>roots.some(root=>name===root.path || name.startsWith(root.path+'/')
+    && outputs.some(output=>output.startsWith(name+'/')));
+}
+export function assertExternalOutputContextLineage(baseline,observed,info,label) {
+  const claims=[...info.areas,...info.inputs,...(info.refs??[])];
+  structuralOutputContext(observed.entries,claims,label);
+  const before=new Map(baseline.entries.map(entry=>[entry.path,entry]));
+  const after=new Map(observed.entries.map(entry=>[entry.path,entry]));
+  for(const prior of baseline.entries)if(prior.externalContextSha256!==undefined) {
+    const current=after.get(prior.path);
+    if(current?.kind!=='absent'&&current?.externalContextSha256===undefined)
+      stale(`${label}: retained external context was omitted ${prior.path}`);
+  }
+  for(const entry of observed.entries)if(entry.externalContextSha256!==undefined) {
+    const prior=before.get(entry.path);
+    if(prior?.kind!=='absent'&&prior?.externalContextSha256===undefined)
+      stale(`${label}: external context lacks authenticated absent-root lineage ${entry.path}`);
+  }
+}
+// Read-context is never a write claim. Only a literal missing root can start a
+// new context; subsequent auxiliary edits must preserve it exactly.
+export function assertExternalOutputContextTransition(before,after,info,label) {
+  const claims=[...info.areas,...info.inputs,...(info.refs??[])];
+  structuralOutputContext(before.entries,claims,label);
+  structuralOutputContext(after.entries,claims,label);
+  const old=new Map(before.entries.map(entry=>[entry.path,entry]));
+  const next=new Map(after.entries.map(entry=>[entry.path,entry]));
+  const empty=raw(utf8('stnl-output-external-context-v1\0[]'));
+  for(const name of new Set([...old.keys(),...next.keys()])) {
+    const prior=old.get(name),current=next.get(name);
+    if(prior?.externalContextSha256!==undefined) {
+      if(current?.externalContextSha256!==prior.externalContextSha256)
+        stale(`${label}: external output context changed or omitted ${name}`);
+    } else if(current?.externalContextSha256!==undefined
+      && (prior?.kind!=='absent'||current.externalContextSha256!==empty))
+      stale(`${label}: external output context lacks literal absent origin ${name}`);
+    if(prior?.kind==='directory'&&current?.kind==='directory'
+      && (prior.mode!==undefined||current.mode!==undefined)&&prior.mode!==current.mode)
+      stale(`${label}: structural directory mode changed ${name}`);
+  }
+}
 function coverage(manifest, claims, label) {
   const byPath = work(manifest, label);
+  structuralOutputContext(manifest.entries,claims,label);
   for (const item of claims) {
     const entry = byPath.get(item.path);
-    if (!entry) incomplete(`${label}: missing declared ${item.path}`);
+    if (!entry) {
+      // The observer records the first missing ancestor, never fabricated
+      // descendants. Only literal absence proves a declared output forecast;
+      // inputs and omitted projected children cannot use this exception.
+      let absent=false;
+      for(let parent=path.posix.dirname(item.path);parent!=='.';parent=path.posix.dirname(parent))
+        if(byPath.get(parent)?.kind==='absent'){absent=true;break;}
+      if(['file','directory','product'].includes(item.kind)&&absent)continue;
+      incomplete(`${label}: missing declared ${item.path}`);
+    }
     if (item.kind === 'input' && entry.kind !== 'file') stale(`${label}: Existing Input is not a file ${item.path}`);
     if (item.kind === 'directory' && entry.kind === 'file') stale(`${label}: declared directory is a file ${item.path}`);
     if (['file','product'].includes(item.kind) && entry.kind === 'directory') stale(`${label}: declared file is a directory ${item.path}`);
@@ -251,6 +310,7 @@ function canonicalConversionEntries(entries) {
 }
 function conversionDomain(entries,claims,label) {
   const byPath=new Map(entries.map(entry=>[entry.path,entry]));
+  const structural=structuralOutputContext(entries,claims,label);
   const included=name=>claims.some(item=>item.path===name || item.kind==='directory' && name.startsWith(`${item.path}/`));
   for (const item of claims) {
     const entry=byPath.get(item.path);
@@ -262,7 +322,7 @@ function conversionDomain(entries,claims,label) {
       || item.kind==='file' && entry.kind==='directory') stale(`${label}: declared kind differs ${item.path}`);
   }
   for (const entry of entries) {
-    if (!included(entry.path)) incomplete(`${label}: unexpected domain member ${entry.path}`);
+    if (!included(entry.path)&&!structural(entry.path)) incomplete(`${label}: unexpected domain member ${entry.path}`);
     // Separate declared roots can repeat an absence already proved by the
     // union. Present descendants still pass every parent/child check below.
     if (entry.kind==='absent' && observedAbsent(byPath,entry.path)) continue;
@@ -270,7 +330,7 @@ function conversionDomain(entries,claims,label) {
     for (let index=1;index<parts.length;index+=1) {
       const name=parts.slice(0,index).join('/'),parent=byPath.get(name);
       // Only ancestors inside an approved directory need an observation.
-      if (!parent && !included(name)) continue;
+      if (!parent && !included(name)&&!structural(name)) continue;
       if (!parent || parent.kind!=='directory' ||
         parent.children.includes(parts[index]) === (index===parts.length-1 && entry.kind==='absent'))
         incomplete(`${label}: missing parent/child closure ${entry.path}`);
@@ -299,10 +359,19 @@ export function projectConversionObservedWork(value) {
     const info=recipeAndClaims(context,delivery,delivery.slice);
     declarations.set(delivery.deliveryId,[...info.areas,...info.inputs]);
   }
+  // One digest excludes one delivery's exact outputs. It cannot be copied to
+  // another delivery sharing the root as if its excluded inputs were identical.
+  for(const root of observed.entries.filter(entry=>entry.externalContextSha256!==undefined)) {
+    const owners=[...declarations.values()].filter(claims=>claims.some(item=>item.kind==='file'
+      && item.path.startsWith(root.path+'/')));
+    if(owners.length>1)fail('UNSUPPORTED_FORMAT','shared structural context requires per-delivery observations');
+  }
   const union=conversionDomain(observed.entries,[...declarations.values()].flat(),'conversion observedWork');
   const projections=new Map();
   for (const [id,claims] of declarations) {
-    let entries=observed.entries.filter(entry=>claims.some(item=>item.path===entry.path
+    const structural=structuralOutputContext(observed.entries.filter(entry=>entry.externalContextSha256===undefined
+      || claims.some(item=>item.kind==='file'&&item.path.startsWith(entry.path+'/'))),claims,`conversion ${id}`);
+    let entries=observed.entries.filter(entry=>structural(entry.path)||claims.some(item=>item.path===entry.path
       || item.kind==='directory' && entry.path.startsWith(`${item.path}/`)));
     for (const item of claims) if (!entries.some(entry=>entry.path===item.path) && observedAbsent(union,item.path))
       entries.push({path:item.path,kind:'absent'});
@@ -321,7 +390,24 @@ function observation(value, owner, round, recipeInfo, baseline, context, label) 
   if (!['stnl-runner-verification-v2','stnl-runner-verification-v3','stnl-runner-verification-divergence-v1'].includes(value.format))
     fail('UNSUPPORTED_FORMAT', `${label}: observation format`);
   closed(value, ['format', 'status', 'owner', 'round', 'recipe', 'resolved', 'before', 'after', 'checks',
-    ...(value.format==='stnl-runner-verification-v3'?['binding']:[])], label);
+    ...(value.format==='stnl-runner-verification-v3'?['binding']:[]),
+    ...(Object.hasOwn(value,'executionContext')?['executionContext']:[])], label);
+  if(value.executionContext!==undefined) {
+    const execution=value.executionContext;
+    closed(execution,['format','platform','architecture','invocation','invocationSha256','environmentSha256','executables'],'same-operation context');
+    if(execution.format!=='stnl-same-operation-context-v1')invalid('same-operation context format');
+    str(execution.platform,'execution platform');str(execution.architecture,'execution architecture');
+    token(execution.environmentSha256,HASH,'execution environment fingerprint');
+    token(execution.invocationSha256,HASH,'execution invocation fingerprint');
+    closed(execution.invocation,['outputFile','binding'],'execution invocation');
+    absolute(execution.invocation.outputFile,'execution invocation output');
+    if(execution.invocationSha256!==raw(utf8(canonical(execution.invocation))))stale('execution invocation fingerprint differs');
+    dense(execution.executables,'execution executable fingerprints',recipeInfo.resolved.checks.length,recipeInfo.resolved.checks.length);
+    for(const item of execution.executables) {
+      closed(item,['path','sha256','mode'],'execution executable fingerprint');
+      absolute(item.path,'execution executable path');token(item.sha256,HASH,'execution executable hash');integer(item.mode,'execution executable mode',0,511);
+    }
+  }
   if(value.format==='stnl-runner-verification-v3') {
     closed(value.binding,['head','requestSha256','dispatchId','agentId',
       ...(Object.hasOwn(value.binding,'continuationSha256')?['continuationSha256']:[])],`${label}.binding`);
@@ -441,6 +527,16 @@ function nativeOrigin(cap, receipt, rawText, expectation, round, resolved) {
   if (result.finalResponse !== rawText || receipt.semanticResponseSha256 !== hex(utf8(rawText))) incomplete(`round ${round}: raw native result differs`);
   const continued=result.preVerificationContinuation;
   const observed=cap.verificationObservation===null?null:jsonBytes(cap.verificationObservation,'native continuation observation').value;
+  if(observed?.executionContext!==undefined) {
+    const invocation=observed.executionContext.invocation,binding=invocation?.binding;
+    closed(binding,['owner','round','dispatchId','agentId','requestSha256','originSha256'],'native replay invocation');
+    const requestDigest=origin.requestSha256??(cap.validationRequest?raw(cap.validationRequest):cap.applyRequest?raw(cap.applyRequest):binding.requestSha256);
+    token(requestDigest,HASH,'native replay request digest');
+    expectEqual(invocation,{outputFile:path.join(root,`round-${round}.verification.json`),binding:{owner,round,
+      dispatchId:origin.dispatchId,agentId:agent.agentId,requestSha256:requestDigest,originSha256:raw(cap.origin)}},
+      'OWNER_MISMATCH','native replay invocation identity');
+    if(observed.executionContext.invocationSha256!==raw(utf8(canonical(invocation))))stale('native replay invocation digest differs');
+  }
   if(continued!==undefined) {
     validateNativeContinuation(continued,{origin,originBytes:cap.origin,agentId:agent.agentId,claim:agentClaim});
     if(observed?.binding?.continuationSha256!==nativeContinuationSha256(continued))mismatch('native continuation observation differs');
@@ -471,11 +567,9 @@ export function projectNativeJudgment({origin,observation,requestBytes=null,agen
   const foreignMetadata=answer && typeof answer==='object' && (Object.hasOwn(answer,'head')||Object.hasOwn(answer,'requestSha256')
     || answer.result&&typeof answer.result==='object'
       && (Object.hasOwn(answer.result,'head')||Object.hasOwn(answer.result,'requestSha256')));
-  if(operation!=='VALIDATE_SLICE') {
-    if(foreignMetadata)invalid('native judgment contains foreign metadata');
-    if(answer?.format!==undefined&&answer.format!==NATIVE_JUDGMENT_VARIANT)
-      fail('UNSUPPORTED_FORMAT','native judgment response format');
-  }
+  // Concluded, authenticated foreign response bytes are a semantic rejection,
+  // not an uncertain invocation. Origin/observation binding checks above remain
+  // hard failures and cannot be normalized into a successful capture.
   try {
   if(foreignMetadata)
     invalid('native judgment contains foreign metadata');
@@ -641,6 +735,7 @@ export function verifyWorkObservation(profile, value, owner, round, recipeInfo, 
   return commands;
 }
 function auxiliaryDeltas(before, after, info, round) {
+  assertExternalOutputContextTransition(before,after,info,`round ${round}`);
   const old = new Map(before.entries.map(entry => [entry.path, entry]));
   const next = new Map(after.entries.map(entry => [entry.path, entry]));
   for (const name of old.keys()) if (!next.has(name)) stale(`round ${round}: prior domain member omitted ${name}`);

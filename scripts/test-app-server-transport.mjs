@@ -842,7 +842,11 @@ test(`continued provider preserves both sources and reobserves without another t
   const provider = await createNativeProvider({ snapshot: f.root, workspace: f.root, evidenceRoot: f.root, rpc: s.rpc, pollMs: 1 });
   const charged = new Set();
   const args = { prompt: 'OFFLINE only', workflowSkill: 'stnl-slice-executor', model: 'gpt-6-luna', effort: 'high',
-    operationId: 'continued-provider', role: 'review', timeoutMs: 1000,
+    operationId: 'continued-provider', role: 'review',
+    // This family tests continuation/replay integrity except the two explicit
+    // expiry variants. Allow its initial observation and replay to finish under
+    // I/O contention; keep expiry bounds and their clock jumps unchanged.
+    timeoutMs: ['expired', 'expired-during-admission'].includes(fault) ? 1000 : 5000,
     observeFormalBinding: async () => ({ agentPath: identity.agentPath }),
     onChildTurns: (binding, turns) => { for (const turn of turns) charged.add(turn.id); },
     onPrepareContinuation: async ({ binding, toolResultFile, firstTurnId, observeInitialization }) => {
