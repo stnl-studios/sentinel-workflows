@@ -1,0 +1,310 @@
+{
+  "format": "pilot-terminal-revalidation-summary-v1",
+  "operation": "VALIDATE_SLICE",
+  "admission": "begin --retry-blocked",
+  "head": "817af5057d2f807dfaccb5b1fb9cb23fcd81bc97",
+  "approvedCaptureSha256": "sha256:f7420e89619042657d9a82b9b00c9418351c85d2fd013480efdaa9ef42d4e368",
+  "approvedPreparationSha256": "sha256:3f969b5a88df4a2f3ea660e95924ee76f7e1164da45d30cea185dd8635c79b13",
+  "reader": {
+    "activationId": "3c01861e-8162-4df3-ba48-574b10df43a2",
+    "sequence": 22,
+    "requirementsAuthority": "sha256:1c2aa346729a62914ea0e9408d22f30c5c7ec8ac929155276e28ab305dd98ab7",
+    "preparationRevision": 1,
+    "deliveries": [
+      {
+        "slice": "slice-01",
+        "deliveryId": "df06d317-c014-4389-9c93-eae5c13c5d25",
+        "counters": {
+          "findings": 1,
+          "findingsChecks": 1,
+          "implementationChecks": 1,
+          "validationAttempts": 5
+        },
+        "persistedValidation": "current",
+        "observedValidation": "current",
+        "auxiliaryStatus": "TESTS_PASS",
+        "formalStatus": "PASS",
+        "evidenceSha256": "sha256:212eb3fa5ab5454ee0f37e79887a1f279e335a0db47737c82567fcc04fac3093",
+        "diagnostics": []
+      }
+    ],
+    "completed": [],
+    "state": "COMPLETE",
+    "normalHandoff": null,
+    "diagnostics": []
+  },
+  "capture": {
+    "phase": "captured",
+    "rawResponseSha256": "sha256:735168e0d9065cc187bd03ded38d5f0ad8bbb06574da25adf4c8686835861d5d",
+    "status": "PASS",
+    "nextAction": "publish",
+    "captureClass": "formal-response",
+    "replayed": false
+  },
+  "integrity": {
+    "sources": {
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/08-browser-qa.md": {
+        "sha256": "sha256:28865a591bb0a3ee4d2c6fe8240badd3e83f0c01cac6b0463600229bcbe79b7e",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/12-browser-qa-fixed.md": {
+        "sha256": "sha256:b12394ac123bc7fe8737a122f52f57e51feefb7cbe9ae93bc28f22256e842335",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/11-runbook-generation.json": {
+        "sha256": "sha256:ba685ef30eb49c98e86186f6f7beff56a223917bcb3dafe29c4cd31c28b384eb",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/qa-runbook-print-fixed-20261113.pdf": {
+        "sha256": "sha256:a067a68ac607e8a0017e70e3f71db9cdecaa50e976a77ce80eea3156617cfadf",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/qa-runbook-network-fixed.har": {
+        "sha256": "sha256:e993065ffb78606ddaf2eadd96a9755afe2a402de50f8c454d81ab4304c7deaf",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/review.md": {
+        "sha256": "sha256:5c3f0798c243fec0f8311e59c4aaaab447df4666791f9143dcdede9c5de7f5c2",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/specs/todo-state-filters/test-runbook/index.html": {
+        "sha256": "sha256:d8d12a45c986a0a9c2feed8e5b9485bca0ffdefe997c9c27941b3c03b4c3821f",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/runbook-before-render-fix/index.html": {
+        "sha256": "sha256:a68e3168b7a18f7bafc639451df77a9db88f085581f24a89809aa321bd5e0987",
+        "unchanged": true
+      }
+    },
+    "pages": {
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-01.png": {
+        "sha256": "sha256:8aaa04cddfaa419b6bac424ff65f1b78aced44ef391d8dbfa244a1e74a794fbd",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-02.png": {
+        "sha256": "sha256:9a1523ab3550648f3091630c148f7af5134cd0aabdf94e344b2b081c0e3591e3",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-03.png": {
+        "sha256": "sha256:98b7912180d97f7b6a395e2b7cea4e27cb256fabae56c28ae9747f16152947c1",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-07.png": {
+        "sha256": "sha256:376737c1712ba09dc69cb1c5a58ea89a466b8d12622ff270467c46813470ea1c",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-13.png": {
+        "sha256": "sha256:c348cf03eedcc17404a27e6ea016be2764ce422e8263695cdd7678be0d5acf1d",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-12.png": {
+        "sha256": "sha256:a7024e1f4c1739144a01d7e5533c3a571c222c3835a53e53cf6fa4a73fc98f04",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-06.png": {
+        "sha256": "sha256:54ce120e520d15fa37b313c8b3502a3d9a781ec9f4e9bcbf09c69d56fa53338a",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-10.png": {
+        "sha256": "sha256:e5bbcdcaf537b41e05bc948ada15c92607765d5c042fd9f98ef1759dfc287c8f",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-04.png": {
+        "sha256": "sha256:fcc3ab7cbd42c405654bc7f6dd688f1ff4ff3cf513979223be007f25c3639feb",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-05.png": {
+        "sha256": "sha256:f1849cd9a03b05364c1b7e01e0e2a914fe357d0a063003ae2671786f473f9312",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-11.png": {
+        "sha256": "sha256:ef16916916d290329dc63a546562b1104cac20c4596b1925ebdc24d0867a359d",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-08.png": {
+        "sha256": "sha256:da3b42a394cc214a7c9ea6f4a5cee4c603f3bbb3dc4b542a624887ec55834aae",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/usage-evidence/print-fixed-review/page-09.png": {
+        "sha256": "sha256:b35a01fe409b35b3a1c4c008b036c716169a6bdc80aaa91b1aae072274275f75",
+        "unchanged": true
+      }
+    },
+    "oldCaptureArtifacts": {
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/tmp/sentinel/a7993a30945b1483d35c0dc8fc05b5cacf3fd9c7fa82c19181cbac0b731f9008/10a118e1-b379-4708-86b2-f87aad8ee7fa/round-1.origin.json": {
+        "sha256": "sha256:e62c595c4152d3296444babc059b78fe881b77bbd2cec7d8d9f7e8a85e712b3a",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/tmp/sentinel/a7993a30945b1483d35c0dc8fc05b5cacf3fd9c7fa82c19181cbac0b731f9008/10a118e1-b379-4708-86b2-f87aad8ee7fa/round-1.request.json": {
+        "sha256": "sha256:ca76b639580e870102253e90862de0699b3c2b2547fd7b3b6e924675ed993090",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/tmp/sentinel/a7993a30945b1483d35c0dc8fc05b5cacf3fd9c7fa82c19181cbac0b731f9008/10a118e1-b379-4708-86b2-f87aad8ee7fa/round-1.verification.json": {
+        "sha256": "sha256:f55d46fc3bd0ea4a6dd05c26bb91a607f5468257a2e46411ead41001bad3d2ca",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/tmp/sentinel/a7993a30945b1483d35c0dc8fc05b5cacf3fd9c7fa82c19181cbac0b731f9008/10a118e1-b379-4708-86b2-f87aad8ee7fa/round-1.observation.json": {
+        "sha256": "sha256:094ab620b4acc8f1ad29fe85b6fae99334bb8bf8a8e11fb47eb3f1cd549b4e1a",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/tmp/sentinel/a7993a30945b1483d35c0dc8fc05b5cacf3fd9c7fa82c19181cbac0b731f9008/10a118e1-b379-4708-86b2-f87aad8ee7fa/round-1.response.json": {
+        "sha256": "sha256:f510059d39f7bdb335240b57f451030cca7349e1aacb2e8552c46807915285db",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/tmp/sentinel/a7993a30945b1483d35c0dc8fc05b5cacf3fd9c7fa82c19181cbac0b731f9008/10a118e1-b379-4708-86b2-f87aad8ee7fa/round-1.receipt.json": {
+        "sha256": "sha256:3502af2334ee878d1e62c6b014a45ecc91505a3900e8678eac4b411184d98ebc",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/tmp/sentinel/a7993a30945b1483d35c0dc8fc05b5cacf3fd9c7fa82c19181cbac0b731f9008/10a118e1-b379-4708-86b2-f87aad8ee7fa/round-1.tool-result.json": {
+        "sha256": "sha256:d28e58b9d63c2810e95403254b968c73dcef9a48fb77b557e9654583d89e54cc",
+        "unchanged": true
+      }
+    },
+    "baselineExceptInput": {
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/src/cli.mjs": {
+        "sha256": "sha256:d5f3f272a7f12fb7a9b996649851a966dfac58d39f5db861e6fcb8074e336347",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/src/todo-service.mjs": {
+        "sha256": "sha256:c760505070fafd78a72a4401facc69e9ea3a2a67800dbf048e4c9b82c4fe2cc9",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/README.md": {
+        "sha256": "sha256:e5280a49982b24149db3f4ecd7feff962613fefa465674958ac5f703b0340897",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/requirements.md": {
+        "sha256": "sha256:e5934bc22267756c3c10b31c46b7a9cd894b78e961b11975b0f14f7085349a24",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/PILOT.md": {
+        "sha256": "sha256:9bb4ab15ac08bd47f147ac4dcffa94e5e6fc70c00ecdb0d727fb510661f59424",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/package.json": {
+        "sha256": "sha256:5a0be38def4d857d0168440861a475329f46f41b347c11044090dec2f935ab04",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/test/cli.test.mjs": {
+        "sha256": "sha256:bfc61abc435d34404aa45d407ed9e608faa988171777218ef1d97d780ee6556e",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/test/todo-service.test.mjs": {
+        "sha256": "sha256:e0f523649c452d31ed987d1de813cba7c8be7372a72ff9f7e9bcb09f04bcf12b",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/test/todo-store.test.mjs": {
+        "sha256": "sha256:cbf697c5a44f461dad35f3596311b1bec393b4e64371109f62250a2079e9bc41",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/test/verify-todo.mjs": {
+        "sha256": "sha256:35d7040cfb69c5ea111b4dd01e348703bfeded736dc57788d4de131293731794",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/test/cli-process.test.mjs": {
+        "sha256": "sha256:583b1d5db490ce28da44759689ddf112b7ea2ea0eb24424ce547a0bb45f56055",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/specs/todo-state-filters/shared/requirements.md": {
+        "sha256": "sha256:b018ed3a59458d2394007af76e341beccce344b0c87433b1938f1435b7d97f3d",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/specs/todo-state-filters/shared/risks.md": {
+        "sha256": "sha256:2b02dda109ca8ce7f045ceb17dc1d2a8dcf80b26a69dff0bf820b1986604666e",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/specs/todo-state-filters/shared/acceptance-criteria.md": {
+        "sha256": "sha256:2d7ae02436c04d07437521de26914ebeb115dd5c1195639de8e6c97658fde65e",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/specs/todo-state-filters/shared/constraints.md": {
+        "sha256": "sha256:5884dea1b53f211e9ad951ab60919d73b3e3b64f5abd0ec9860014bb130e61c6",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/specs/todo-state-filters/shared/decisions.md": {
+        "sha256": "sha256:eb3b0b8750432209dcb22f41d20a90881ff24b6b1c6082fceabb79946b7bd1ac",
+        "unchanged": true
+      },
+      "/Users/ajfiumanee/projects/private/sentinel-usage-final-20261113/specs/todo-state-filters/feature_spec.md": {
+        "sha256": "sha256:8bbd7d4c976d08bc8807598fb47a676248edaca44d9e8ee45275a9c8399869bd",
+        "unchanged": true
+      }
+    }
+  },
+  "evidenceSha256": "sha256:212eb3fa5ab5454ee0f37e79887a1f279e335a0db47737c82567fcc04fac3093",
+  "openFindings": [],
+  "history": [
+    {
+      "id": "attempt-01",
+      "kind": "validation",
+      "recordSha256": "sha256:d9139914a693c67462c5844b0601eeb0cbd7dfb09d94a63bddb6ce7bec858431",
+      "dispositionLines": [
+        "- Status: PASS",
+        "- Finding dispositions: none"
+      ]
+    },
+    {
+      "id": "attempt-02",
+      "kind": "validation",
+      "recordSha256": "sha256:6c4b1196fda49de51d8477015ed1fc1214727174e769e16f4d27b71d13398966",
+      "dispositionLines": [
+        "- Status: NEEDS_FIX",
+        "- Finding dispositions: finding-01=active"
+      ]
+    },
+    {
+      "id": "attempt-03",
+      "kind": "validation",
+      "recordSha256": "sha256:996306651562897842dd75befdf48b809bff3cefa19193ffb992b7380364cc8b",
+      "dispositionLines": [
+        "- Status: PASS",
+        "- Finding dispositions: finding-01=resolved"
+      ]
+    },
+    {
+      "id": "attempt-04",
+      "kind": "validation",
+      "recordSha256": "sha256:fb35b869ef8b943aa64bf9b59c6d3900e4ba43da416b71c019994b833d202ea4",
+      "dispositionLines": [
+        "- Status: BLOCKED",
+        "- Finding dispositions: none"
+      ]
+    },
+    {
+      "id": "attempt-05",
+      "kind": "validation",
+      "recordSha256": "sha256:02ba968c1f052b01a16c2b6881c7f7a50d43b55c754d0a20864d7a1421b5a051",
+      "dispositionLines": [
+        "- Status: PASS",
+        "- Finding dispositions: none"
+      ]
+    }
+  ],
+  "recipeCommands": [
+    {
+      "command": "node test/verify-todo.mjs regression",
+      "exit": 0,
+      "stdoutSha256": "sha256:ee097600c008efdfea7e1aa8e52cae7fcfbefa1433a6874abe86bc922e528f1a",
+      "stderrSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "node test/verify-todo.mjs cli",
+      "exit": 0,
+      "stdoutSha256": "sha256:2c4da4ce7a16418d6140401a492bb6edf88162a443b24282526e156125d50484",
+      "stderrSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "recipeExecution": "One new independent formal recipe; no prior implementation/APPLY or captured checks rerun. capture/publish/resume/inspect executed no product checks.",
+  "qaLimits": [
+    "QA uses prior observed unaffected interactions plus focused regression of changed print and focus selection; not every UI interaction was rerun after regeneration.",
+    "PDF evidence is the supplied real 13-page Chrome PDF at the recorded standard paper/scale; minor environment metadata ellipsis has detailed preparation later.",
+    "HAR proves no remote request during the recorded reload/interactions only.",
+    "No browser opened this turn; restored UI preserved.",
+    "Runbook historical blocked badges are generation/local-state snapshots, not current Sentinel judgment."
+  ],
+  "prohibitedActionsPerformed": [],
+  "publication": {
+    "publication": "confirmed",
+    "cleanup": "complete"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "sourceCommit": "d4a3f1b",
+  "suite": "scripts/test-current-initial-native-operation.mjs",
+  "tests": 229,
+  "pass": 228,
+  "fail": 1,
+  "durationMs": 1095966.768166,
+  "logSha256": "c043126d07343d2706d7e24e230fb5a6132bb38f5318c55b9a35b3b9632d84c5",
+  "failure": [
+    "not ok 187 - Initial EXECUTE proof survives Q18 and the Q20 terminal formal after Q18 moved its normative hash"
+  ],
+  "status": "original suite failed 1/229; sole failure fixed in 1c930c7; six targeted scenarios passed; full suite not rerun",
+  "fixCommit": "1c930c748f73621b3d7932d1e53547afc408e5b9",
+  "targetedRetest": {
+    "tests": 6,
+    "pass": 6,
+    "fail": 0,
+    "logSha256": "96aeb9f470989e51d7c0648a1e08a2deaa45124856007b310bd7525ce0bfa092",
+    "includes": [
+      "original failure187",
+      "tampered retained support rejected",
+      "reviewed digest mismatch rejected",
+      "completed closure",
+      "normalized retained formal anchors",
+      "stale completed reentry"
+    ]
+  },
+  "otherChecks": {
+    "explicitBlockedRevalidationMatrix": "4/4 passed",
+    "sameOperationReplay": "19/19 passed before final historical-context-only fix",
+    "contextBudget": "6/6 passed",
+    "finalStructure": "passed",
+    "mirrorConsistency": "7 identical"
+  }
+}
