@@ -1934,7 +1934,7 @@ export async function cleanup(handle) {
     readQuiet:()=>quiet(handle.specPath),registryCompletion:()=>completeRegistry(op)});
 }
 
-async function capturedComposition(op) {
+async function capturedComposition(op,{historicalEvidenceBytes=null}={}) {
   if(op.record.runner?.captureClass==='coverage-clarification-rejected')
     fail('FORMAL_RECOVERY_NOT_ELIGIBLE','coverage clarification did not supply admissible proof; publication and normalization are blocked');
   const auxiliary=op.owner.operation!=='VALIDATE_SLICE';
@@ -1948,6 +1948,8 @@ async function capturedComposition(op) {
       && !resumed && round+(op.binding.normalization?.consumedInvocations??0)<invocationLimit(op))
     fail('OWNER_UNCERTAIN','native terminal result has not been captured');
   const image=await requireA1(op);
+  if(historicalEvidenceBytes!==null&&!usesCurrentChecks(image,op.owner))
+    fail('UNSUPPORTED_FORMAT','historical evidence recovery requires the current checks profile');
   if(op.owner.operation==='EXECUTE_SLICE' && op.record.runner.resultStatus==='BLOCKED'
     && (await capturedImplementationPrefix(op,image)).testCoverageCorrection)
     fail('EVIDENCE_INCOMPLETE','captured test coverage omission requires correction before publication');
@@ -1970,7 +1972,7 @@ async function capturedComposition(op) {
   try {
     composed=usesCurrentChecks(image,op.owner)
       ?await composeInitialCurrentOperation({...inputs,owner:op.owner,rounds,
-        observedByDelivery:image.observedByDelivery})
+        observedByDelivery:image.observedByDelivery,historicalEvidenceBytes})
       :auxiliary?await composePostConversionFindings({...inputs,rounds})
         :await composePostConversionValidation({...inputs,capture:rounds[0]});
   } catch(error) {
@@ -2081,7 +2083,7 @@ export async function normalizeSuccessor({specPath,slice,expectedActivationId}) 
   return begin({specPath,slice,expectedActivationId,operation:current.normalization.operation,successor:true});
 }
 
-export async function publish(handle,{checkpoint=null}={}) {
+export async function publish(handle,{checkpoint=null,historicalEvidenceFile=null}={}) {
   const op=await load(handle);
   const resumed=(await readJson(path.join(op.context.logicalExecutionRoot,'approved-preparation.json'))).resumption!==undefined;
   const auxiliary=op.owner.operation!=='VALIDATE_SLICE';
@@ -2090,6 +2092,8 @@ export async function publish(handle,{checkpoint=null}={}) {
     || auxiliary && op.record.runner.resultStatus==='TESTS_FAIL'
       && !resumed && round+(op.binding.normalization?.consumedInvocations??0)<invocationLimit(op))
     fail('OWNER_UNCERTAIN','native terminal result has not been captured');
+  if(historicalEvidenceFile!==null&&op.owner.operation!=='APPLY_FINDINGS')
+    fail('INVALID_ARGUMENTS','historical evidence recovery requires captured APPLY before publication');
   if(op.record.phase==='activation_written') {
     const result=await recoverCurrentExecutionOperation({workspace:op.workspace,marker:op.marker,
       binding:op.binding,previousPath:path.join(op.root,op.binding.previousPath),
@@ -2100,7 +2104,16 @@ export async function publish(handle,{checkpoint=null}={}) {
       registryCompletion:()=>completeRegistry(op)});
     return {...result,nextAction:result.cleanup==='complete'?'inspect':'resume-cleanup'};
   }
-  const {image,observation,composed}=await capturedComposition(op);
+  if(historicalEvidenceFile!==null && (op.owner.operation!=='APPLY_FINDINGS'
+    ||op.record.runner?.status!=='captured'||!['working','prepared'].includes(op.record.phase)))
+    fail('INVALID_ARGUMENTS','historical evidence recovery requires captured APPLY before publication');
+  const historical=historicalEvidenceFile===null?null:await readOwnedFile(path.resolve(historicalEvidenceFile));
+  const {image,observation,composed}=await capturedComposition(op,{historicalEvidenceBytes:historical?.bytes??null});
+  if(historical) {
+    const checked=await readOwnedFile(path.resolve(historicalEvidenceFile));
+    if(!same(checked.identity,historical.identity)||!checked.bytes.equals(historical.bytes))
+      fail('EVIDENCE_STALE','historical evidence changed during composition');
+  }
   const candidatePath=await withExecutionPublicationLock(op.workspace,async()=>{
     const now=await load(handle);
     const transition={operationAttemptId:now.owner.operationAttemptId,
@@ -2501,7 +2514,7 @@ function commandArguments(argv) {
     'bind-native':[['--handle','--agent-id'],[]],'verify-native':[['--origin-file'],[]],
     'validate-native-response':[['--origin-file','--response-json'],[]],
     'capture-native':[['--handle','--tool-result-file'],['--review-triage-file']],abort:[['--handle'],['--tool-result-file']],
-    publish:[['--handle'],[]],cleanup:[['--handle'],[]],resume:[['--handle'],[]],
+    publish:[['--handle'],['--historical-evidence-file']],cleanup:[['--handle'],[]],resume:[['--handle'],[]],
     normalize:[[],['--handle','--spec-path','--slice','--expected-activation-id']]};
   const reject=reason=>fail('INVALID_ARGUMENTS',reason),rule=Object.hasOwn(rules,argv[0])?rules[argv[0]]:null;
   if(!rule) reject('Unknown current-operation command');
@@ -2546,7 +2559,7 @@ export async function main(argv=process.argv.slice(2)) {
     else if(command==='normalize' && handle) result=await normalize(handle);
     else if(command==='normalize') result=await normalizeSuccessor({specPath:flag('--spec-path'),
       slice:flag('--slice'),expectedActivationId:flag('--expected-activation-id')});
-    else if(command==='publish') result=await publish(handle);
+    else if(command==='publish') result=await publish(handle,{historicalEvidenceFile:flag('--historical-evidence-file')});
     else if(command==='abort') result=await abort(handle,flag('--tool-result-file'));
     else if(command==='cleanup') result=await cleanup(handle);
     else if(command==='resume') result=await resume(handle);

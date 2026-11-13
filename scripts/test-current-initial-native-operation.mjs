@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createHash} from 'node:crypto';
@@ -955,10 +956,21 @@ test('Initial malformed native response persists a refusal without granting acce
   assert.ok(bundle.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')==='{"invalid":'));
 });
 
-for(const terminal of [false,true])test(`Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal use one selected variant${terminal?' with terminal request binding':''}`,async()=>{
+for(const priorPass of [false,true,'legacy'])for(const terminal of (priorPass==='legacy'?[false]:[false,true]))test(`Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal use one selected variant${terminal?' with terminal request binding':''}${priorPass?' after prior local PASS':''}${priorPass==='legacy'?' with authenticated historical recovery':''}`,async()=>{
   const f=await fixture();
   await installCurrentInitial(f);
-  let ordinal=0;
+  let ordinal=0,hasFindings=false,historicalEvidenceFile=null;
+  let legacyPublish=null;
+  if(priorPass==='legacy') {
+    // Reproduce the former producer in an isolated test-only runtime, rather
+    // than editing a published evidence bundle or its activation controls.
+    const runtime=path.join(f.root,'tmp','legacy-runtime');
+    await fs.cp(new URL('../skills/workflows/stnl-slice-executor/runtime/',import.meta.url),runtime,{recursive:true});
+    const stateFile=path.join(runtime,'current-evidence-state.mjs');
+    const state=await fs.readFile(stateFile,'utf8');
+    await fs.writeFile(stateFile,state.replace("if(base.bundle.implementation.length) {\n      const first=records.find", "if(base.cycle&&base.bundle.implementation.length) {\n      const first=records.find"));
+    legacyPublish=(await import(pathToFileURL(path.join(runtime,'execution-current-operation.mjs')))).publish;
+  }
   async function operation(kind,{before=null,after=null,status,findings=[]}={}) {
     if(before!==null) await fs.writeFile(path.join(f.root,'src/pay.mjs'),before);
     const inspection=await inspectCurrentExecution(f.specPath);
@@ -981,8 +993,8 @@ for(const terminal of [false,true])test(`Initial native judgment EXECUTE, formal
       result.commands=measured.commands;
     } else if(kind==='VALIDATE_SLICE') result={status,
       commands:measured.commands,evidence:'The prepared pay assertion was executed with its recorded exit.',
-      findingReferences:findings.length?'finding-01':status==='PASS'?'finding-01':'none',
-      findingDispositions:findings.length?'finding-01=active':status==='PASS'?'finding-01=resolved':'none',
+      findingReferences:findings.length?'finding-01':status==='PASS'&&hasFindings?'finding-01':'none',
+      findingDispositions:findings.length?'finding-01=active':status==='PASS'&&hasFindings?'finding-01=resolved':'none',
       blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
     else result={status:'TESTS_PASS',automaticCheckRound:'1/3',
       discoverySources:'Approved task, source and test.',discoveryActions:'Inspected approved source and test.',
@@ -995,24 +1007,66 @@ for(const terminal of [false,true])test(`Initial native judgment EXECUTE, formal
       unsupportedActiveFindings:'none',failures:'none',evidenceOrFailureSummary:'The approved test exited zero.',
       affectedFilesOrBehaviors:'src/pay.mjs',blockers:'none',unexpectedWorkspaceEffects:'none',
       persistenceSummary:'The native helper retained the reviewed observation; the runner made no product changes.'};
+    if(findings.length)hasFindings=true;
     const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result,
       ...(kind==='VALIDATE_SLICE'?{newFindings:findings.map(item=>({...item,originAttempt:request.attemptId}))}:{})});
     const file=path.join(f.root,`mechanical-initial-cycle-${ordinal}.json`);
     await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
     const captured=await captureNative(started.handle,file);
     assert.equal(captured.status,kind==='APPLY_FINDINGS'?'TESTS_PASS':status??'TESTS_PASS');
-    const published=await publish(started.handle);
+    let published;
+    if(priorPass==='legacy'&&kind==='APPLY_FINDINGS') {
+      const proofFile=dispatch.originFile.replace('.origin.json','.verification.json');
+      const proof=await fs.readFile(proofFile),response=await fs.readFile(file);
+      const marker=path.join(path.dirname(dispatch.originFile),'owner.json'),ownerBytes=await fs.readFile(marker);
+      await assert.rejects(publish(started.handle),/first formal anchor/);
+      const badFile=path.join(f.root,'tmp','wrong-history.json');
+      await fs.writeFile(badFile,(await fs.readFile(historicalEvidenceFile,'utf8'))+' ');
+      await assert.rejects(publish(started.handle,{historicalEvidenceFile:badFile}),/sealed formal predecessor/);
+      const altered=JSON.parse(await fs.readFile(historicalEvidenceFile,'utf8'));
+      altered.validation.origin.deliveryId='foreign-owner';await fs.writeFile(badFile,JSON.stringify(altered));
+      await assert.rejects(publish(started.handle,{historicalEvidenceFile:badFile}),/sealed formal predecessor/);
+      const alias=path.join(f.root,'tmp','history-link.json');await fs.symlink(historicalEvidenceFile,alias);
+      await assert.rejects(publish(started.handle,{historicalEvidenceFile:alias}));
+      assert.deepEqual(await fs.readFile(marker),ownerBytes,'refused sources cannot mutate operation controls');
+      await assert.rejects(fs.stat(path.join(path.dirname(dispatch.originFile),'candidate')),{code:'ENOENT'});
+      await assert.rejects(publish(started.handle,{historicalEvidenceFile,checkpoint:phase=>{
+        if(phase==='before-backup')throw new Error('controlled historical publication interruption');
+      }}),/controlled historical publication interruption/);
+      published=await publish(started.handle,{historicalEvidenceFile});
+      await fs.rename(historicalEvidenceFile,historicalEvidenceFile+'.archived');
+      assert.equal((await resume(started.handle)).phase,'committed','completed recovery does not need historical input');
+      historicalEvidenceFile=null;
+      assert.deepEqual(await fs.readFile(proofFile),proof,'recovery never reruns captured verification');
+      assert.deepEqual(await fs.readFile(file),response,'literal conclusion is unchanged');
+    } else {
+      if(historicalEvidenceFile&&kind==='APPLY_FINDINGS')await assert.rejects(
+        publish(started.handle,{historicalEvidenceFile}),/absent first formal anchor/);
+      if(historicalEvidenceFile&&kind==='VALIDATE_SLICE')await assert.rejects(
+        publish(started.handle,{historicalEvidenceFile}),/captured APPLY/);
+      published=await (priorPass==='legacy'&&status==='NEEDS_FIX'?legacyPublish:publish)(started.handle);
+    }
     assert.equal(published.publication,'confirmed');
     const continuity=JSON.parse(await fs.readFile(path.join(f.root,'specs/pay/requirements-execution/continuity.json')));
     const bundle=JSON.parse(await fs.readFile(path.join(f.root,'specs/pay/requirements-execution',continuity.deliveries[0].evidence.path)));
     for(const check of [...bundle.implementation,...bundle.findingsChecks])assert.equal(check.contract.terminal,null);
     if(kind==='VALIDATE_SLICE')assert.deepEqual(bundle.validation.contract.terminal,request.terminal??null);
+    if(priorPass&&priorPass!=='legacy'&&kind==='VALIDATE_SLICE'&&status==='NEEDS_FIX') {
+      assert.equal(bundle.validation.id,'attempt-02');
+      assert.equal(bundle.support.find(item=>item.id==='attempt-01')?.kind,'validation',
+        'later formal must preserve the first formal CAS anchor for subsequent APPLY');
+    }
+    if(priorPass&&kind==='VALIDATE_SLICE'&&status==='PASS'&&!hasFindings) {
+      historicalEvidenceFile=path.join(f.root,'tmp','first-formal-history.json');
+      await fs.copyFile(path.join(f.root,'specs/pay/requirements-execution',continuity.deliveries[0].evidence.path),historicalEvidenceFile);
+    }
     return inspectCurrentExecution(f.specPath);
   }
   const paid='export const pay=()=>"paid";\n';
   const broken='export const pay=()=>"broken";\n';
   const execute=await operation('EXECUTE_SLICE',{after:paid});
   assert.equal(execute.normalHandoff.operation,'VALIDATE_SLICE');
+  if(priorPass)await operation('VALIDATE_SLICE',{status:'PASS'});
   const finding={id:'finding-01',severity:'blocking',problem:'The pay export returns broken.',
     evidence:'The prepared assertion fails on the pay result.',impact:'AC-001 is unmet.',
     relatedAuthority:'AC-001',expectedCorrection:'Restore the pay result to paid.'};
@@ -1023,7 +1077,7 @@ for(const terminal of [false,true])test(`Initial native judgment EXECUTE, formal
   const final=await operation('VALIDATE_SLICE',{status:'PASS'});
   assert.equal(final.deliveries[0].formalStatus,'PASS');
   assert.deepEqual(final.deliveries[0].counters,
-    {implementationChecks:1,findingsChecks:1,validationAttempts:2,findings:1});
+    {implementationChecks:1,findingsChecks:1,validationAttempts:priorPass?3:2,findings:1});
 });
 
 test('Initial ingress installs reviewed bytes once and reads back pristine',async()=>{

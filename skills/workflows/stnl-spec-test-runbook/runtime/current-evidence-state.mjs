@@ -2977,6 +2977,14 @@ function inspectFindings(original,bundle,context,approvedAuthority,declaredCount
     equal(firstFormal.request.base.priorScopePaths,initial.paths,'EVIDENCE_STALE','retained implementation first formal scope');
     equal(firstFormal.request.base.counters,{implementationChecks:bundle.implementation.length,findingsChecks:0,
       validationAttempts:0,findings:0},'INVALID_CURRENT_IMAGE','retained implementation first formal counters');
+    if(admission.record.id==='attempt-02'&&firstFormal.payload.status==='PASS'
+      &&admission.request.base.counters.findingsChecks===0) {
+      const predecessor={...prefix,validation:firstFormal.record,openFindings:firstFormal.open,
+        support:[...prefix.support,...anchorRefusals]};
+      predecessor.objects=referencedObjects([...predecessor.implementation,...predecessor.support,predecessor.validation],map);
+      equal(admission.request.base.evidenceSha256,raw(encode(predecessor)),
+        'EVIDENCE_STALE','second formal historical predecessor CAS');
+    }
   }
   const admissionCounters=formalCounters(admission);
   const currentAdmission=first.base.validation.id;
@@ -3194,7 +3202,8 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
   if (latest) {
     const {request,response,all,open,dispositions}=latest;
     if (request.base.counters.findings<witnessedFindings) invalid('latest finding counter below retained origins');
-    const required=new Set([...all.map(item => item.originAttempt),...formalSupports.filter(item=>item.origin.localRevision<approvedAuthority.localRevision).map(item=>item.id)].filter(id => id!==request.attemptId));
+    const required=new Set([...all.map(item => item.originAttempt),...formalSupports.filter(item=>item.origin.localRevision<approvedAuthority.localRevision
+      || bundle.implementation.length&&item.id==='attempt-01').map(item=>item.id)].filter(id => id!==request.attemptId));
     equal([...origins.keys()].filter(id => id!==request.attemptId).sort(ordinal),[...required].sort(ordinal),'INVALID_CURRENT_IMAGE','retained formal origins');
     for (const item of all) {
       const origin=origins.get(item.originAttempt);
@@ -3342,7 +3351,10 @@ export function composeCurrentValidationEvidence(input) {
       if (origin && admitted!==latestId && !chosen.some(item=>item.id===admitted)) chosen.push(origin);
       chosen.sort((a,b)=>formalRecordNumber(a)-formalRecordNumber(b));
     }
-    if(base.cycle&&base.bundle.implementation.length) {
+    // The first formal authenticates the retained implementation prefix even
+    // before a findings cycle exists (for example PASS -> drift -> NEEDS_FIX).
+    // Dropping it here would make the next admitted APPLY unverifiable.
+    if(base.bundle.implementation.length) {
       const first=records.find(item=>item.id==='attempt-01');
       if(first&&first.id!==latestId&&!chosen.some(item=>item.id===first.id))chosen.push(first);
       chosen.sort((a,b)=>formalRecordNumber(a)-formalRecordNumber(b));
@@ -3486,9 +3498,40 @@ export function inspectCurrentFindingsPrefix(input) {
     consumedInvocations:cycle.consumedInvocations};
 }
 export function composeCurrentFindingsEvidence(input) {
-  const state=currentFindingsCycle(input);
-  if(state.replay)return state.replay;
+  const {historicalEvidenceBytes=null,...currentInput}=input;
+  const state=currentFindingsCycle(currentInput);
+  if(state.replay) {
+    if(historicalEvidenceBytes!==null)invalid('historical evidence recovery cannot change a completed findings replay');
+    return state.replay;
+  }
   const {base,cycle,store,observed}=state;
+  // Recover only the old producer's dropped first-formal anchor. Derive the
+  // captured cycle against the ORIGINAL source/CAS before adding support.
+  if(historicalEvidenceBytes!==null) {
+    if(input.owner.operation!=='APPLY_FINDINGS'||base.cycle
+      ||base.bundle.validation?.id!=='attempt-02'||!base.bundle.implementation.length
+      ||base.bundle.support.some(item=>item.kind==='validation'&&item.id==='attempt-01'))
+      invalid('historical evidence recovery requires an absent first formal anchor before the first findings cycle');
+    const source=copyBytes(historicalEvidenceBytes,'historical evidence');
+    const request=base.latest.request;
+    equal(raw(source),request.base.evidenceSha256,'EVIDENCE_STALE','historical evidence does not match sealed formal predecessor');
+    const historical=inspect(source,input.context,input.authority,request.base.counters,
+      base.bundle.validation.testedWork,true);
+    if(historical.bundle.validation?.id!=='attempt-01'||historical.cycle
+      ||historical.bundle.findingsChecks.length||historical.bundle.openFindings.length
+      ||historical.latest?.payload.status!=='PASS')
+      invalid('historical evidence recovery requires the authenticated first PASS');
+    equal(historical.bundle.implementation,base.bundle.implementation,'OWNER_MISMATCH','historical implementation prefix');
+    equal(historical.bundle.validation.origin.deliveryId,base.bundle.validation.origin.deliveryId,'OWNER_MISMATCH','historical delivery');
+    // These are existing validation/support records, never a synthesized verdict.
+    for(const [id,bytes] of historical.map) {
+      if(base.map.has(id)&&!base.map.get(id).equals(bytes))mismatch('historical object collision');
+      base.map.set(id,bytes);
+    }
+    base.bundle={...base.bundle,support:[...base.bundle.support,
+      ...historical.bundle.support.filter(item=>item.kind==='rejection'&&item.origin.operation==='VALIDATE_SLICE'),
+      historical.bundle.validation]};
+  }
   const implementation=ownedImplementation(base.bundle,base.map)?base.bundle.implementation:[];
   const oldOrigins=base.bundle.support.filter(item=>item.kind==='validation'
     && (base.bundle.openFindings.some(finding=>finding.originAttempt===item.id)||implementation.length&&item.id==='attempt-01'));
@@ -3941,7 +3984,9 @@ function approvedOutputStillAbsent(before,after,name,info) {
   return absent(before)&&absent(after);
 }
 export async function composeInitialCurrentOperation({context,requirementsAuthority,previous,admission,
-  deliveryId,owner,rounds,observedByDelivery}) {
+  deliveryId,owner,rounds,observedByDelivery,historicalEvidenceBytes=null}) {
+  if(historicalEvidenceBytes!==null&&owner?.operation!=='APPLY_FINDINGS')
+    invalid('historical evidence recovery is only for APPLY_FINDINGS');
   closed(previous,['activationBytes','files'],'Initial predecessor');
   closed(admission,['activationBytes','files'],'Initial admission');
   const prior=validateCurrentImage(previous);
@@ -3992,7 +4037,8 @@ export async function composeInitialCurrentOperation({context,requirementsAuthor
   } else if(owner.operation==='APPLY_FINDINGS') {
     if(!current.evidence) incomplete('Initial findings need a captured formal predecessor');
     product=composeCurrentFindingsEvidence({context,authority,owner,
-      previous:{bundleBytes:files.get(current.evidence.path),counters:current.counters},rounds});
+      previous:{bundleBytes:files.get(current.evidence.path),counters:current.counters},rounds,
+      ...(historicalEvidenceBytes===null?{}:{historicalEvidenceBytes})});
   } else fail('UNSUPPORTED_FORMAT','Initial operation is outside EXECUTE/VALIDATE/APPLY');
   const rejected=product.outcome==='rejected';
   if(!rejected && product.outcome!=='recorded') invalid('Initial outcome is not concluded');
