@@ -315,8 +315,9 @@ async function validateDistribution(root) {
   await validateReadme(root);
   const codex = await validateCodexPackage(path.join(root, "codex"));
   const claude = await validateClaudePackage(path.join(root, "claude-code"));
-  const scoped = spawnSync(process.execPath, [path.join(SCRIPT_ROOT, 'check-contracts.mjs'), 'subagents', '--root', root, '--platform', 'codex'], { encoding: 'utf8' });
+  const scoped = spawnSync(process.execPath, [path.join(SCRIPT_ROOT, 'check-contracts.mjs'), 'subagents', '--root', root], { encoding: 'utf8' });
   assert.equal(scoped.status, 0, scoped.stdout + scoped.stderr);
+  assert.equal(codex.runner, claude.runner, "runner platform contracts diverge");
   assert.equal(codex.scout, claude.scout, "scout platform contracts diverge");
 }
 

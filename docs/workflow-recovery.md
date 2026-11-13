@@ -110,3 +110,18 @@ Um novo pedido literal **Continue.** executou somente inspect/resume/readback. H
 A suíte integral do controlador, executada após a reentrada, terminou com **229 testes: 228 PASS e 1 falha**. A falha foi no cenário existente Q18→Q20 com prova EXECUTE e formal anterior retidas. Foi reproduzida também em `d0fd916`, anterior à nova reentrada, e o log original foi preservado. A causa era reconstrução incompleta do predecessor revisado quando seu suporte incluía uma rejeição EXECUTE. A correção reconhece esse predecessor somente se o digest integral reconstruído coincide com a decisão de revisão aprovada, sem ampliar equivalência de autoridade ou admissão. O cenário positivo passou; o reteste final de 6 cenários passou integralmente, incluindo negativas de adulteração de suporte e digest, closure e âncoras normalizadas. Correção commitada em `1c930c7`; estrutura final e sete mirrors idênticos conferidos. O piloto foi relido com esse runtime final e continua COMPLETE, com mesma evidência e sem repetir receitas. Não apresentar a execução original como uma suíte integral verde.
 
 [Resumo da suíte original e retestes](evidence/browser-qa-20261113/controller-suite.json). A suíte integral não foi repetida após a correção localizada; os seis cenários pertinentes foram retestados, e nenhum defeito conhecido permanece aberto nesta validação.
+
+## Paridade Codex/Claude do candidato (2026-11-13)
+
+O runner Claude ainda estava no contrato v11. Foi equalizado ao corpo semântico v15 do Codex, preservando seu frontmatter nativo (`claude-sonnet-5`, esforço medium, Read/Glob/Grep/Bash). Ambos agora seguem os mesmos envelopes selecionados pela origem, preflight de resposta, receita oficial sem replay, findings/rodadas e julgamento terminal. As referências compartilhadas selecionam explicitamente o adaptador nativo da plataforma, com path e SHA-256 fixados, sem fallback pessoal.
+
+O gate agregado passa a exigir igualdade integral dos corpos semânticos (metadata permanece específico de cada plataforma); os gates individuais aplicam o contrato atual em ambas. Regressões negativas cobrem drift entre adaptadores, escolha indevida de comandos, divergência da observação, replay, envelope legado, diagnostics de ciclo removidos e rodada não vinculada à admissão.
+
+Validação offline concluída:
+- `node --test scripts/test-validation-runner-contract.mjs scripts/test-subagent-packages.mjs scripts/test-sentinel-install.mjs scripts/test-launcher-contract.mjs scripts/test-runtime-context-budget.mjs`: **102 testes passaram, zero falhas/skips**.
+- `check-contracts.mjs subagents --root agents` e gates individuais Codex/Claude: PASS.
+- `check-distributable-skills.mjs` para executor e quality-manager: PASS.
+- `git diff --check`: PASS.
+- Preview do instalador: Claude tem 8 substituições pendentes (7 workflows + runner); Codex tem 7 workflows pendentes. Nenhuma instalação pessoal foi executada.
+
+Escopo da evidência: paridade e distribuição offline, não uso vivo do Claude. O teste manual do Claude continua reservado ao usuário. Não houve merge em main nem push.
