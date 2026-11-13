@@ -691,7 +691,7 @@ function terminalCertification(snapshot,activation,items) {
     }
     return {complete:activation.activeAttempt===null,reason:activation.activeAttempt===null?null:absent};
   }
-  // Missing integral proof is not a changed plan. Reuse only an unambiguous
+  // Missing integral proof is not a changed plan. Reuse the last approved
   // live integral owner already granted by the approved projection, with an
   // authenticated same-operation local proof. Never repair a mismatched or
   // invalid terminal record by treating it as absent.
@@ -699,8 +699,10 @@ function terminalCertification(snapshot,activation,items) {
     const candidates=items.filter(item=>snapshot.deliveries.some(member=>member.deliveryId===item.deliveryId
       && member.slice===item.slice) && target.deliveries.find(leaf=>leaf.deliveryId===item.deliveryId)?.obligations
       .some(obligation=>obligation.contribution==='complete' && obligation.fullOwner===item.deliveryId));
-    if(candidates.length===1) {
-      const item=candidates[0],record=item.facts.latest?.record;
+    // The approved delivery order is serial. The last live integral owner
+    // reviews the complete combination even when earlier slices also own requirements.
+    if(candidates.length) {
+      const item=candidates.at(-1),record=item.facts.latest?.record;
       if(record && isDeepStrictEqual(record,item.facts.bundle.validation)) {
         const cap=restoreCaptureSources('current-validation',record,new Map(item.facts.bundle.objects
           .map(object=>[object.id,Buffer.from(object.bytesBase64,'base64')])));

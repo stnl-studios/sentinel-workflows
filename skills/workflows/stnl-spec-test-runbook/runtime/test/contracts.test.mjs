@@ -22,23 +22,13 @@ test("eval catalog contains the complete unique 21-case contract", async () => {
   }
 });
 
-test("generation remains exclusively reachable through its own launcher", async () => {
-  const promptRoot = path.join(REPOSITORY_ROOT, "templates", "prompts");
-  const files = (await fs.readdir(promptRoot)).filter((name) => name.endsWith(".md"));
-  const mentions = [];
-  for (const name of files) {
-    const content = await fs.readFile(path.join(promptRoot, name), "utf8");
-    if (/GENERATE_RUNBOOK|stnl-spec-test-runbook/u.test(content)) mentions.push(name);
-  }
-  assert.deepEqual(mentions, ["spec-test-runbook.md"]);
-  for (const relative of [
-    "templates/prompts/spec-close.md",
-    "skills/workflows/stnl-spec-lifecycle-manager/SKILL.md",
-    "skills/workflows/stnl-slice-executor/SKILL.md", "skills/workflows/stnl-slice-quality-manager/SKILL.md",
-  ]) {
-    const content = await fs.readFile(path.join(REPOSITORY_ROOT, relative), "utf8");
-    assert.equal(/GENERATE_RUNBOOK|stnl-spec-test-runbook/u.test(content), false, `${relative} must not generate a runbook`);
-  }
+test("runbook invocation accepts approved workflows without making completion implicit approval", async () => {
+  const skill = await fs.readFile(path.join(SKILL_ROOT, "SKILL.md"), "utf8");
+  assert.match(skill, /requested directly or covered by the approved workflow/u);
+  assert.match(skill, /completion alone is not approval to generate/u);
+  assert.match(skill, /Generation never executes tests, grants PASS, or invokes CLOSE/u);
+  const launcher = await fs.readFile(path.join(REPOSITORY_ROOT, "templates/prompts/spec-test-runbook.md"), "utf8");
+  assert.match(launcher, /GENERATE_RUNBOOK/u);
 });
 
 test("runbook runtime uses no network, external package, child process, or dynamic code", async () => {

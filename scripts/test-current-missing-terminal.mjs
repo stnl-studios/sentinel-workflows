@@ -60,15 +60,27 @@ test('missing integral judgment admits fresh terminal proof without changing app
   assert.equal(Number(next.validation.id.slice(8)),Number(prior.validation.id.slice(8))+1);
 });
 
-test('missing terminal with multiple approved integral candidates remains blocked',async t=>{
+test('missing terminal selects last approved integral candidate without replan',async t=>{
   const f=await completedNativeCase(t,{retire:false,drift:false,independent:true});
   const current=await captureCurrentExecution(f.specPath);
-  assert.equal(current.inspection.state,'VALIDATION_BLOCKED');
-  assert.equal(current.inspection.normalHandoff,null);
+  assert.equal(current.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  assert.equal(current.inspection.normalHandoff.slice,'slice-02');
   assert.ok(current.inspection.deliveries.every(x=>x.formalStatus==='PASS'));
-  // Preserve the prior quiet REPLAN route; ambiguity does not grant terminal
-  // admission or COMPLETE, and is not used as the new handoff exception.
-  assert.deepEqual((await captureCurrentSetReplacementSource(f.specPath)).inspection.normalHandoff,null);
+  assert.notEqual(current.inspection.state,'COMPLETE');
+  assert.deepEqual((await captureCurrentSetReplacementSource(f.specPath)).inspection.normalHandoff,current.inspection.normalHandoff);
+  const handoff=current.inspection.normalHandoff;
+  const start=await begin({specPath:f.specPath,slice:handoff.slice,expectedActivationId:current.inspection.activationId,operation:'VALIDATE_SLICE'});
+  const dispatch=await reserveDispatch(start.handle,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
+  const agentId='mechanical-multiple-integral';await bindNative(start.handle,agentId);
+  const measured=await verifyNative(dispatch.originFile);
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result:{status:'PASS',commands:measured.commands,
+    evidence:'Synthetic independent integral review across both complete owners.',findingReferences:'none',findingDispositions:'none',blockers:'none',
+    unexpectedWorkspaceEffects:'none',persistenceSummary:'Record integral judgment without replan.'},newFindings:[]});
+  const tool=f.root+'/multiple-integral.json';await fs.writeFile(tool,JSON.stringify({agentId,status:'completed',finalResponse}));
+  await captureNative(start.handle,tool);assert.equal((await publish(start.handle)).publication,'confirmed');
+  const after=await captureCurrentExecution(f.specPath);assert.equal(after.inspection.state,'COMPLETE');
+  assert.deepEqual(after.files.get('approved-preparation.json'),current.files.get('approved-preparation.json'));
+
 });
 
 test('missing terminal cannot reopen a retired integral owner',async t=>{

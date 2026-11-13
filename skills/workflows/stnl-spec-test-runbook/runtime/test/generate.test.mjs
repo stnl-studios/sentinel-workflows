@@ -224,3 +224,26 @@ test("generator rejects a manifest reached through a symlinked ancestor", async 
   await assert.rejects(generateRunbook(root, path.join(link, "manifest-through-link.json")), /manifest contains a symlink component/u);
   assert.equal(await fs.stat(path.join(root, "test-runbook")).catch(() => null), null);
 });
+
+test("SPEC generation succeeds without execution and keeps expected behavior unchanged when execution is broken", async (t) => {
+  const root = await copyFixture(t);
+  const manifestPath = await externalManifest(root);
+  const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+  manifest.sources = manifest.sources.filter((source) => !source.path.includes("/execution/"));
+  manifest.scenarios = manifest.scenarios.slice(0, 2).map((scenario) => ({
+    ...scenario, origins: scenario.origins.filter((origin) => origin.kind !== "task" && origin.kind !== "slice"),
+  }));
+  manifest.coverage = manifest.coverage.filter((item) => item.source_id !== "slice-02");
+  manifest.coverage[0].rationale = "Expected behavior comes from R-001 and AC-001.";
+  manifest.gaps = manifest.gaps.filter((gap) => gap.title !== "Final confirmation copy");
+  await fs.writeFile(manifestPath, JSON.stringify(manifest));
+  await fs.rm(path.join(root, "execution"), { recursive: true });
+  const generated = await generateRunbook(root, manifestPath);
+  const before = await fs.readFile(generated.output);
+  await fs.mkdir(path.join(root, "execution"));
+  await fs.writeFile(path.join(root, "execution", "activation.json"), "broken operation");
+  const regenerated = await generateRunbook(root, manifestPath);
+  assert.deepEqual(await fs.readFile(regenerated.output), before);
+  assert.match(before.toString(), /The API returns HTTP 201/);
+  assert.equal(await fs.readFile(path.join(root, "execution", "activation.json"), "utf8"), "broken operation");
+});

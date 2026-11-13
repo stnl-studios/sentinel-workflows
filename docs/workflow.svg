@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
   <title id="title">Fluxo Sentinel Workflows</title>
-  <desc id="desc">Da SPEC ao Plan + Tasks, revisão conjunta, execução e validação formal. O runner apoia execução com checks auxiliares e a validação com revisão independente. NEEDS_FIX retorna a correção explicitamente à execução antes de validar de novo.</desc>
+  <desc id="desc">Da SPEC ao Plan + Tasks, revisão conjunta, execução e validação formal. O runner apoia execução com checks auxiliares e a validação com revisão independente. NEEDS_FIX retorna à correção aprovada antes de validar de novo. O principal segue os handoffs e pausa antes do CLOSE.</desc>
   <style>
     .canvas { fill: #f6f8fa; stroke: #d0d7de; }
     .card { fill: #ffffff; stroke: #d0d7de; }
@@ -52,7 +52,7 @@
     }
   </style>
   <rect class="canvas" x="1" y="1" width="1198" height="428" rx="18" />
-  <text class="muted" x="32" y="39" font-size="13" font-weight="700" letter-spacing="1.2">UM HANDOFF DE CADA VEZ</text>
+  <text class="muted" x="32" y="39" font-size="13" font-weight="700" letter-spacing="1.2">FLUXO APROVADO · PAUSA ANTES DO CLOSE</text>
 
   <!-- Preparation is authored and reviewed jointly before execution admission. -->
   <g fill="none" stroke-width="2" marker-end="url(#arrow)">
@@ -76,7 +76,7 @@
     <circle class="soft-amber" cx="528" cy="96" r="13" />
     <text class="amber" x="528" y="101" text-anchor="middle" font-size="12" font-weight="700">3</text>
     <text class="ink" x="522" y="132" font-size="18" font-weight="700">Revisão independente</text>
-    <text class="muted" x="522" y="156" font-size="13">Conjunto final e checklist aprovados</text>
+    <text class="muted" x="522" y="156" font-size="13">Plano aprovado, revisão e aceites integrais</text>
     <rect class="card" x="824" y="70" width="140" height="110" rx="13" />
     <circle class="soft-green" cx="848" cy="96" r="13" />
     <text class="green" x="848" y="101" text-anchor="middle" font-size="12" font-weight="700">4</text>

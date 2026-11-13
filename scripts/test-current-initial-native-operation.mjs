@@ -2838,3 +2838,44 @@ test('explicit reviewed reentry revalidates every stale completed structural con
   for(const d of JSON.parse(Buffer.from(b.image.files.get('continuity.json'))).deliveries)
     assert.equal(d.counters.validationAttempts,prior.deliveries.find(i=>i.deliveryId===d.deliveryId).counters.validationAttempts+1);
 });
+
+for(const winner of ['install','revise'])test(`Initial generation and revise are serialized when ${winner} wins`,async t=>{
+  const f=await fixture({single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const prepared=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'}),candidate=prepared.candidateExecutionRoot;
+  await fs.cp(f.preparationRoot,candidate,{recursive:true});
+  await approveSyntheticPreparation({specPath:f.specPath,candidateExecutionRoot:candidate});
+  const draftOptions={specPath:f.specPath,candidateExecutionRoot:candidate};
+  const {revisePreparationDraft,capturePreparationDraft,approvePreparationDraft,assertPreparationDraftApproval}=await import('../skills/workflows/stnl-execution-planner/runtime/preparation-draft.mjs');
+  const {installCurrentInitial:installRuntime}=await import('../skills/workflows/stnl-execution-planner/runtime/install-current-initial.mjs');
+  const {workspace}=await resolveCurrentExecutionContext(f.specPath),lock=(await executionLockIdentity(workspace)).lockPath;
+  const controls=await preparationDraftPaths(draftOptions),captureBefore=await fs.readFile(controls.capture),approvalBefore=await fs.readFile(controls.approval);
+  const gatePath=winner==='install'?path.join(candidate,'approved-preparation.json'):lock;
+  let signalEntered,releaseWrite,paused=false,pending;
+  const entered=new Promise(resolve=>{signalEntered=resolve;}),gate=new Promise(resolve=>{releaseWrite=resolve;}),open=fs.open;
+  fs.open=async function(file,...args){
+    if(file===gatePath&&!paused){paused=true;signalEntered();await gate;}
+    return open.call(this,file,...args);
+  };
+  try{
+    pending=installRuntime({...f,preparationRoot:candidate});
+    await Promise.race([entered,pending.then(()=>{throw new Error('Expected paused Initial generation');})]);
+    if(winner==='install'){
+      await assert.rejects(revisePreparationDraft(draftOptions),/lock|publication/iu);
+      assert.deepEqual(await fs.readFile(controls.capture),captureBefore);
+      assert.deepEqual(await fs.readFile(controls.approval),approvalBefore);
+      releaseWrite();assert.equal((await pending).publication,'confirmed');
+    }else{
+      const revised=await revisePreparationDraft(draftOptions);
+      assert.deepEqual(await fs.readFile(path.join(revised.archivedCapture,'capture.json')),captureBefore);
+      releaseWrite();await assert.rejects(pending,/ENOENT|approval|capture/iu);
+      for(const name of ['approved-preparation.json','continuity.json'])await assert.rejects(fs.stat(path.join(candidate,name)),{code:'ENOENT'});
+      assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+      const captured=await capturePreparationDraft(draftOptions);
+      await approvePreparationDraft({...draftOptions,approvedCaptureSha256:captured.captureSha256});
+      assert.equal((await assertPreparationDraftApproval(draftOptions,{required:true})).captureSha256,captured.captureSha256);
+      assert.equal((await installRuntime({...f,preparationRoot:candidate})).publication,'confirmed');
+    }
+  }finally{releaseWrite();fs.open=open;if(pending)await pending.catch(()=>{});}
+  assert.equal(paused,true);
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'MATERIALIZED_PRISTINE');
+});

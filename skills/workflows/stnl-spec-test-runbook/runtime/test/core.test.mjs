@@ -278,3 +278,21 @@ test("ignored macOS metadata never enters discovery evidence", async (t) => {
   const inspected = await inspectWorkspace(root, "SPEC", {});
   assert.equal(inspected.mandatory_sources.some((entry) => entry.includes(".DS_Store") || entry.includes("._") || entry.includes("__MACOSX")), false);
 });
+
+test("SPEC sources stay independent of absent, stale, malformed or symlinked execution", async (t) => {
+  const root = await copyFixture(t);
+  const baseline = await inspectWorkspace(root, "SPEC", {});
+  assert.equal(baseline.mandatory_sources.some((source) => source.includes(`${path.sep}execution${path.sep}`)), false);
+  const execution = path.join(root, "execution");
+  await fs.writeFile(path.join(execution, "activation.json"), "invalid execution state");
+  assert.deepEqual(await inspectWorkspace(root, "SPEC", {}), baseline);
+  await assert.rejects(inspectWorkspace(root, "EXECUTION", {}));
+  await fs.rm(execution, { recursive: true });
+  assert.deepEqual(await inspectWorkspace(root, "SPEC", {}), baseline);
+  await fs.writeFile(execution, "not a directory");
+  assert.deepEqual(await inspectWorkspace(root, "SPEC", {}), baseline);
+  await fs.rm(execution);
+  await fs.symlink("missing-execution-target", execution);
+  assert.deepEqual(await inspectWorkspace(root, "SPEC", {}), baseline);
+  await assert.rejects(inspectWorkspace(root, "EXECUTION", {}));
+});

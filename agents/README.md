@@ -24,7 +24,7 @@ O Codex usa `gpt-6-luna` com effort `medium`; o Claude Code usa `claude-sonnet-5
 
 As operações manuais são `PLAN`, `REPLAN` quando uma recuperação explícita exige nova estratégia, `REVIEW_PLAN`, `EXECUTE_SLICE`, `VALIDATE_SLICE` e `APPLY_FINDINGS` quando necessário. `REPLAN` exige `REPLAN_REASON`, retorna `REPLAN_DRAFT` e nunca substitui `REVIEW_PLAN`. Não existe passo manual adicional de testes.
 
-O runner aceita exatamente três operações internas, sempre acionadas automaticamente pelo launcher da operação manual:
+O runner aceita exatamente três operações internas, sempre acionadas pelo launcher da operação atual, inclusive quando o principal coordena um fluxo aprovado:
 
 - `EXECUTE_SLICE`: o contexto principal implementa; o runner executa checks e retorna `TESTS_PASS`, `TESTS_FAIL`, `TESTS_NOT_APPLICABLE` ou `BLOCKED`.
 - `APPLY_FINDINGS`: o contexto principal corrige findings autorizados; o runner testa correções e regressões relacionadas e retorna `TESTS_PASS`, `TESTS_FAIL`, `TESTS_NOT_APPLICABLE` ou `BLOCKED`.
