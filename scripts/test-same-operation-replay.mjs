@@ -133,3 +133,42 @@ test('completed private proof copied between two real native operations is refus
  await assert.rejects(()=>verifyNative(second.originFile),/context is stale/);assert.equal(checks,0);
  assert.deepEqual(await fs.readFile(targetFile),bytes);await assert.rejects(fs.lstat(second.originFile.replace('.origin.json','.observation.json')),{code:'ENOENT'});
 });
+
+// A real native runner used a cwd-relative origin while its dispatch persisted
+// the absolute path. Both spellings must retain exactly the same admission.
+test('native origin accepts relative paths and replays absolute proof without another check',async t=>{
+ const f=await nativeOperationCase(t);
+ const start=await begin({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:f.activationId});
+ const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+ await bindNative(start.handle,'relative-origin-reviewer');
+ const relative=path.relative(process.cwd(),dispatch.originFile);
+ const raw={format:'stnl-current-native-judgment-v1',result:{status:'PASS',commands:[],evidence:'Mechanical relative-origin admission regression.',findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'Read-only review.'},newFindings:[]};
+ await assert.rejects(()=>validateNativeResponse(relative,JSON.stringify(raw)),{code:'EVIDENCE_INCOMPLETE'});
+ const measured=await verifyNative(relative);
+ const verificationFile=dispatch.originFile.replace('.origin.json','.verification.json');
+ const proof=await fs.readFile(verificationFile),observation=await fs.readFile(measured.observationFile);
+ raw.result.commands=measured.commands;
+ assert.equal((await validateNativeResponse(relative,JSON.stringify(raw))).status,'valid-envelope');
+ assert.deepEqual(await verifyNative(dispatch.originFile),measured);
+ assert.deepEqual(await fs.readFile(verificationFile),proof);
+ assert.deepEqual(await fs.readFile(measured.observationFile),observation);
+});
+for(const fault of ['symlink','tamper'])test(`native relative origin rejects ${fault} before verification`,async t=>{
+ const f=await nativeOperationCase(t);
+ const start=await begin({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:f.activationId});
+ const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+ await bindNative(start.handle,'relative-origin-reviewer');
+ let supplied=dispatch.originFile;
+ if(fault==='symlink'){
+   const alias=path.join(f.root,'origin-alias');await fs.symlink(path.dirname(dispatch.originFile),alias);
+   supplied=path.join(alias,path.basename(dispatch.originFile));
+ }else{
+   const origin=JSON.parse(await fs.readFile(supplied,'utf8'));origin.dispatchId='foreign-dispatch';
+   await fs.writeFile(supplied,JSON.stringify(origin));
+ }
+ const relative=path.relative(process.cwd(),supplied);
+ await assert.rejects(()=>verifyNative(relative));
+ await assert.rejects(()=>validateNativeResponse(relative,'{}'));
+ await assert.rejects(()=>fs.stat(dispatch.originFile.replace('.origin.json','.verification.json')),{code:'ENOENT'});
+ await assert.rejects(()=>fs.stat(dispatch.originFile.replace('.origin.json','.observation.json')),{code:'ENOENT'});
+});

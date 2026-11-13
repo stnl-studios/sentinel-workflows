@@ -52,3 +52,9 @@ Preflight e revisão passam a exigir correspondência entre requisito, cenário 
 | F10 | Decisões resolvidas não devem reaparecer; READY estrutural separado de suficiência semântica nas instruções. |
 | F11 | Inventário de todos os repositórios, incluindo Bundle/documentação; não equivale a nova auditoria da OS. |
 | F12 | Retomada e classificação de falhas explícitas, sem repetir efeitos incertos; interrupções de draft/Initial têm regressões. |
+
+### Piloto nativo fora da bancada
+
+O primeiro piloto Codex real (projeto Todo isolado, skills locais e sem manager de benchmark) gerou SPEC, readiness, uma slice, captura/aprovação exata, revisão independente, implementação e runbook. O runner então revelou um defeito não exposto pelos testes anteriores: `verify-native` recusava uma origem relativa apesar de ela apontar ao controle correto. As fronteiras públicas agora resolvem caminhos relativos lexicalmente, mantendo rejeição de symlink, adulteração e identidade estrangeira; três novas regressões e o arquivo completo de replay (18 testes) passaram.
+
+Esse primeiro piloto não concluiu testes de produto nem aceitação formal. O caso bloqueado foi preservado. A sessão CLI retomada não expôs o runner anterior/coletor necessário à continuação autenticada; não foi criado outro runner para substituí-lo. A QA visual também encontrou uma recusa explícita de acesso do browser à origem local. A correção de caminhos não constitui prova de recuperação dessa sessão nem de QA visual. Nova jornada do candidato corrigido é uma execução separada, não uma recuperação retroativa.

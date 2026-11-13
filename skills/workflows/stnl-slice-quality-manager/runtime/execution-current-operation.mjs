@@ -1281,6 +1281,9 @@ async function nativeCorrectionFeedback(op,image,round) {
 }
 
 export async function verifyNative(originFile) {
+  // CLI and API callers may use cwd-relative paths; ownership still uses the
+  // absolute lexical path, never realpath (symlink aliases remain rejected).
+  if(typeof originFile==='string') originFile=path.resolve(originFile);
   const {op,origin,round}=await opFromOrigin(originFile);
   const continuation=op.record.preVerificationContinuation?.round===round?op.record.preVerificationContinuation:null;
   const generation=op.record.preVerificationContinuation?.id??null;
@@ -1398,6 +1401,9 @@ export async function verifyNative(originFile) {
 // Local draft-envelope check BEFORE the agent's first concluded response.
 // It neither captures a response nor grants a second conclusion/continuation.
 export async function validateNativeResponse(originFile,rawText) {
+  // CLI and API callers may use cwd-relative paths; ownership still uses the
+  // absolute lexical path, never realpath (symlink aliases remain rejected).
+  if(typeof originFile==='string') originFile=path.resolve(originFile);
   const {op,origin,round}=await opFromOrigin(originFile);
   if(origin.responseVariant!==NATIVE_JUDGMENT_VARIANT)fail('UNSUPPORTED_FORMAT','draft response preflight requires selected native judgment variant');
   if(op.record.runner?.status!=='running'||await maybe(op.record.runner.responseFile))
