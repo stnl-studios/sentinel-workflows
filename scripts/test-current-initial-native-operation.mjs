@@ -2437,6 +2437,27 @@ test('Initial EXECUTE proof survives Q18 and the Q20 terminal formal after Q18 m
   assert.equal(final.inspection.state,'COMPLETE');
   const current=JSON.parse(Buffer.from(final.files.get('continuity.json'))).deliveries[0];
   assert.deepEqual(JSON.parse(Buffer.from(final.files.get(current.evidence.path))).implementation,[implementation]);
+  const {completedEvidenceContext}=await import('../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs');
+  const snapshotBytes=Buffer.from(final.files.get('approved-preparation.json'));
+  const finalContinuity=JSON.parse(Buffer.from(final.files.get('continuity.json')));
+  const inspected=await completedEvidenceContext({context,snapshotBytes,continuity:finalContinuity,files:final.files});
+  assert.equal(inspected.fresh.has(current.deliveryId),true);
+  // The new recognition path must use the exact reviewed predecessor, never
+  // merely the presence of an old formal with a plausible authority.
+  const forgedBundle=JSON.parse(Buffer.from(final.files.get(current.evidence.path)));
+  const old=forgedBundle.support.find(item=>item.kind==='validation'&&item.id==='attempt-01');
+  assert.ok(old);
+  old.recordUtf8+='\n';
+  const forgedFiles=new Map(final.files);
+  forgedFiles.set(current.evidence.path,Buffer.from(JSON.stringify(forgedBundle)+'\n'));
+  await assert.rejects(completedEvidenceContext({context,snapshotBytes,continuity:finalContinuity,files:forgedFiles}),
+    {code:'OWNER_MISMATCH',message:/operational replacement lacks current native A0\/A1 admission/});
+  const forgedSnapshot=JSON.parse(snapshotBytes);
+  for(const decision of [...forgedSnapshot.globalReview.evidenceDecisions,
+    ...forgedSnapshot.deliveries.flatMap(item=>item.review.evidenceDecisions)])
+    if(decision.deliveryId===current.deliveryId)decision.evidenceSha256='sha256:'+'0'.repeat(64);
+  await assert.rejects(completedEvidenceContext({context,snapshotBytes:Buffer.from(JSON.stringify(forgedSnapshot)+'\n'),
+    continuity:finalContinuity,files:final.files}),{code:'OWNER_MISMATCH'});
 });
 
 for(const metadata of ['head','requestSha256']) test(`protocol refusal: Initial ${metadata} is published rejection, never uncertain ownership`,async t=>{

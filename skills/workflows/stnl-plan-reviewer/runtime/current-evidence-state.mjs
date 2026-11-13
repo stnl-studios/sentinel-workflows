@@ -1655,6 +1655,20 @@ export async function completedEvidenceContext({context,snapshotBytes,continuity
         }
       }
     }
+    // An unchanged formal retained by a newer judgment belongs to the reviewed
+    // predecessor only if its complete reconstructed bundle matches that review.
+    // Keep its original support (including concluded EXECUTE refusals), not an
+    // authority-equivalence exception for a historical normative hash.
+    if(!retainedRecords.size)for(const old of bundle.support.filter(item=>item.kind==='validation'
+      && item.recordFormat==='stnl-task-record-v2')) {
+      const support=bundle.support.filter(item=>item!==old);
+      const records=[...bundle.implementation,...bundle.findingsChecks,...support,old];
+      const prior={...bundle,validation:old,support,openFindings:[],
+        objects:referencedObjects(records,sourceMap(bundle))};
+      if(raw(encode(prior))===retainedDecision?.evidenceSha256) {
+        records.forEach(item=>retainedRecords.add(item));break;
+      }
+    }
     if(!bundle.implementation.length && bundle.validation?.recordFormat!=='stnl-task-record-v2'
       && !bundle.support.some(item=>item.kind==='rejection'&&item.origin.operation==='EXECUTE_SLICE'))
       mismatch('completed profile requires native operational evidence');
