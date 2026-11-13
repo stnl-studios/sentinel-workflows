@@ -4171,7 +4171,7 @@ export async function composeInitialCurrentOperation({context,requirementsAuthor
       `- Evidence summary: ${serializeMarkdownScalar('Evidence summary',fields.Evidence,true)}`].join('\n');
   }
   const status=facts.formalStatus??'pending';
-  const action=rejected||facts.auxiliaryStatus==='BLOCKED'?'blocked':status==='PASS'?'none':status==='NEEDS_FIX' && owner.operation==='VALIDATE_SLICE'
+  const action=rejected||facts.auxiliaryStatus==='BLOCKED'||status==='BLOCKED'?'blocked':status==='PASS'?'none':status==='NEEDS_FIX' && owner.operation==='VALIDATE_SLICE'
     ?'APPLY_FINDINGS':'VALIDATE_SLICE';
   let task=Buffer.from(files.get(taskName)).toString('utf8');
   for(const [section,body] of [

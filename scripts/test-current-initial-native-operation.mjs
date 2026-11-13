@@ -956,10 +956,13 @@ test('Initial malformed native response persists a refusal without granting acce
   assert.ok(bundle.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')==='{"invalid":'));
 });
 
-for(const priorPass of [false,true,'legacy'])for(const terminal of (priorPass==='legacy'?[false]:[false,true]))test(`Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal use one selected variant${terminal?' with terminal request binding':''}${priorPass?' after prior local PASS':''}${priorPass==='legacy'?' with authenticated historical recovery':''}`,async()=>{
-  const f=await fixture();
+for(const {priorPass,terminal,blockedTerminal,blockedLocal} of [
+  ...[false,true,'legacy'].flatMap(priorPass=>(priorPass==='legacy'?[false]:[false,true]).map(terminal=>({priorPass,terminal}))),
+  ...['plain','after-findings'].flatMap(blockedTerminal=>[false,true].map(blockedLocal=>({priorPass:false,terminal:false,blockedTerminal,blockedLocal})))
+])test(`Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal use one selected variant${terminal?' with terminal request binding':''}${priorPass?' after prior local PASS':''}${priorPass==='legacy'?' with authenticated historical recovery':''}${blockedTerminal?(blockedLocal?' local':' terminal')+' BLOCKED '+blockedTerminal:''}`,async()=>{
+  const f=await fixture({single:!!blockedTerminal});
   await installCurrentInitial(f);
-  let ordinal=0,hasFindings=false,historicalEvidenceFile=null;
+  let ordinal=0,hasFindings=false,findingsResolved=false,historicalEvidenceFile=null;
   let legacyPublish=null;
   if(priorPass==='legacy') {
     // Reproduce the former producer in an isolated test-only runtime, rather
@@ -980,12 +983,12 @@ for(const priorPass of [false,true,'legacy'])for(const terminal of (priorPass===
     if(terminal && kind!=='VALIDATE_SLICE')await assert.rejects(
       reserveDispatch(started.handle,{terminal:true}),error=>error.code==='INVALID_CURRENT_IMAGE');
     const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',
-      terminal:terminal && kind==='VALIDATE_SLICE'});
+      terminal:(terminal||!!blockedTerminal&&!blockedLocal&&status==='BLOCKED') && kind==='VALIDATE_SLICE'});
     const agentId=`mechanical-initial-cycle-${++ordinal}`;
     await bindNative(started.handle,agentId);
     const measured=await verifyNative(dispatch.originFile);
     const request=JSON.parse(await fs.readFile(dispatch.requestFile));
-    assert.equal(Object.hasOwn(request,'terminal'),terminal && kind==='VALIDATE_SLICE');
+    assert.equal(Object.hasOwn(request,'terminal'),(terminal||!!blockedTerminal&&!blockedLocal&&status==='BLOCKED') && kind==='VALIDATE_SLICE');
     let result;
     if(kind==='EXECUTE_SLICE') {
       const {head,...semantic}=initialPayload(1);
@@ -993,9 +996,9 @@ for(const priorPass of [false,true,'legacy'])for(const terminal of (priorPass===
       result.commands=measured.commands;
     } else if(kind==='VALIDATE_SLICE') result={status,
       commands:measured.commands,evidence:'The prepared pay assertion was executed with its recorded exit.',
-      findingReferences:findings.length?'finding-01':status==='PASS'&&hasFindings?'finding-01':'none',
-      findingDispositions:findings.length?'finding-01=active':status==='PASS'&&hasFindings?'finding-01=resolved':'none',
-      blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
+      findingReferences:findings.length?'finding-01':hasFindings&&(status==='PASS'||status==='BLOCKED'&&!findingsResolved)?'finding-01':'none',
+      findingDispositions:findings.length?'finding-01=active':status==='BLOCKED'&&hasFindings&&!findingsResolved?'finding-01=active':status==='PASS'&&hasFindings?'finding-01=resolved':'none',
+      blockers:status==='BLOCKED'?'Terminal acceptance requires unavailable independent QA proof.':'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
     else result={status:'TESTS_PASS',automaticCheckRound:'1/3',
       discoverySources:'Approved task, source and test.',discoveryActions:'Inspected approved source and test.',
       verificationTypesConsidered:'Approved Node module test.',nonApplicabilityRationale:'none',
@@ -1008,12 +1011,14 @@ for(const priorPass of [false,true,'legacy'])for(const terminal of (priorPass===
       affectedFilesOrBehaviors:'src/pay.mjs',blockers:'none',unexpectedWorkspaceEffects:'none',
       persistenceSummary:'The native helper retained the reviewed observation; the runner made no product changes.'};
     if(findings.length)hasFindings=true;
+    if(kind==='VALIDATE_SLICE'&&status==='PASS'&&hasFindings)findingsResolved=true;
     const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result,
       ...(kind==='VALIDATE_SLICE'?{newFindings:findings.map(item=>({...item,originAttempt:request.attemptId}))}:{})});
     const file=path.join(f.root,`mechanical-initial-cycle-${ordinal}.json`);
     await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
     const captured=await captureNative(started.handle,file);
     assert.equal(captured.status,kind==='APPLY_FINDINGS'?'TESTS_PASS':status??'TESTS_PASS');
+    const capturedProof=await fs.readFile(dispatch.originFile.replace('.origin.json','.verification.json'));
     let published;
     if(priorPass==='legacy'&&kind==='APPLY_FINDINGS') {
       const proofFile=dispatch.originFile.replace('.origin.json','.verification.json');
@@ -1047,6 +1052,7 @@ for(const priorPass of [false,true,'legacy'])for(const terminal of (priorPass===
       published=await (priorPass==='legacy'&&status==='NEEDS_FIX'?legacyPublish:publish)(started.handle);
     }
     assert.equal(published.publication,'confirmed');
+    assert.deepEqual(await fs.readFile(dispatch.originFile.replace('.origin.json','.verification.json')),capturedProof,'publication cannot rerun verification');
     const continuity=JSON.parse(await fs.readFile(path.join(f.root,'specs/pay/requirements-execution/continuity.json')));
     const bundle=JSON.parse(await fs.readFile(path.join(f.root,'specs/pay/requirements-execution',continuity.deliveries[0].evidence.path)));
     for(const check of [...bundle.implementation,...bundle.findingsChecks])assert.equal(check.contract.terminal,null);
@@ -1067,6 +1073,20 @@ for(const priorPass of [false,true,'legacy'])for(const terminal of (priorPass===
   const execute=await operation('EXECUTE_SLICE',{after:paid});
   assert.equal(execute.normalHandoff.operation,'VALIDATE_SLICE');
   if(priorPass)await operation('VALIDATE_SLICE',{status:'PASS'});
+  async function terminalBlocked() {
+    const result=await operation('VALIDATE_SLICE',{status:'BLOCKED'});
+    assert.equal(result.state,'VALIDATION_BLOCKED',JSON.stringify(result));
+    assert.equal(result.deliveries[0].formalStatus,'BLOCKED');
+    assert.equal(result.deliveries[0].observedValidation,'revalidation-required');
+    assert.equal(result.normalHandoff,null);
+    const task=await fs.readFile(path.join(f.root,'specs/pay/requirements-execution/tasks/slice-01.md'),'utf8');
+    assert.match(task,/- Current action: blocked/);
+    assert.match(task,/- Current validation: revalidation-required/);
+  }
+  if(blockedTerminal==='plain') {
+    if(!blockedLocal)await operation('VALIDATE_SLICE',{status:'PASS'});
+    await terminalBlocked();return;
+  }
   const finding={id:'finding-01',severity:'blocking',problem:'The pay export returns broken.',
     evidence:'The prepared assertion fails on the pay result.',impact:'AC-001 is unmet.',
     relatedAuthority:'AC-001',expectedCorrection:'Restore the pay result to paid.'};
@@ -1074,10 +1094,12 @@ for(const priorPass of [false,true,'legacy'])for(const terminal of (priorPass===
   assert.equal(formal.normalHandoff.operation,'APPLY_FINDINGS');
   const apply=await operation('APPLY_FINDINGS',{after:paid});
   assert.equal(apply.normalHandoff.operation,'VALIDATE_SLICE');
+  if(blockedLocal&&blockedTerminal==='after-findings'){await terminalBlocked();return;}
   const final=await operation('VALIDATE_SLICE',{status:'PASS'});
   assert.equal(final.deliveries[0].formalStatus,'PASS');
   assert.deepEqual(final.deliveries[0].counters,
     {implementationChecks:1,findingsChecks:1,validationAttempts:priorPass?3:2,findings:1});
+  if(blockedTerminal==='after-findings')await terminalBlocked();
 });
 
 test('Initial ingress installs reviewed bytes once and reads back pristine',async()=>{
