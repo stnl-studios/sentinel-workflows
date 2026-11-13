@@ -1,0 +1,49 @@
+{
+  "scope": "Real native Codex CLI pilot, not benchmark harness; no visual QA",
+  "implementationCommit": "3bfa032081d09fd3aa6975be59ff2cfa81ccd833",
+  "pilotHead": "436cb7eb47067cab8f0fb63ec9e35271ec6fe539",
+  "observations": [
+    {
+      "operation": "VALIDATE_SLICE",
+      "operationId": "493d9e78-521a-4952-8733-be7fc70e411c",
+      "observationSha256": "sha256:9a8c59b8ce3a9cf199772e1d8f863addacbbc5ce9e5ed32a817a3b9008b5b6a5",
+      "checks": [
+        {
+          "command": "node test/verify-cli.mjs test/cli.test.mjs test/todo-service.test.mjs test/todo-store.test.mjs test/cli-process.test.mjs",
+          "exit": 0,
+          "stdoutSha256": "sha256:19f39224796f6d37035a9debfa82c7feeb066bfc0da7d325aaf7f0cbf2e8cf39",
+          "stderrSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    {
+      "operation": "VALIDATE_SLICE",
+      "operationId": "5f160260-3ddb-4ddd-8dfb-7a0e0215af88",
+      "observationSha256": "sha256:002f40043524c31786ed3631cae32855aa524c0ffbd1a7f30f5965ea2e9fd678",
+      "checks": [
+        {
+          "command": "node test/verify-cli.mjs test/cli.test.mjs test/todo-service.test.mjs test/todo-store.test.mjs test/cli-process.test.mjs",
+          "exit": 0,
+          "stdoutSha256": "sha256:b3c8c6b90a314a469fe93125c662e51101716d1f20191da9320c005f32ca1915",
+          "stderrSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    {
+      "operation": "EXECUTE_SLICE",
+      "operationId": "bd64110d-989a-4db7-bed8-0f0f580db0dc",
+      "observationSha256": "sha256:f935daeab9438286be6172ab4edf2b3fb00f65a9523a2c67e76f8eb597ba8302",
+      "checks": [
+        {
+          "command": "node test/verify-cli.mjs test/cli.test.mjs test/todo-service.test.mjs test/todo-store.test.mjs test/cli-process.test.mjs",
+          "exit": 0,
+          "stdoutSha256": "sha256:1131e8aabc6f698babd3c08f6f32b1b43b064205af4b325977c8836d0bfbfc31",
+          "stderrSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    }
+  ],
+  "testsPerRecipe": 12,
+  "continueExecutionBytesUnchanged": true,
+  "continueFilesCompared": 8
+}
