@@ -53,6 +53,10 @@ export function assertRunnerVerification(observation, verification) {
 // are reusable only for the exact recipe, inside the same runner-origin directory.
 export async function executeRunnerVerification({ verification, outputFile, observeState = null, startGuard = action => action(), captureChangedState = null, invocationBinding = null }) {
   const env = {...process.env}; delete env.NODE_TEST_CONTEXT;
+  // Host tool-call identity changes between verify and draft-validation calls.
+  // It is transport metadata, not a recipe input: exclude it from BOTH the
+  // child environment and its fingerprint; all functional inputs remain bound.
+  delete env.CODEX_TOOL_CALL_ID;
   const existing = await fs.lstat(outputFile).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
   if (existing) {
     const observation = parseStrictJson((await readOwnedFile(outputFile)).bytes.toString('utf8'));
