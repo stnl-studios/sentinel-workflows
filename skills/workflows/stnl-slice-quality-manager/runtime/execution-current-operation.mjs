@@ -437,7 +437,49 @@ async function captureRemovalBefore({root,context,owner,round,manifest,info}) {
     } else await writeNew(filename,proof);
   }
 }
-export async function begin({specPath,slice,expectedActivationId,operation='VALIDATE_SLICE',successor=false,filesystemContext=null,documentaryRequest=null}) {
+// Explicit user-authorized revalidation, not an automatic handoff or a retry
+// of an uncertain producer. The previous BLOCKED proof remains immutable.
+function blockedRevalidation(image,slice,operation,{successor=false,activeOwner=null}={}) {
+  if(operation!=='VALIDATE_SLICE'||successor||(activeOwner===null?image.activation.activeAttempt!==null
+    :image.activation.activeAttempt?.operationAttemptId!==activeOwner.operationAttemptId
+      ||image.activation.activeAttempt?.ownershipToken!==activeOwner.ownershipToken))
+    fail('BLOCKED_REVALIDATION_NOT_ELIGIBLE','blocked revalidation requires quiet formal validation');
+  const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+  const current=continuity.deliveries.find(item=>item.slice===slice);
+  const facts=image.inspection.deliveries.find(item=>item.slice===slice);
+  if(!current?.evidence||current.normalization!==null||facts?.formalStatus!=='BLOCKED'
+    ||facts.auxiliaryStatus==='BLOCKED'||facts.observedValidation==='uncertain'
+    ||image.inspection.deliveries.some(item=>item.slice!==slice&&(item.formalStatus==='BLOCKED'
+      ||item.auxiliaryStatus==='BLOCKED'||item.observedValidation==='uncertain'||item.diagnostics?.length)))
+    fail('BLOCKED_REVALIDATION_NOT_ELIGIBLE','only a recorded formal BLOCKED without other unresolved work can be revalidated');
+  if(!usesCurrentChecks(image,{preparationRevision:image.activation.preparationRevision,deliveryId:current.deliveryId,operation}))
+    fail('UNSUPPORTED_FORMAT','blocked revalidation requires current checks');
+  const bundle=parseCurrentJson(Buffer.from(image.files.get(current.evidence.path)).toString('utf8'));
+  if(!bundle.validation||bundle.support.some(item=>item.kind==='rejection')
+    ||image.activation.lastAttempt?.outcome!=='recorded'
+    ||image.activation.lastAttempt.operationAttemptId!==bundle.validation.origin.operationAttemptId)
+    fail('BLOCKED_REVALIDATION_NOT_ELIGIBLE','blocked revalidation requires the latest concluded formal, not a refusal');
+  const snapshot=parseCurrentJson(Buffer.from(image.files.get('approved-preparation.json')).toString('utf8'));
+  if(snapshot.resumption)fail('UNSUPPORTED_FORMAT','documentary request cannot authorize another blocked invocation');
+  const delivery=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===current.deliveryId);
+  const info=verifyWorkObservation('initial-implementation',{context:image.context,delivery,slice});
+  const members=[...snapshot.deliveries,...snapshot.completed];
+  const allAreas=[...snapshot.normativeProjection.deliveries,...snapshot.normativeProjection.completed].flatMap(leaf=>
+    verifyWorkObservation('initial-implementation',{context:image.context,delivery:leaf,slice:members.find(item=>item.deliveryId===leaf.deliveryId)?.slice}).areas);
+  const inputs=new Set(info.inputs.map(item=>item.path).filter(name=>!allAreas.some(area=>
+    area.path===name||area.kind==='directory'&&name.startsWith(area.path+'/'))));
+  const before=new Map(bundle.validation.testedWork.entries.map(item=>[item.path,item]));
+  const after=new Map(image.observedByDelivery.get(current.deliveryId).manifest.entries.map(item=>[item.path,item]));
+  for(const name of new Set([...before.keys(),...after.keys()])) {
+    const old=before.get(name),next=after.get(name);
+    if(isDeepStrictEqual(old,next))continue;
+    if(!inputs.has(name)||old?.kind!=='file'||next?.kind!=='file'||old.mode!==next.mode)
+      fail('EVIDENCE_STALE','blocked revalidation permits only content refresh of declared existing input files; outputs and scope must stay unchanged');
+  }
+  return current;
+}
+export async function begin({specPath,slice,expectedActivationId,operation='VALIDATE_SLICE',successor=false,filesystemContext=null,documentaryRequest=null,retryBlocked=false}) {
+  if(typeof retryBlocked!=='boolean')fail('INVALID_ARGUMENTS','retryBlocked must be boolean');
   const first=await quiet(specPath,documentaryRequest?.requestedSlice??null);
   const provenance=resumptionOf(first);
   let request=null;
@@ -451,7 +493,8 @@ export async function begin({specPath,slice,expectedActivationId,operation='VALI
     assertResumptionObservation(first,slice,request,operation);
   } else if(documentaryRequest!==null)fail('INVALID_ARGUMENTS','documentary request is only for a resumed context');
   const initial=first.activation.preparationRevision===1;
-  const current=initial?await requireInitial(first,slice,operation,{successor}):requireS2(first,slice,operation,{successor});
+  const current=retryBlocked?blockedRevalidation(first,slice,operation,{successor})
+    :initial?await requireInitial(first,slice,operation,{successor}):requireS2(first,slice,operation,{successor});
   if(first.activation.activationId!==expectedActivationId) fail('STALE_BASE','begin expectedActivationId differs');
   const {workspace,context}=await resolveCurrentExecutionContext(specPath,{filesystemContext});
   const officialWorkspace=executionWorkspaceFromContext(context,workspace);
@@ -474,7 +517,7 @@ export async function begin({specPath,slice,expectedActivationId,operation='VALI
   const reserved=await reserveCurrentExecutionOperation({workspace:officialWorkspace,
     expectedActivationId,expectedBaseActivation:first.activation,owner,binding,marker,
     bindingSha256:currentOperationBindingSha256(binding),
-    readQuiet:async()=>{const image=await quiet(specPath,request?.requestedSlice??null);if(initial)await requireInitial(image,slice,operation,{successor});return image;},
+    readQuiet:async()=>{const image=await quiet(specPath,request?.requestedSlice??null);if(retryBlocked)blockedRevalidation(image,slice,operation,{successor});else if(initial)await requireInitial(image,slice,operation,{successor});return image;},
     readActive:expected=>active(specPath,expected),
     registryReservation:async()=>{
       if(request)await assertUnusedDocumentaryRequest(first,location,request);
@@ -778,6 +821,14 @@ export async function reserveDispatch(handle,{responseVariant=null,terminal=fals
     const image=await requireA1(now);
     assertResumptionBudget(image,now.owner.slice,now.owner.operation,{dispatchRound:round});
     const selected=image.inspection.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
+    if(now.owner.operation==='VALIDATE_SLICE'&&selected?.formalStatus==='BLOCKED') {
+      blockedRevalidation(image,now.owner.slice,now.owner.operation,{activeOwner:now.owner});
+      const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+      const current=continuity.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
+      const bundle=parseCurrentJson(Buffer.from(image.files.get(current.evidence.path)).toString('utf8'));
+      if(Boolean(bundle.validation.contract.terminal)!==terminal)
+        fail('BLOCKED_REVALIDATION_NOT_ELIGIBLE','blocked revalidation must preserve local versus terminal target');
+    }
     if(!terminal && now.owner.operation==='VALIDATE_SLICE' && selected?.formalStatus==='PASS'
       && selected.observedValidation==='current' && image.inspection.normalHandoff?.operation==='VALIDATE_SLICE'
       && image.inspection.diagnostics.some(item=>item.field==='terminal'))
@@ -942,7 +993,8 @@ export async function bindNative(handle,agentId) {
         fail('OWNER_MISMATCH','a fresh native agent is required for each findings round');
     const image=await requireA1(now);
     await assertInitialStructuralInventory(image,now.owner,(await readJson(path.join(now.root,`round-${round}.baseline.json`))).manifest);
-    if(now.binding.normalization && !clarification){
+    if((now.binding.normalization||now.owner.operation==='VALIDATE_SLICE'
+      &&image.inspection.deliveries.find(item=>item.deliveryId===now.owner.deliveryId)?.formalStatus==='BLOCKED') && !clarification){
       const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
       const current=continuity.deliveries.find(item=>item.deliveryId===now.owner.deliveryId);
       const bundle=parseCurrentJson(Buffer.from(image.files.get(current.evidence.path)).toString('utf8'));
@@ -1289,6 +1341,8 @@ export async function verifyNative(originFile) {
   const generation=op.record.preVerificationContinuation?.id??null;
   const agentId=await boundAgent(op,originFile,round);
   const image=await requireA1(op);
+  if(op.owner.operation==='VALIDATE_SLICE'&&image.inspection.deliveries.find(item=>item.deliveryId===op.owner.deliveryId)?.formalStatus==='BLOCKED')
+    blockedRevalidation(image,op.owner.slice,op.owner.operation,{activeOwner:op.owner});
   if(!same(image.activation,origin.admission.reservedActivation))
     fail('STALE_BASE','native reservation changed before recipe');
   const requestBefore=(await readOwnedFile(path.join(op.root,`round-${round}.request.json`))).bytes;
@@ -2509,7 +2563,7 @@ function commandArguments(argv) {
   const rules={'inspect-request':[['--spec-path','--slice','--operation'],['--request-id','--terminal']],
     'prepare-documentary-resumption':[['--spec-path','--slice','--operation','--expected-decision-sha256'],[]],
     'install-documentary-resumption':[['--handle','--review-file'],[]],
-    'recover-documentary-resumption':[['--handle','--allocation'],[]],inspect:[['--spec-path'],[]],begin:[['--spec-path','--slice','--expected-activation-id','--operation'],['--documentary-request-file']],
+    'recover-documentary-resumption':[['--handle','--allocation'],[]],inspect:[['--spec-path'],[]],begin:[['--spec-path','--slice','--expected-activation-id','--operation'],['--documentary-request-file','--retry-blocked']],
     'reserve-dispatch':[['--handle'],['--response-variant','--terminal']],
     'bind-native':[['--handle','--agent-id'],[]],'verify-native':[['--origin-file'],[]],
     'validate-native-response':[['--origin-file','--response-json'],[]],
@@ -2522,7 +2576,7 @@ function commandArguments(argv) {
   for(let i=1;i<argv.length;i++) {
     const key=argv[i];
     if(!allowed.has(key)||Object.hasOwn(options,key))reject(`Unknown, duplicate or positional argument: ${key}`);
-    if(key==='--terminal'){options[key]=true;continue;}
+    if(key==='--terminal'||key==='--retry-blocked'){options[key]=true;continue;}
     const value=argv[++i];
     if(typeof value!=='string'||!value||value.startsWith('--'))reject(`Missing value for ${key}`);
     options[key]=value;
@@ -2549,7 +2603,7 @@ export async function main(argv=process.argv.slice(2)) {
     else if(command==='install-documentary-resumption') result=await installDocumentaryResumption({handle,review:await readJson(flag('--review-file'))});
     else if(command==='inspect') result=await inspect(flag('--spec-path'));
     else if(command==='begin') result=await begin({specPath:flag('--spec-path'),
-      slice:flag('--slice'),expectedActivationId:flag('--expected-activation-id'),operation:flag('--operation'),documentaryRequest:flag('--documentary-request-file')?await readJson(flag('--documentary-request-file')):null});
+      slice:flag('--slice'),expectedActivationId:flag('--expected-activation-id'),operation:flag('--operation'),documentaryRequest:flag('--documentary-request-file')?await readJson(flag('--documentary-request-file')):null,retryBlocked:options['--retry-blocked']??false});
     else if(command==='reserve-dispatch') result=await reserveDispatch(handle,
       {responseVariant:flag('--response-variant'),terminal:options['--terminal']??false});
     else if(command==='bind-native') result=await bindNative(handle,flag('--agent-id'));

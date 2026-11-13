@@ -2599,6 +2599,31 @@ function deriveApplyCycle({context,authority:approvedAuthority,owner:expectedOwn
 function projectedDelivery(value) {
   return raw(Buffer.concat([utf8('stnl-ec1/delivery/v1'),Buffer.from([0]),utf8(canonical(value))]));
 }
+function assertBlockedFormalTransition(previous,current,context) {
+  if(previous.payload.status!=='BLOCKED'||formalRecordNumber(current.record)!==formalRecordNumber(previous.record)+1)return;
+  equal(current.record.contract,previous.record.contract,'EVIDENCE_STALE','blocked revalidation frozen contract and terminal target');
+  for(const key of ['preparationRevision','localRevision','normativeSha256','deliveryId'])
+    equal(current.record.origin[key],previous.record.origin[key],'OWNER_MISMATCH',`blocked revalidation ${key}`);
+  if(current.record.origin.runnerId===previous.record.origin.runnerId)
+    mismatch('blocked revalidation requires a new independent producer');
+  if(previous.cap.transport==='native'&&current.cap.transport==='native') {
+    const priorOrigin=jsonBytes(previous.cap.origin,'blocked predecessor origin').value;
+    const nextOrigin=jsonBytes(current.cap.origin,'blocked revalidation origin').value;
+    equal(nextOrigin.otherDeliveryWork,priorOrigin.otherDeliveryWork,'EVIDENCE_STALE',
+      'blocked revalidation changed another active or completed delivery');
+  }
+  const info=verifyWorkObservation('initial-implementation',{context,delivery:current.record.contract.delivery,slice:current.record.origin.slice});
+  const inputs=new Set(info.inputs.map(item=>item.path).filter(name=>!info.areas.some(area=>area.path===name
+    ||area.kind==='directory'&&name.startsWith(area.path+'/'))));
+  const before=new Map(previous.record.testedWork.entries.map(item=>[item.path,item]));
+  const after=new Map(current.record.testedWork.entries.map(item=>[item.path,item]));
+  for(const name of new Set([...before.keys(),...after.keys()])) {
+    const old=before.get(name),next=after.get(name);
+    if(same(old,next))continue;
+    if(!inputs.has(name)||old?.kind!=='file'||next?.kind!=='file'||old.mode!==next.mode)
+      stale('blocked revalidation changed an output or scope instead of an exclusive existing input');
+  }
+}
 function formalRecordNumber(record) { return Number(record.id.slice('attempt-'.length)); }
 function assertFormalRecoveryTarget(derived,predecessor) {
   for(const key of ['authority','terminal','scope'])
@@ -2953,6 +2978,8 @@ function inspectFindings(original,bundle,context,approvedAuthority,declaredCount
   const formalRecords=[...bundle.support.filter(item=>item.kind==='validation'),bundle.validation]
     .sort((a,b)=>formalRecordNumber(a)-formalRecordNumber(b));
   const formals=new Map(formalRecords.map(record=>[record.id,historicalFormal(record,map,context,approvedAuthority,post)]));
+  for(let index=1;index<formalRecords.length;index++)
+    assertBlockedFormalTransition(formals.get(formalRecords[index-1].id),formals.get(formalRecords[index].id),context);
   const admission=formals.get(first.base.validation.id);
   if (!admission) incomplete('findings admission formal absent');
   if (admission.payload.status!=='NEEDS_FIX') invalid('findings admission formal is not NEEDS_FIX');
@@ -3064,7 +3091,8 @@ function inspectFindings(original,bundle,context,approvedAuthority,declaredCount
   }
   const demandedFindings=[...admission.open,...(later?latest.all:[])];
   const demandedIds=new Set([admission.record.id,bundle.validation.id,...demandedFindings.map(item=>item.originAttempt),
-    ...(bundle.implementation.length?['attempt-01']:[])]);
+    ...(bundle.implementation.length?['attempt-01']:[]),
+    ...formalRecords.filter(item=>formals.get(item.id)?.payload.status==='BLOCKED').map(item=>item.id)]);
   for (const item of demandedFindings) {
     const origin=formals.get(item.originAttempt);
     if (!origin) incomplete(`finding ${item.id} origin absent`);
@@ -3185,6 +3213,7 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
   const retainedFormals=[...formalSupports.map(item=>origins.get(item.id)),...(latest?[latest]:[])];
   for (let index=1;index<retainedFormals.length;index+=1) {
     const previous=retainedFormals[index-1],current=retainedFormals[index];
+    assertBlockedFormalTransition(previous,current,context);
     if (formalRecordNumber(current.record)!==formalRecordNumber(previous.record)+1) continue;
     equal(current.request.base.counters,baseCounters(bundle.implementation.length,previous.request,previous.response.newFindings.length),
       'INVALID_CURRENT_IMAGE','consecutive formal counters');
@@ -3203,7 +3232,7 @@ function inspect(bundleBytes,context,approvedAuthority,declaredCounters,observed
     const {request,response,all,open,dispositions}=latest;
     if (request.base.counters.findings<witnessedFindings) invalid('latest finding counter below retained origins');
     const required=new Set([...all.map(item => item.originAttempt),...formalSupports.filter(item=>item.origin.localRevision<approvedAuthority.localRevision
-      || bundle.implementation.length&&item.id==='attempt-01').map(item=>item.id)].filter(id => id!==request.attemptId));
+      || bundle.implementation.length&&item.id==='attempt-01'||origins.get(item.id)?.payload.status==='BLOCKED').map(item=>item.id)].filter(id => id!==request.attemptId));
     equal([...origins.keys()].filter(id => id!==request.attemptId).sort(ordinal),[...required].sort(ordinal),'INVALID_CURRENT_IMAGE','retained formal origins');
     for (const item of all) {
       const origin=origins.get(item.originAttempt);
@@ -3344,7 +3373,9 @@ export function composeCurrentValidationEvidence(input) {
     : base.cycle ? selectRemovalSupport(base,{lastWork:derived.recordDraft.testedWork,lastScope:derived.request.scope.paths,
       checks:base.bundle.findingsChecks},applyRoundsFromRecords(base.bundle.findingsChecks,base.map),input.context,derived.receipt) : [];
   const keepFormalOrigins=(records,all,latestId)=>{
-    const chosen=formalOrigins(records,[...all,...(base.cycle?.selectedFindings??[])],latestId,base.cycle?[]:records.filter(item=>item.origin.localRevision<input.authority.localRevision).map(item=>item.id));
+    const blockedOrigins=records.filter(item=>base.origins.get(item.id)?.payload.status==='BLOCKED').map(item=>item.id);
+    const chosen=formalOrigins(records,[...all,...(base.cycle?.selectedFindings??[])],latestId,
+      [...blockedOrigins,...(base.cycle?[]:records.filter(item=>item.origin.localRevision<input.authority.localRevision).map(item=>item.id))]);
     if (base.cycle) {
       const admitted=auxiliary.cycle;
       const origin=records.find(item=>item.id===admitted);
@@ -3534,7 +3565,8 @@ export function composeCurrentFindingsEvidence(input) {
   }
   const implementation=ownedImplementation(base.bundle,base.map)?base.bundle.implementation:[];
   const oldOrigins=base.bundle.support.filter(item=>item.kind==='validation'
-    && (base.bundle.openFindings.some(finding=>finding.originAttempt===item.id)||implementation.length&&item.id==='attempt-01'));
+    && (base.bundle.openFindings.some(finding=>finding.originAttempt===item.id)||implementation.length&&item.id==='attempt-01'
+      ||base.origins.get(item.id)?.payload.status==='BLOCKED'));
   const retained=selectRemovalSupport(base,cycle,input.rounds,input.context);
   const refusals=implementation.length?[...implementationRefusals(base.bundle),...firstFormalRefusals(base.bundle,base.map)]:[];
   const support=retainOperationalSupport(base.bundle,
