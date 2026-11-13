@@ -48,7 +48,7 @@ test("renders deterministic semantic self-contained HTML", async (t) => {
   assert.match(first.html, /<select hidden tabindex="-1" aria-hidden="true" data-scenario-status>/u);
   assert.match(first.html, /\.sidebar\[data-open="true"\]\{z-index:52;border-color:transparent;background:transparent;pointer-events:none\}/u);
   assert.match(first.html, /search\.value="";statusFilter\.value="";typeFilter\.value="";criticalityFilter\.value=""/u);
-  assert.match(first.html, /criticalityFilter\.value="";noScenarios\.hidden=true/u);
+  assert.match(first.html, /criticalityFilter\.value=""\}applyFilters\(\)/u);
   assert.ok(first.html.includes("Generated IDs"));
 });
 
@@ -324,4 +324,12 @@ test("slice and task evidence cannot include an unselected slice or task", async
   missingTaskOrigin.coverage = missingTaskOrigin.coverage.filter((item) => item.scenario_ids.length === 0 || item.scenario_ids.includes("TR-001"));
   const missingTaskManifest = validateManifest(missingTaskOrigin, taskInspection);
   await assert.rejects(validateManifestEvidence(missingTaskManifest, taskInspection), /does not trace to explicitly selected task/u);
+});
+
+
+test("print resets the responsive status grid so progress cannot overlap its label", async (t) => {
+  const { manifest } = await validated(t);
+  const print = renderRunbook(manifest).html.split("@media print{")[1];
+  assert.match(print, /\.hero-outcome\{display:block;padding-left:5mm;border-top:0\}/u);
+  assert.match(print, /\.hero-progress\{width:auto;margin-top:3mm;grid-column:auto;grid-row:auto\}/u);
 });
