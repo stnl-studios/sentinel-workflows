@@ -807,7 +807,7 @@ async function requireExecutionBase(workspace) {
   return sources;
 }
 
-async function planSliceOrder(workspace) {
+async function planSliceOrder(workspace, allowEmpty = false) {
   const plan = await fs.readFile(path.join(workspace.executionRoot, "plan.md"), "utf8");
   const serial = sectionBody(plan, "Serial Slice Order");
   if (serial === null) throw new Error("execution plan has no canonical Serial Slice Order section");
@@ -820,11 +820,11 @@ async function planSliceOrder(workspace) {
     if (order.includes(match[1])) throw new Error(`execution plan has a duplicate serial slice: ${match[1]}`);
     order.push(match[1]);
   }
-  if (order.length === 0) throw new Error("execution plan does not declare a canonical serial slice order");
+  if (order.length === 0 && !allowEmpty) throw new Error("execution plan does not declare a canonical serial slice order");
   return order;
 }
 
-async function taskSliceOrder(workspace) {
+async function taskSliceOrder(workspace, allowEmpty = false) {
   const tasks = await fs.readFile(path.join(workspace.executionRoot, "tasks.md"), "utf8");
   const body = parsePurposeHeader(tasks, "tasks.md").body;
   const rows = body.split("\n").filter((line) => /^\| \[[ x]\] \|/u.test(line));
@@ -839,30 +839,40 @@ async function taskSliceOrder(workspace) {
     if (order.includes(normalized)) throw new Error(`execution tasks has a duplicate global slice row: ${normalized}`);
     order.push(normalized);
   }
-  if (order.length === 0) throw new Error("execution tasks does not declare any canonical slice rows");
+  if (order.length === 0 && !allowEmpty) throw new Error("execution tasks does not declare any canonical slice rows");
   return order;
 }
 
-async function requireSliceSources(workspace, slices) {
+async function requireSliceSources(workspace, slices, execution) {
   await assertNoSymlinkComponents(path.join(workspace.executionRoot, "plans"), "execution plans directory");
   await assertNoSymlinkComponents(path.join(workspace.executionRoot, "tasks"), "execution tasks directory");
-  const order = await planSliceOrder(workspace);
-  const taskOrder = await taskSliceOrder(workspace);
+  const noActiveDeliveries = execution.deliveries.length === 0 && execution.completed.length > 0;
+  const order = await planSliceOrder(workspace, noActiveDeliveries);
+  const taskOrder = await taskSliceOrder(workspace, noActiveDeliveries);
   if (taskOrder.length !== order.length || taskOrder.some((slice, index) => slice !== order[index])) {
     throw new Error("execution tasks slice order does not exactly match the canonical serial plan order");
   }
-  const expectedFiles = order.map((slice) => `${slice}.md`).sort();
+  // Completed deliveries retain their authenticated plans and tasks after a replan.
+  // The serial plan describes active work, not the entire preserved evidence set.
+  const completed = [];
+  for (const item of execution.completed) {
+    if (await lstatOrNull(path.join(workspace.executionRoot, "plans", `${item.slice}.md`)) !== null) completed.push(item.slice);
+  }
+  completed.sort((left, right) => Number(left.slice(6)) - Number(right.slice(6)));
+  const availableOrder = [...new Set([...completed, ...order])];
+  const expectedFiles = availableOrder.map((slice) => `${slice}.md`).sort();
   for (const directory of ["plans", "tasks"]) {
     const actualFiles = (await fs.readdir(path.join(workspace.executionRoot, directory), { withFileTypes: true }))
       .filter((entry) => entry.isFile() && !entry.isSymbolicLink() && SLICE_FILE.test(entry.name))
       .map((entry) => entry.name).sort();
     if (actualFiles.length !== expectedFiles.length || actualFiles.some((name, index) => name !== expectedFiles[index])) {
-      throw new Error(`execution ${directory} slice set does not exactly match the canonical serial plan order`);
+      throw new Error(`execution ${directory} slice set does not exactly match the canonical serial plan order: actual ${actualFiles} expected ${expectedFiles}`);
     }
   }
-  const missing = slices.filter((slice) => !order.includes(slice));
-  if (missing.length !== 0) throw new Error(`selected slices are absent from plan.md: ${missing.join(", ")}`);
-  const selected = [...slices].sort((left, right) => order.indexOf(left) - order.indexOf(right));
+  const requested = slices === null ? availableOrder : slices;
+  const missing = requested.filter((slice) => !availableOrder.includes(slice));
+  if (missing.length !== 0) throw new Error(`selected slices are absent from plan.md or have no retained readable plan: ${missing.join(", ")}`);
+  const selected = [...requested].sort((left, right) => availableOrder.indexOf(left) - availableOrder.indexOf(right));
   const sources = [];
   for (const slice of selected) {
     if (!SLICE_FILE.test(`${slice}.md`)) throw new Error(`invalid normalized slice: ${slice}`);
@@ -897,19 +907,19 @@ export async function inspectWorkspace(specPath, scopeValue, selectionValue, opt
   await validateModularAuthority(workspace);
   const selection = normalizeSelection(scope, selectionValue);
   const mandatorySources = [workspace.authorityPath, ...(await canonicalSharedSources(workspace))];
+  let execution = null;
   if (new Set(["EXECUTION", "SLICE", "TASK", "MULTI_SLICE"]).has(scope)) {
-    const execution=await inspectExecutionState(workspace.authorityPath);
+    execution=await inspectExecutionState(workspace.authorityPath);
     if(execution.state==='SPEC_CLOSED')throw Object.assign(new Error('SPEC_CLOSED: the closed document has no current execution or historical slice sources for this selection'),{code:'SPEC_CLOSED'});
   }
 
   if (scope === "EXECUTION") {
     mandatorySources.push(...(await requireExecutionBase(workspace)));
-    const order = await planSliceOrder(workspace);
-    const slices = await requireSliceSources(workspace, order);
+    const slices = await requireSliceSources(workspace, null, execution);
     mandatorySources.push(...slices.sources);
   } else if (scope === "SLICE" || scope === "TASK") {
     mandatorySources.push(...(await requireExecutionBase(workspace)));
-    const slices = await requireSliceSources(workspace, [selection.slice]);
+    const slices = await requireSliceSources(workspace, [selection.slice], execution);
     selection.slice = slices.selected[0];
     mandatorySources.push(...slices.sources);
     if (scope === "TASK") {
@@ -917,21 +927,9 @@ export async function inspectWorkspace(specPath, scopeValue, selectionValue, opt
     }
   } else if (scope === "MULTI_SLICE") {
     mandatorySources.push(...(await requireExecutionBase(workspace)));
-    const slices = await requireSliceSources(workspace, selection.slices);
+    const slices = await requireSliceSources(workspace, selection.slices, execution);
     selection.slices = slices.selected;
     mandatorySources.push(...slices.sources);
-  } else if (scope === "SPEC") {
-    const execution = await lstatOrNull(workspace.executionRoot);
-    if (execution !== null) {
-      if (execution.isSymbolicLink() || !execution.isDirectory()) {
-        throw new Error(`execution root must be a real directory when present: ${workspace.executionRoot}`);
-      }
-      await inspectExecutionState(workspace.authorityPath);
-      const base = await requireExecutionBase(workspace);
-      mandatorySources.push(...base);
-      const order = await planSliceOrder(workspace);
-      mandatorySources.push(...(await requireSliceSources(workspace, order)).sources);
-    }
   } else if (scope === "CUSTOM") {
     for (const relative of selection.paths) {
       const candidate = path.resolve(workspace.sourceRoot, ...relative.split("/"));

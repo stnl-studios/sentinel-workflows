@@ -1,0 +1,36 @@
+{
+  "sourceCommit": "d4a3f1b",
+  "pilotHead": "817af5057d2f807dfaccb5b1fb9cb23fcd81bc97",
+  "artifacts": [
+    {
+      "path": "usage-evidence/qa-runbook-print-fixed-20261113.pdf",
+      "bytes": 1207051,
+      "sha256": "a067a68ac607e8a0017e70e3f71db9cdecaa50e976a77ce80eea3156617cfadf"
+    },
+    {
+      "path": "usage-evidence/qa-runbook-network-fixed.har",
+      "bytes": 152473,
+      "sha256": "e993065ffb78606ddaf2eadd96a9755afe2a402de50f8c454d81ab4304c7deaf"
+    },
+    {
+      "path": "specs/todo-state-filters/test-runbook/index.html",
+      "bytes": 144257,
+      "sha256": "d8d12a45c986a0a9c2feed8e5b9485bca0ffdefe997c9c27941b3c03b4c3821f"
+    }
+  ],
+  "networkEntries": [
+    {
+      "url": "http://127.0.0.1:8765/",
+      "status": 304
+    }
+  ],
+  "browserRestore": {
+    "javascript": true,
+    "viewportOverride": false,
+    "devtoolsOpen": false,
+    "persistenceOptIn": false,
+    "syntheticNotesPresent": false
+  },
+  "serverStopped": true,
+  "terminalAcceptance": "COMPLETE current/PASS seq22; see terminal-summary.json"
+}

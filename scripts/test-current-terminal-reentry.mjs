@@ -288,7 +288,7 @@ test('Q20 terminal pending refuses a local-only dispatch without creating origin
   const options={specPath:f.specPath,candidateExecutionRoot:draft.candidateExecutionRoot},pending=await publishPreparationCandidate(options);
   await publishPreparationCandidate({...options,reviewDecision:reviewFor({reviewRequest:pending.reviewRequest})});
   const before=await captureCurrentExecution(f.specPath),start=await begin({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:before.inspection.activationId});
-  const namespaces=await fs.readdir(path.join(f.root,'tmp/sentinel'));
+  const namespaces=(await fs.readdir(path.join(f.root,'tmp/sentinel'))).filter(name=>!name.endsWith('-drafts')); // Draft approval history is a separate durable namespace.
   assert.equal(namespaces.length,1);
   const operationRoot=path.join(f.root,'tmp/sentinel',namespaces[0],start.handle.operationId);
   const tree=async root=>{

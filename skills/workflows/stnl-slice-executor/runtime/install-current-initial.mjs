@@ -10,7 +10,7 @@ import {resolveCurrentExecutionContext,executionWorkspaceFromContext} from './ex
 import {inspectCurrentExecution,captureCurrentExecution,observeCurrentDeliveryWork} from './execution-current-reader.mjs';
 import {approveInitialPreparation,validateCurrentPreparation} from './execution-preparation-current.mjs';
 import {validateCurrentCandidate,validateCurrentActivation} from './execution-current.mjs';
-import {captureExecutionTree,readOwnedFile,writeNew,publishExecutionUpdate,recoverCurrentReplacementPublication} from './execution-publication.mjs';
+import {captureExecutionTree,readOwnedFile,writeNew,publishExecutionUpdate,recoverCurrentReplacementPublication,withExecutionPublicationLock,assertNoPendingExecutionPublication} from './execution-publication.mjs';
 
 import {preparePreparationCandidate} from './prepare-task-candidate.mjs';
 import {assertPreparationCandidate} from './prepare-plan-candidate.mjs';
@@ -50,7 +50,7 @@ export async function installCurrentInitial({specPath,preparationRoot,review,che
   if(initial.state!=='NO_EXECUTION' || initial.activationId!==null)
     fail('STALE_BASE','Initial installation requires an absent official execution');
   const root=await fs.realpath(preparationRoot);
-  await assertPreparationDraftApproval({specPath,candidateExecutionRoot:root,filesystemContext},{required:true});
+  const initialApproval=await assertPreparationDraftApproval({specPath,candidateExecutionRoot:root,filesystemContext},{required:true});
   const ownerPresent=await fs.lstat(`${root}.owner.json`).then(()=>true,error=>{if(error.code==='ENOENT')return false;throw error;});
   const ownSource=ownerPresent?await assertPreparationCandidate(root,specPath,{filesystemContext}):null;
   if(ownSource&&(ownSource.marker.operation!=='PLAN'||ownSource.marker.source!==null))
@@ -80,6 +80,13 @@ export async function installCurrentInitial({specPath,preparationRoot,review,che
   const owned=ownSource??await assertPreparationCandidate(candidate,specPath,{filesystemContext});
   const generated=new Map([['approved-preparation.json',Buffer.from(approved.bytes)],['continuity.json',text(continuity)]]);
   try {
+   await withExecutionPublicationLock(workspace,async()=>{
+    // Serialize generation with capture/approve/revise. Once these exact generated
+    // files exist, revise refuses to invalidate their approval until publication settles.
+    await assertNoPendingExecutionPublication(workspace);
+    const currentApproval=await assertPreparationDraftApproval({specPath,candidateExecutionRoot:root,filesystemContext},{required:true});
+    if(currentApproval.captureSha256!==initialApproval.captureSha256)
+      fail('STALE_APPROVAL','Initial approval changed before generation');
     // A pre-publisher interruption may leave only these deterministic files on
     // the registered PLAN. Reuse exact bytes; foreign/stale files never grant authority.
     const existing=new Set();
@@ -94,6 +101,7 @@ export async function installCurrentInitial({specPath,preparationRoot,review,che
       await fs.mkdir(path.dirname(target),{recursive:true});
       await writeNew(target,bytes,0o644);
     }
+   });
   }catch(error){error.candidateRoot=candidate;error.publication='not-started';throw error;}
   const expected=await candidateFiles(candidate);
   validateCurrentCandidate({files:expected});

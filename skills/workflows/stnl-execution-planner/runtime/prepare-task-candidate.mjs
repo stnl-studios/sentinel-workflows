@@ -10,7 +10,7 @@ import {inspectCurrentExecution} from './execution-current-reader.mjs';
 import {captureCurrentSetReplacementSource} from './execution-state.mjs';
 import {capturePreparationSource,setPreparationMembers} from './prepare-plan-candidate.mjs';
 import {allocatePreparationCandidate,withExecutionPublicationLock,assertNoPendingExecutionPublication,assertOwnedPreparationCandidate,
- preparationRegistryPath,readOwnedFile,parseStrictJson} from './execution-publication.mjs';
+ preparationRegistryPath,readOwnedFile,parseStrictJson,validatePreparationRegistry} from './execution-publication.mjs';
 import {resolveExecutionFilesystemContext,ensureExecutionMaterialRoot} from './execution-publication.mjs';
 import {resolveExecutionWorkspace} from './execution-workspace.mjs';
 function fail(code,message){throw Object.assign(new Error(message),{code});}
@@ -51,14 +51,23 @@ export async function preparePreparationCandidate({specPath,operation,candidateE
   if(revalidateCompletedIds!==null&&source.revalidationBasisSha256!==checkedSource.revalidationBasisSha256)fail('STALE_BASE','Revalidation observations changed before allocation');
   if(current.requirementsAuthority!==image.requirementsAuthority||current.activationId!==image.activationId
     ||!replacement&&current.state!=='NO_EXECUTION')fail('STALE_BASE','Preparation authority or target changed');
-  if(replacement) {
+  {
    let registry=null;
    try{registry=parseStrictJson((await readOwnedFile(await preparationRegistryPath(workspace))).bytes.toString('utf8'));}
    catch(error){if(error.code!=='ENOENT')throw error;}
    // Refusal only: allocation still validates the existing registry itself.
    // The common lease makes this check serial with its registered creation.
-   if(registry&&(!Array.isArray(registry.allocations)||registry.allocations.some(item=>item.operation==='REPLAN')))
-    fail('OWNER_ACTIVE','A registered REPLAN preparation or uncertain registry blocks another allocation');
+   if(registry) {
+    validatePreparationRegistry(registry,workspace);
+    if(!replacement&&registry.allocations.length){
+     if(registry.allocations.length!==1||registry.allocations[0].operation!=='PLAN')
+      fail('OWNER_ACTIVE','Multiple legacy preparations require explicit recovery; no new allocation was created');
+     const existing=await assertOwnedPreparationCandidate({candidateExecutionRoot:registry.allocations[0].candidate,specPath,resolveWorkspace:spec=>resolveExecutionWorkspace(spec,{filesystemContext})});
+     return {status:'DRAFT',candidateExecutionRoot:existing.root,expectedActivationId:current.activationId,requirementsAuthority:current.requirementsAuthority,reused:true};
+    }
+    if(replacement&&registry.allocations.some(item=>item.operation==='REPLAN'))
+     fail('OWNER_ACTIVE','A registered REPLAN preparation or uncertain registry blocks another allocation');
+   }
   }
   const root=await allocatePreparationCandidate({workspace,lease,captureParent:parent,metadata:{operation,specPath:workspace.authorityPath,expectedActivationId:current.activationId,preparationRevision:replacement?current.preparationRevision+1:1,deliveryIds:{},...(replacement?{completedDeliveryIds:[...completedDeliveryIds]}:{}),...(terminalValidation?{terminalValidation:true}:{}),...(revalidateCompletedIds!==null?{revalidateCompletedIds:[...revalidateCompletedIds],revalidationBasisSha256:checkedSource.revalidationBasisSha256}:{})}});
   if(replacement)await capturePreparationSource(await assertOwnedPreparationCandidate({candidateExecutionRoot:root,specPath,resolveWorkspace:spec=>resolveExecutionWorkspace(spec,{filesystemContext})}));

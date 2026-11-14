@@ -138,3 +138,9 @@ Each item uses `source_id`, `title`, `status`, `scenario_ids`, and `rationale`. 
 ## Helper artifacts
 
 Each helper is `{"path":"seed.mjs","purpose":"Create isolated runbook records","cleanup":"cleanup.mjs"}`. Paths are relative to the runbook root. Listing a helper does not create it; create it only after explicit request, objective necessity, project-native design, and independent safety validation. The HTML remains the principal artifact.
+
+## Independent requirements scope
+
+For `SPEC`, the inspected mandatory sources are the requirements document and canonical shared authority only. Existing execution directories do not add sources or block generation. Use an explicit execution-backed scope when plans/tasks are part of the requested inspection. Additional sources may describe environment, fixtures and actions, but expected results and acceptance criteria must remain traceable to requirements. Do not replace expected behavior with what the implementation happens to return.
+
+Preserved completed slice files are valid supporting sources only after execution inspection authenticates them. If completed files were retired, do not reconstruct them or fabricate task references; use `SPEC` for whole-product acceptance.

@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {pathToFileURL} from 'node:url';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createHash} from 'node:crypto';
@@ -31,7 +32,7 @@ const run=promisify(execFile);
 const repo=path.resolve('.');
 const operationCli=path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs');
 const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-async function fixture({otherInput=false,kind='standalone',entry='file',sharedAncestor=false,missingAncestor=false,outputRoot='docs/missing',reportPair=false,single=false,independentAreas=false,productRefs=false,futureLeaf=false,closeReady=false,inputTest=false,coverageOmission=false,staleMode='none'}={}) {
+async function fixture({otherInput=false,kind='standalone',entry='file',sharedAncestor=false,missingAncestor=false,outputRoot='docs/missing',reportPair=false,single=false,independentAreas=false,productRefs=false,futureLeaf=false,closeReady=false,inputTest=false,coverageOmission=false,staleMode='none',blockedInput=false}={}) {
   const root=await fs.mkdtemp(path.join(repo,'tmp/stnl Initial test '));
   await run('git',['-C',root,'init','-q']);
   await fs.writeFile(path.join(root,'.gitignore'),'/tmp/\n');
@@ -50,6 +51,7 @@ async function fixture({otherInput=false,kind='standalone',entry='file',sharedAn
     ?'import test from "node:test";import assert from "node:assert/strict";import {pay} from "./pay.mjs";test("AC-001",()=>assert.equal(pay(),"paid"));\n'
     :`import test from "node:test";import fs from "node:fs";test("AC-001",()=>{const file=new URL("./pay.mjs",import.meta.url);${staleMode==='once'?'if(!fs.existsSync(file))':''}fs.appendFileSync(file,"// verifier mutation\\n");});\n`);
   if(independentAreas){await fs.mkdir(path.join(root,'other'));await fs.copyFile(path.join(root,'src/pay.test.mjs'),path.join(root,'other/pay.test.mjs'));}
+  if(blockedInput){await fs.mkdir(path.join(root,'docs'));await fs.writeFile(path.join(root,'docs/qa.html'),'QA pending\n');}
   if(otherInput) await fs.writeFile(path.join(root,'src/other.txt'),'independent input\n');
   const before=await inspectCurrentExecution(specPath);
   const {context}=await resolveCurrentExecutionContext(specPath);
@@ -80,7 +82,7 @@ async function fixture({otherInput=false,kind='standalone',entry='file',sharedAn
       if(inputTest)recipe.checks[0].args[1].file.kind='input';
       return '- Recipe: '+JSON.stringify(recipe);
     }).join('\n');
-    if(inputTest && /^(plans|tasks)\/slice-/u.test(name))content=content.replace('## Existing Inputs\n\n- none\n\n','## Existing Inputs\n\n- `../../../../src/pay.test.mjs`\n\n');
+    if((inputTest||blockedInput) && /^(plans|tasks)\/slice-/u.test(name))content=content.replace('## Existing Inputs\n\n- none\n\n','## Existing Inputs\n\n'+[...(inputTest?['- `../../../../src/pay.test.mjs`']:[]),...(blockedInput?['- `../../../../docs/qa.html`']:[])].join('\n')+'\n\n');
     if(otherInput && ['plans/slice-02.md','tasks/slice-02.md'].includes(name)) content=content
       .replace('## Existing Inputs\n\n- none\n\n','## Existing Inputs\n\n- `../../../../src/other.txt`\n\n');
     return [name,Buffer.from(content)];
@@ -955,25 +957,52 @@ test('Initial malformed native response persists a refusal without granting acce
   assert.ok(bundle.objects.some(item=>Buffer.from(item.bytesBase64,'base64').toString('utf8')==='{"invalid":'));
 });
 
-for(const terminal of [false,true])test(`Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal use one selected variant${terminal?' with terminal request binding':''}`,async()=>{
-  const f=await fixture();
+for(const {priorPass,terminal,blockedTerminal,blockedLocal,retryScenario} of [
+  ...[false,true,'legacy'].flatMap(priorPass=>(priorPass==='legacy'?[false]:[false,true]).map(terminal=>({priorPass,terminal}))),
+  ...['plain','after-findings'].flatMap(blockedTerminal=>[false,true].flatMap(blockedLocal=>[false,true].map(retryScenario=>({priorPass:false,terminal:false,blockedTerminal,blockedLocal,retryScenario}))))
+])test(`Initial native judgment EXECUTE, formal NEEDS_FIX, APPLY and new formal use one selected variant${terminal?' with terminal request binding':''}${priorPass?' after prior local PASS':''}${priorPass==='legacy'?' with authenticated historical recovery':''}${blockedTerminal?(blockedLocal?' local':' terminal')+' BLOCKED '+blockedTerminal:''}${retryScenario?' explicit blocked revalidation':''}`,async()=>{
+  const f=await fixture({single:!!blockedTerminal,inputTest:!!retryScenario,blockedInput:!!retryScenario});
   await installCurrentInitial(f);
-  let ordinal=0;
-  async function operation(kind,{before=null,after=null,status,findings=[]}={}) {
+  let ordinal=0,hasFindings=false,findingsResolved=false,historicalEvidenceFile=null,lastRunnerId=null;
+  let legacyPublish=null;
+  if(priorPass==='legacy') {
+    // Reproduce the former producer in an isolated test-only runtime, rather
+    // than editing a published evidence bundle or its activation controls.
+    const runtime=path.join(f.root,'tmp','legacy-runtime');
+    await fs.cp(new URL('../skills/workflows/stnl-slice-executor/runtime/',import.meta.url),runtime,{recursive:true});
+    const stateFile=path.join(runtime,'current-evidence-state.mjs');
+    const state=await fs.readFile(stateFile,'utf8');
+    await fs.writeFile(stateFile,state.replace("if(base.bundle.implementation.length) {\n      const first=records.find", "if(base.cycle&&base.bundle.implementation.length) {\n      const first=records.find"));
+    legacyPublish=(await import(pathToFileURL(path.join(runtime,'execution-current-operation.mjs')))).publish;
+  }
+  async function operation(kind,{before=null,after=null,status,findings=[],retry=false,terminalRequest=null}={}) {
     if(before!==null) await fs.writeFile(path.join(f.root,'src/pay.mjs'),before);
     const inspection=await inspectCurrentExecution(f.specPath);
-    const started=await begin({specPath:f.specPath,slice:'slice-01',
-      expectedActivationId:inspection.activationId,operation:kind});
+    const started=retry&&blockedLocal&&blockedTerminal==='plain'
+      ?JSON.parse((await run(process.execPath,[path.join(repo,'skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs'),
+        'begin','--spec-path',f.specPath,'--slice','slice-01','--expected-activation-id',inspection.activationId,
+        '--operation',kind,'--retry-blocked'])).stdout)
+      :await begin({specPath:f.specPath,slice:'slice-01',
+        expectedActivationId:inspection.activationId,operation:kind,retryBlocked:retry});
+    if(retry)await assert.rejects(begin({specPath:f.specPath,slice:'slice-01',expectedActivationId:inspection.activationId,operation:kind,retryBlocked:true}));
     if(after!==null) await fs.writeFile(path.join(f.root,'src/pay.mjs'),after);
     if(terminal && kind!=='VALIDATE_SLICE')await assert.rejects(
       reserveDispatch(started.handle,{terminal:true}),error=>error.code==='INVALID_CURRENT_IMAGE');
-    const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',
-      terminal:terminal && kind==='VALIDATE_SLICE'});
+    if(retry) {
+      const output=path.join(f.root,'src/pay.mjs'),bytes=await fs.readFile(output);
+      await fs.appendFile(output,'// forbidden output edit after admission\n');
+      await assert.rejects(reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal:!blockedLocal}),/outputs and scope must stay unchanged/);
+      await fs.writeFile(output,bytes);
+    }
+    const selectedTerminal=terminalRequest??((terminal||!!blockedTerminal&&!blockedLocal&&status==='BLOCKED') && kind==='VALIDATE_SLICE');
+    if(retry)await assert.rejects(reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal:!selectedTerminal}),/preserve local versus terminal/);
+    const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal:selectedTerminal});
     const agentId=`mechanical-initial-cycle-${++ordinal}`;
-    await bindNative(started.handle,agentId);
+    if(retry)await assert.rejects(bindNative(started.handle,lastRunnerId),/new independent agent/);
+    await bindNative(started.handle,agentId);lastRunnerId=agentId;
     const measured=await verifyNative(dispatch.originFile);
     const request=JSON.parse(await fs.readFile(dispatch.requestFile));
-    assert.equal(Object.hasOwn(request,'terminal'),terminal && kind==='VALIDATE_SLICE');
+    assert.equal(Object.hasOwn(request,'terminal'),selectedTerminal);
     let result;
     if(kind==='EXECUTE_SLICE') {
       const {head,...semantic}=initialPayload(1);
@@ -981,9 +1010,9 @@ for(const terminal of [false,true])test(`Initial native judgment EXECUTE, formal
       result.commands=measured.commands;
     } else if(kind==='VALIDATE_SLICE') result={status,
       commands:measured.commands,evidence:'The prepared pay assertion was executed with its recorded exit.',
-      findingReferences:findings.length?'finding-01':status==='PASS'?'finding-01':'none',
-      findingDispositions:findings.length?'finding-01=active':status==='PASS'?'finding-01=resolved':'none',
-      blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
+      findingReferences:findings.length?'finding-01':hasFindings&&!findingsResolved&&(status==='PASS'||status==='BLOCKED')?'finding-01':'none',
+      findingDispositions:findings.length?'finding-01=active':status==='BLOCKED'&&hasFindings&&!findingsResolved?'finding-01=active':status==='PASS'&&hasFindings&&!findingsResolved?'finding-01=resolved':'none',
+      blockers:status==='BLOCKED'?'Terminal acceptance requires unavailable independent QA proof.':'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
     else result={status:'TESTS_PASS',automaticCheckRound:'1/3',
       discoverySources:'Approved task, source and test.',discoveryActions:'Inspected approved source and test.',
       verificationTypesConsidered:'Approved Node module test.',nonApplicabilityRationale:'none',
@@ -995,24 +1024,124 @@ for(const terminal of [false,true])test(`Initial native judgment EXECUTE, formal
       unsupportedActiveFindings:'none',failures:'none',evidenceOrFailureSummary:'The approved test exited zero.',
       affectedFilesOrBehaviors:'src/pay.mjs',blockers:'none',unexpectedWorkspaceEffects:'none',
       persistenceSummary:'The native helper retained the reviewed observation; the runner made no product changes.'};
+    if(findings.length)hasFindings=true;
+    if(kind==='VALIDATE_SLICE'&&status==='PASS'&&hasFindings)findingsResolved=true;
     const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result,
       ...(kind==='VALIDATE_SLICE'?{newFindings:findings.map(item=>({...item,originAttempt:request.attemptId}))}:{})});
     const file=path.join(f.root,`mechanical-initial-cycle-${ordinal}.json`);
     await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
     const captured=await captureNative(started.handle,file);
     assert.equal(captured.status,kind==='APPLY_FINDINGS'?'TESTS_PASS':status??'TESTS_PASS');
-    const published=await publish(started.handle);
+    const capturedProof=await fs.readFile(dispatch.originFile.replace('.origin.json','.verification.json'));
+    let published;
+    if(priorPass==='legacy'&&kind==='APPLY_FINDINGS') {
+      const proofFile=dispatch.originFile.replace('.origin.json','.verification.json');
+      const proof=await fs.readFile(proofFile),response=await fs.readFile(file);
+      const marker=path.join(path.dirname(dispatch.originFile),'owner.json'),ownerBytes=await fs.readFile(marker);
+      await assert.rejects(publish(started.handle),/first formal anchor/);
+      const badFile=path.join(f.root,'tmp','wrong-history.json');
+      await fs.writeFile(badFile,(await fs.readFile(historicalEvidenceFile,'utf8'))+' ');
+      await assert.rejects(publish(started.handle,{historicalEvidenceFile:badFile}),/sealed formal predecessor/);
+      const altered=JSON.parse(await fs.readFile(historicalEvidenceFile,'utf8'));
+      altered.validation.origin.deliveryId='foreign-owner';await fs.writeFile(badFile,JSON.stringify(altered));
+      await assert.rejects(publish(started.handle,{historicalEvidenceFile:badFile}),/sealed formal predecessor/);
+      const alias=path.join(f.root,'tmp','history-link.json');await fs.symlink(historicalEvidenceFile,alias);
+      await assert.rejects(publish(started.handle,{historicalEvidenceFile:alias}));
+      assert.deepEqual(await fs.readFile(marker),ownerBytes,'refused sources cannot mutate operation controls');
+      await assert.rejects(fs.stat(path.join(path.dirname(dispatch.originFile),'candidate')),{code:'ENOENT'});
+      await assert.rejects(publish(started.handle,{historicalEvidenceFile,checkpoint:phase=>{
+        if(phase==='before-backup')throw new Error('controlled historical publication interruption');
+      }}),/controlled historical publication interruption/);
+      published=await publish(started.handle,{historicalEvidenceFile});
+      await fs.rename(historicalEvidenceFile,historicalEvidenceFile+'.archived');
+      assert.equal((await resume(started.handle)).phase,'committed','completed recovery does not need historical input');
+      historicalEvidenceFile=null;
+      assert.deepEqual(await fs.readFile(proofFile),proof,'recovery never reruns captured verification');
+      assert.deepEqual(await fs.readFile(file),response,'literal conclusion is unchanged');
+    } else {
+      if(historicalEvidenceFile&&kind==='APPLY_FINDINGS')await assert.rejects(
+        publish(started.handle,{historicalEvidenceFile}),/absent first formal anchor/);
+      if(historicalEvidenceFile&&kind==='VALIDATE_SLICE')await assert.rejects(
+        publish(started.handle,{historicalEvidenceFile}),/captured APPLY/);
+      published=await (priorPass==='legacy'&&status==='NEEDS_FIX'?legacyPublish:publish)(started.handle);
+    }
     assert.equal(published.publication,'confirmed');
+    assert.deepEqual(await fs.readFile(dispatch.originFile.replace('.origin.json','.verification.json')),capturedProof,'publication cannot rerun verification');
     const continuity=JSON.parse(await fs.readFile(path.join(f.root,'specs/pay/requirements-execution/continuity.json')));
     const bundle=JSON.parse(await fs.readFile(path.join(f.root,'specs/pay/requirements-execution',continuity.deliveries[0].evidence.path)));
     for(const check of [...bundle.implementation,...bundle.findingsChecks])assert.equal(check.contract.terminal,null);
     if(kind==='VALIDATE_SLICE')assert.deepEqual(bundle.validation.contract.terminal,request.terminal??null);
+    if(priorPass&&priorPass!=='legacy'&&kind==='VALIDATE_SLICE'&&status==='NEEDS_FIX') {
+      assert.equal(bundle.validation.id,'attempt-02');
+      assert.equal(bundle.support.find(item=>item.id==='attempt-01')?.kind,'validation',
+        'later formal must preserve the first formal CAS anchor for subsequent APPLY');
+    }
+    if(priorPass&&kind==='VALIDATE_SLICE'&&status==='PASS'&&!hasFindings) {
+      historicalEvidenceFile=path.join(f.root,'tmp','first-formal-history.json');
+      await fs.copyFile(path.join(f.root,'specs/pay/requirements-execution',continuity.deliveries[0].evidence.path),historicalEvidenceFile);
+    }
     return inspectCurrentExecution(f.specPath);
   }
   const paid='export const pay=()=>"paid";\n';
   const broken='export const pay=()=>"broken";\n';
   const execute=await operation('EXECUTE_SLICE',{after:paid});
   assert.equal(execute.normalHandoff.operation,'VALIDATE_SLICE');
+  if(priorPass)await operation('VALIDATE_SLICE',{status:'PASS'});
+  async function terminalBlocked() {
+    const result=await operation('VALIDATE_SLICE',{status:'BLOCKED'});
+    assert.equal(result.state,'VALIDATION_BLOCKED',JSON.stringify(result));
+    assert.equal(result.deliveries[0].formalStatus,'BLOCKED');
+    assert.equal(result.deliveries[0].observedValidation,'revalidation-required');
+    assert.equal(result.normalHandoff,null);
+    const task=await fs.readFile(path.join(f.root,'specs/pay/requirements-execution/tasks/slice-01.md'),'utf8');
+    assert.match(task,/- Current action: blocked/);
+    assert.match(task,/- Current validation: revalidation-required/);
+    if(retryScenario) {
+      const selected={specPath:f.specPath,slice:'slice-01',expectedActivationId:result.activationId,operation:'VALIDATE_SLICE'};
+      await assert.rejects(begin(selected),'ordinary handoff cannot silently retry BLOCKED');
+      await assert.rejects(begin({...selected,retryBlocked:true,operation:'APPLY_FINDINGS'}));
+      const source=path.join(f.root,'src/pay.mjs'),sourceBytes=await fs.readFile(source);
+      await fs.appendFile(source,'// unauthorized output change\n');
+      await assert.rejects(begin({...selected,retryBlocked:true}),/outputs and scope must stay unchanged/);
+      await fs.writeFile(source,sourceBytes);
+      const specBytes=await fs.readFile(f.specPath);await fs.appendFile(f.specPath,'\nAC-002: another contract.\n');
+      await assert.rejects(begin({...selected,retryBlocked:true}));await fs.writeFile(f.specPath,specBytes);
+      const evidenceRoot=path.join(f.root,'specs/pay/requirements-execution');
+      const c=JSON.parse(await fs.readFile(path.join(evidenceRoot,'continuity.json')));
+      const beforeBundle=JSON.parse(await fs.readFile(path.join(evidenceRoot,c.deliveries[0].evidence.path)));
+      const blockedRecord=beforeBundle.validation;
+      const overlapping=path.join(f.root,'src/pay.test.mjs'),overlapBytes=await fs.readFile(overlapping);
+      await fs.appendFile(overlapping,'// declared input also lies in authorized output area\n');
+      await assert.rejects(begin({...selected,retryBlocked:true}),/outputs and scope must stay unchanged/);
+      await fs.writeFile(overlapping,overlapBytes);
+      const input=path.join(f.root,'docs/qa.html'),inputBytes=await fs.readFile(input),inputMode=(await fs.stat(input)).mode&0o777;
+      await fs.chmod(input,inputMode===0o600?0o644:0o600);
+      await assert.rejects(begin({...selected,retryBlocked:true}));await fs.chmod(input,inputMode);
+      await fs.unlink(input);await assert.rejects(begin({...selected,retryBlocked:true}));
+      await fs.writeFile(input,inputBytes,{mode:inputMode});
+      const added=path.join(f.root,'src/unapproved.mjs');await fs.writeFile(added,'new output scope');
+      await assert.rejects(begin({...selected,retryBlocked:true}));await fs.unlink(added);
+      // Only an exclusive declared input outside all output areas may refresh.
+      await fs.appendFile(input,'QA prerequisite addressed\n');
+      const retried=await operation('VALIDATE_SLICE',{status:'PASS',retry:true,terminalRequest:!blockedLocal});
+      assert.equal(retried.deliveries[0].formalStatus,'PASS');
+      const nextC=JSON.parse(await fs.readFile(path.join(evidenceRoot,'continuity.json')));
+      const nextBundle=JSON.parse(await fs.readFile(path.join(evidenceRoot,nextC.deliveries[0].evidence.path)));
+      assert.deepEqual(nextBundle.support.find(record=>record.id===blockedRecord.id),blockedRecord,
+        'explicit revalidation retains the literal authenticated BLOCKED record');
+      const bundleFile=path.join(evidenceRoot,nextC.deliveries[0].evidence.path),finalBytes=await fs.readFile(bundleFile);
+      const changed=structuredClone(nextBundle);changed.support.find(record=>record.id===blockedRecord.id).recordUtf8+='tampered';
+      await fs.writeFile(bundleFile,JSON.stringify(changed));
+      try{await assert.rejects(inspectCurrentExecution(f.specPath));}finally{await fs.writeFile(bundleFile,finalBytes);}
+      assert.equal((await inspectCurrentExecution(f.specPath)).deliveries[0].formalStatus,'PASS');
+      assert.equal(JSON.parse(await fs.readFile(path.join(evidenceRoot,'activation.json'))).activeAttempt,null);
+      await assert.rejects(begin({...selected,expectedActivationId:retried.activationId,retryBlocked:true}),/recorded formal BLOCKED/);
+    }
+  }
+  if(blockedTerminal==='plain') {
+    if(!blockedLocal)await operation('VALIDATE_SLICE',{status:'PASS'});
+    await terminalBlocked();return;
+  }
   const finding={id:'finding-01',severity:'blocking',problem:'The pay export returns broken.',
     evidence:'The prepared assertion fails on the pay result.',impact:'AC-001 is unmet.',
     relatedAuthority:'AC-001',expectedCorrection:'Restore the pay result to paid.'};
@@ -1020,10 +1149,12 @@ for(const terminal of [false,true])test(`Initial native judgment EXECUTE, formal
   assert.equal(formal.normalHandoff.operation,'APPLY_FINDINGS');
   const apply=await operation('APPLY_FINDINGS',{after:paid});
   assert.equal(apply.normalHandoff.operation,'VALIDATE_SLICE');
+  if(blockedLocal&&blockedTerminal==='after-findings'){await terminalBlocked();return;}
   const final=await operation('VALIDATE_SLICE',{status:'PASS'});
   assert.equal(final.deliveries[0].formalStatus,'PASS');
   assert.deepEqual(final.deliveries[0].counters,
-    {implementationChecks:1,findingsChecks:1,validationAttempts:2,findings:1});
+    {implementationChecks:1,findingsChecks:1,validationAttempts:priorPass?3:2,findings:1});
+  if(blockedTerminal==='after-findings')await terminalBlocked();
 });
 
 test('Initial ingress installs reviewed bytes once and reads back pristine',async()=>{
@@ -2306,6 +2437,27 @@ test('Initial EXECUTE proof survives Q18 and the Q20 terminal formal after Q18 m
   assert.equal(final.inspection.state,'COMPLETE');
   const current=JSON.parse(Buffer.from(final.files.get('continuity.json'))).deliveries[0];
   assert.deepEqual(JSON.parse(Buffer.from(final.files.get(current.evidence.path))).implementation,[implementation]);
+  const {completedEvidenceContext}=await import('../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs');
+  const snapshotBytes=Buffer.from(final.files.get('approved-preparation.json'));
+  const finalContinuity=JSON.parse(Buffer.from(final.files.get('continuity.json')));
+  const inspected=await completedEvidenceContext({context,snapshotBytes,continuity:finalContinuity,files:final.files});
+  assert.equal(inspected.fresh.has(current.deliveryId),true);
+  // The new recognition path must use the exact reviewed predecessor, never
+  // merely the presence of an old formal with a plausible authority.
+  const forgedBundle=JSON.parse(Buffer.from(final.files.get(current.evidence.path)));
+  const old=forgedBundle.support.find(item=>item.kind==='validation'&&item.id==='attempt-01');
+  assert.ok(old);
+  old.recordUtf8+='\n';
+  const forgedFiles=new Map(final.files);
+  forgedFiles.set(current.evidence.path,Buffer.from(JSON.stringify(forgedBundle)+'\n'));
+  await assert.rejects(completedEvidenceContext({context,snapshotBytes,continuity:finalContinuity,files:forgedFiles}),
+    {code:'OWNER_MISMATCH',message:/operational replacement lacks current native A0\/A1 admission/});
+  const forgedSnapshot=JSON.parse(snapshotBytes);
+  for(const decision of [...forgedSnapshot.globalReview.evidenceDecisions,
+    ...forgedSnapshot.deliveries.flatMap(item=>item.review.evidenceDecisions)])
+    if(decision.deliveryId===current.deliveryId)decision.evidenceSha256='sha256:'+'0'.repeat(64);
+  await assert.rejects(completedEvidenceContext({context,snapshotBytes:Buffer.from(JSON.stringify(forgedSnapshot)+'\n'),
+    continuity:finalContinuity,files:final.files}),{code:'OWNER_MISMATCH'});
 });
 
 for(const metadata of ['head','requestSha256']) test(`protocol refusal: Initial ${metadata} is published rejection, never uncertain ownership`,async t=>{
@@ -2837,4 +2989,45 @@ test('explicit reviewed reentry revalidates every stale completed structural con
   const b=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',terminal:true});assert.equal(b.image.inspection.state,'COMPLETE');
   for(const d of JSON.parse(Buffer.from(b.image.files.get('continuity.json'))).deliveries)
     assert.equal(d.counters.validationAttempts,prior.deliveries.find(i=>i.deliveryId===d.deliveryId).counters.validationAttempts+1);
+});
+
+for(const winner of ['install','revise'])test(`Initial generation and revise are serialized when ${winner} wins`,async t=>{
+  const f=await fixture({single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const prepared=await preparePreparationCandidate({specPath:f.specPath,operation:'PLAN'}),candidate=prepared.candidateExecutionRoot;
+  await fs.cp(f.preparationRoot,candidate,{recursive:true});
+  await approveSyntheticPreparation({specPath:f.specPath,candidateExecutionRoot:candidate});
+  const draftOptions={specPath:f.specPath,candidateExecutionRoot:candidate};
+  const {revisePreparationDraft,capturePreparationDraft,approvePreparationDraft,assertPreparationDraftApproval}=await import('../skills/workflows/stnl-execution-planner/runtime/preparation-draft.mjs');
+  const {installCurrentInitial:installRuntime}=await import('../skills/workflows/stnl-execution-planner/runtime/install-current-initial.mjs');
+  const {workspace}=await resolveCurrentExecutionContext(f.specPath),lock=(await executionLockIdentity(workspace)).lockPath;
+  const controls=await preparationDraftPaths(draftOptions),captureBefore=await fs.readFile(controls.capture),approvalBefore=await fs.readFile(controls.approval);
+  const gatePath=winner==='install'?path.join(candidate,'approved-preparation.json'):lock;
+  let signalEntered,releaseWrite,paused=false,pending;
+  const entered=new Promise(resolve=>{signalEntered=resolve;}),gate=new Promise(resolve=>{releaseWrite=resolve;}),open=fs.open;
+  fs.open=async function(file,...args){
+    if(file===gatePath&&!paused){paused=true;signalEntered();await gate;}
+    return open.call(this,file,...args);
+  };
+  try{
+    pending=installRuntime({...f,preparationRoot:candidate});
+    await Promise.race([entered,pending.then(()=>{throw new Error('Expected paused Initial generation');})]);
+    if(winner==='install'){
+      await assert.rejects(revisePreparationDraft(draftOptions),/lock|publication/iu);
+      assert.deepEqual(await fs.readFile(controls.capture),captureBefore);
+      assert.deepEqual(await fs.readFile(controls.approval),approvalBefore);
+      releaseWrite();assert.equal((await pending).publication,'confirmed');
+    }else{
+      const revised=await revisePreparationDraft(draftOptions);
+      assert.deepEqual(await fs.readFile(path.join(revised.archivedCapture,'capture.json')),captureBefore);
+      releaseWrite();await assert.rejects(pending,/ENOENT|approval|capture/iu);
+      for(const name of ['approved-preparation.json','continuity.json'])await assert.rejects(fs.stat(path.join(candidate,name)),{code:'ENOENT'});
+      assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+      const captured=await capturePreparationDraft(draftOptions);
+      await approvePreparationDraft({...draftOptions,approvedCaptureSha256:captured.captureSha256});
+      assert.equal((await assertPreparationDraftApproval(draftOptions,{required:true})).captureSha256,captured.captureSha256);
+      assert.equal((await installRuntime({...f,preparationRoot:candidate})).publication,'confirmed');
+    }
+  }finally{releaseWrite();fs.open=open;if(pending)await pending.catch(()=>{});}
+  assert.equal(paused,true);
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'MATERIALIZED_PRISTINE');
 });

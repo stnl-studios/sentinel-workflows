@@ -211,3 +211,68 @@ for(const change of ['not-ignored','git-selector'])test(`terminal recovery reval
  const code=`import {recoverIncompletePublication} from ${JSON.stringify(publisherModule)};await recoverIncompletePublication(process.argv[1]);`;
  await assert.rejects(run(process.execPath,['--input-type=module','-e',code,f.target],{timeout:30000,env:{...process.env,...(change==='git-selector'?{GIT_WORK_TREE:f.root}:{})}}),/TEMP_ROOT_UNPROVEN/u);assert.equal(snapshot(f.root),before);
 });
+
+// Regression for OS 39146: QA results are durable user artifacts, including
+// untracked/ignored files. CLOSE must not infer that only Git-tracked bytes matter.
+async function addDurableQaArtifacts(target) {
+ const artifacts=new Map([
+  ['test-runbook/results.json',Buffer.from(JSON.stringify({fingerprint:'fixture-v1',results:[{id:'TR-009',status:'PASS',notes:'Retested after the correction',evidence:['evidence/TR-009.bin']} ]})+'\n')],
+  ['test-runbook/index.html',Buffer.from('<!doctype html><title>Independent QA</title>\n')],
+  ['test-runbook/evidence/TR-009.bin',Buffer.from([0,255,13,10,128])],
+  ['visual.html',Buffer.from('<!doctype html><title>SPEC view</title>\n')],
+  ['notes/user-observation.txt',Buffer.from('Untracked notes are not disposable.\n')],
+  ['feature_spec-planning/stnl-preparation-fixture/plan.md',Buffer.from('# Reviewed plan\n')],
+  ['feature_spec-planning/stnl-preparation-fixture/tasks.md',Buffer.from('# Reviewed tasks\n')],
+ ]);
+ for(const [name,bytes] of artifacts){const file=path.join(target,name);await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,bytes);}
+ return artifacts;
+}
+async function assertDurableQaArtifacts(target,artifacts){
+ for(const [name,bytes] of artifacts)assert.deepEqual(await fs.readFile(path.join(target,name)),bytes,name);
+}
+test('CLOSE preserves QA results, binary evidence, runbook, visual and untracked notes byte for byte',async t=>{
+ const f=await fixture(t),artifacts=await addDurableQaArtifacts(f.target);
+ const result=await publishCandidate('CLOSE',f.target,null);
+ assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');
+ await assertDurableQaArtifacts(f.target,artifacts);
+ assert.equal(await recoverFresh(f,{noAllocation:true}),false);
+ await assertDurableQaArtifacts(f.target,artifacts);
+});
+test('CLOSE refuses concurrent QA result edits instead of publishing a stale copy',async t=>{
+ const f=await fixture(t),artifacts=await addDurableQaArtifacts(f.target);
+ const resultPath=path.join(f.target,'test-runbook/results.json'),updated=Buffer.from('{"concurrent":"new QA result"}\n');
+ await assert.rejects(publishCandidate('CLOSE',f.target,null,{beforePublish:async()=>{await fs.writeFile(resultPath,updated);}}),/source changed/u);
+ artifacts.set('test-runbook/results.json',updated);await assertDurableQaArtifacts(f.target,artifacts);
+ assert.equal(await recoverFresh(f),false);
+ await assertDurableQaArtifacts(f.target,artifacts);
+});
+test('interrupted CLOSE and recovery preserve the complete QA artifact set',async t=>{
+ const f=await fixture(t),artifacts=await addDurableQaArtifacts(f.target);
+ await assert.rejects(run(process.execPath,[PUBLISHER_CLI,'CLOSE',f.target],{timeout:30000,env:{...process.env,[TEST_ONLY_ACK_ENV]:TEST_ONLY_ACK,[TEST_ONLY_CRASH_ENV]:'TERMINAL_WITNESS_DURABLE'}}),error=>error.signal==='SIGKILL');
+ await assertDurableQaArtifacts(f.target,artifacts);
+ const result=await recoverFresh(f);assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');
+ await assertDurableQaArtifacts(f.target,artifacts);assert.equal(await recoverFresh(f,{noAllocation:true}),false);
+});
+test('moving a known execution before CLOSE cannot disguise it as originally absent',async t=>{
+ const {target,workspace,roots}=await completeOperationalFixture(t);
+ const moved=path.join(path.dirname(target),'manually-moved-execution');
+ await fs.rename(workspace.executionRoot,moved);
+ const before=snapshot(target),retained=snapshot(moved);
+ await assert.rejects(publishCandidate('CLOSE',target,null),/retirement|source|replica|historical/u);
+ assert.equal(snapshot(target),before);assert.equal(snapshot(moved),retained);
+ assert.ok((await fs.readdir(roots.materialRoot)).length>0,'known operation controls remain recoverable');
+ await fs.rename(moved,workspace.executionRoot);
+ const result=await publishCandidate('CLOSE',target,null);
+ assert.equal(result.sourceExecutionDisposition.kind,'discard-current-complete');
+ assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');
+});
+
+test('CLOSE leaves preparation audit controls in the separate technical drafts namespace',async t=>{
+ const f=await fixture(t),artifacts=await addDurableQaArtifacts(f.target);
+ const drafts=f.roots.materialRoot+'-drafts';await fs.mkdir(drafts,{recursive:true});
+ const controls=new Map(['owner','capture','approval'].map(kind=>[kind+'.json',Buffer.from(JSON.stringify({kind,retained:true})+'\n')]));
+ for(const [name,bytes] of controls)await fs.writeFile(path.join(drafts,name),bytes);
+ const result=await publishCandidate('CLOSE',f.target,null);assert.equal(result.cleanup,'complete');
+ await assertDurableQaArtifacts(f.target,artifacts);
+ for(const [name,bytes] of controls)assert.deepEqual(await fs.readFile(path.join(drafts,name)),bytes);
+});

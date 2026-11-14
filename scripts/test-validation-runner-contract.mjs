@@ -97,24 +97,18 @@ test('aggregate runner gate accepts semantic parity with provider-native contrac
   }
 });
 
-test('Claude native check contract binds helper, observation, official round and resume', async () => {
-  const contract = await fs.readFile(path.join(canonical, 'claude-code/.claude/agents/stnl-validation-runner.md'), 'utf8');
-  assert.match(contract, /Verification Recipe aprovada[\s\S]{0,180}`verificationHelper` e `originFile` absolutos retornados pela admissão oficial/u);
-  assert.match(contract, /Execute uma vez `node <verificationHelper> verify-native --origin-file <originFile>`/u);
-  assert.match(contract, /`commands` somente os comandos e exits da observation concluída pelo helper/u);
-  assert.match(contract, /captura confere essa lista com a observation ligada ao receipt; qualquer divergência bloqueia/u);
-  assert.match(contract, /devolva exatamente esse ordinal em `automaticCheckRound`/u);
-  assert.match(contract, /`resume` e a publicação\/readback reutilizam exatamente essa resposta e a observation existente sem executar a recipe novamente/u);
-  assert.match(contract, /Somente falha concluída pode admitir successor elegível dentro do limite global oficial de cinco invocações/u);
-  assert.doesNotMatch(contract, /automaticCheckRound[^\n]{0,60}1\/3|\b1\/3\b/u);
+test('Claude uses the current semantic contract with native adapter metadata only', async () => {
+  const toml = await fs.readFile(path.join(canonical, 'codex/.codex/agents/stnl_validation_runner.toml'), 'utf8');
+  const markdown = await fs.readFile(path.join(canonical, 'claude-code/.claude/agents/stnl-validation-runner.md'), 'utf8');
+  assert.equal(markdown.split('---')[2].trim(), toml.split('developer_instructions = """')[1].split('"""')[0].trim());
+  assert.equal(checkClaude(canonical).status, 0);
 });
 
-test('Claude contract checker rejects self-selected commands, round drift and recipe replay', async t => {
+test('Claude contract checker rejects self-selected commands, observation drift and recipe replay', async t => {
   for (const [before, after] of [
-    ['Execute uma vez `node <verificationHelper> verify-native --origin-file <originFile>`', 'Execute comandos de verificação escolhidos pelo runner'],
-    ['devolva exatamente esse ordinal em `automaticCheckRound`', 'escolha um automaticCheckRound próprio'],
-    ['sem executar a recipe novamente', 'executando a recipe novamente'],
-    ['limite oficial de cinco invocações', 'orçamento existente de três rodadas'],
+    ['Execute uma vez antes do julgamento; use a observação real retornada e reporte seus comandos/exits exatos', 'Execute comandos escolhidos pelo runner'],
+    ['A captura consome a observação salva e recusa divergência', 'A captura aceita divergência'],
+    ['retomada de persistência não cria invocação', 'retomada de persistência cria invocação'],
   ]) {
     const root = await fixture(t);
     const file = path.join(root, 'claude-code/.claude/agents/stnl-validation-runner.md');
@@ -123,6 +117,28 @@ test('Claude contract checker rejects self-selected commands, round drift and re
     await fs.writeFile(file, original.replace(before, after));
     expectCategory(checkClaude(root), 'R030_CLAUDE_OBSERVATION');
   }
+});
+
+test('Claude current gate rejects legacy envelope and unbound round semantics', async t => {
+  for (const [before, after, category] of [
+    ['nunca deduza a variante por campos ausentes', 'deduza a variante por campos ausentes', 'R029_NATIVE_BINDING'],
+    ['No legacy `findingsCycle` diagnostic is supported', 'Legacy findingsCycle is supported', 'R029_FIELD_SHAPE'],
+    ['matching the admitted global round', 'selected by the runner', 'R029_FIELD_SHAPE'],
+  ]) {
+    const root = await fixture(t);
+    const file = path.join(root, 'claude-code/.claude/agents/stnl-validation-runner.md');
+    const original = await fs.readFile(file, 'utf8');
+    assert.ok(original.includes(before));
+    await fs.writeFile(file, original.replace(before, after));
+    expectCategory(checkClaude(root), category);
+  }
+});
+
+test('unscoped checker rejects semantic drift between platform adapters', async t => {
+  const root = await fixture(t);
+  const file = path.join(root, 'claude-code/.claude/agents/stnl-validation-runner.md');
+  await fs.appendFile(file, '\nExtra semantic instruction.\n');
+  expectCategory(spawnSync(process.execPath, [checker, 'validation-runner', '--root', root], { encoding: 'utf8' }), 'R031_SEMANTIC_PARITY');
 });
 
 test('scoped checker retains the exact command tuple and current terminal inspection guards', async t => {
@@ -231,7 +247,7 @@ test("offline coverage examples expose effective inputs and assertion limits, no
   }
 });
 
-test("Codex and Claude schemas are exact while native bodies remain distinct", async () => {
+test("Codex and Claude schemas are exact across native adapters", async () => {
   const toml = await fs.readFile(path.join(canonical, "codex/.codex/agents/stnl_validation_runner.toml"), "utf8");
   const claude = await fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
   for (const contract of [toml, claude]) {
@@ -350,12 +366,12 @@ test("Initial EC-1 native test selects one complete candidate contract before di
     const skill = await fs.readFile(path.join(base, 'SKILL.md'), 'utf8');
     const invocation = await fs.readFile(path.join(base, 'references/runner-invocation.md'), 'utf8');
     assert.match(skill, /In this Initial native test use only the complete candidate-distribution runner contract selected by explicit path and recorded SHA-256/u);
-    assert.match(invocation, /For this Initial EC-1 native test[^\n]*complete candidate-distribution Codex TOML[^\n]*SHA-256 before dispatch/u);
+    assert.match(invocation, /For this Initial EC-1 native test[^\n]*complete candidate-distribution native adapter \(Codex TOML or Claude Markdown\)[^\n]*SHA-256 before dispatch/u);
     assert.match(invocation, /sole runner contract before scope reads or checks/u);
     assert.match(invocation, /complete first concluded `finalResponse`[^\n]*including a rejected result/u);
     assert.match(invocation, /No manual format continuation may replace that response/u);
-    assert.match(invocation, /Before every Initial dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
-    assert.match(invocation, /Before every current-S2 dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
+    assert.match(invocation, /Before every Initial dispatch and after every controller restart[^\n]*same explicit candidate-distribution native adapter path and SHA-256/u);
+    assert.match(invocation, /Before every current-S2 dispatch and after every controller restart[^\n]*same explicit candidate-distribution native adapter path and SHA-256/u);
     assert.match(invocation, /Never fall back to the installed personal contract/u);
     assert.match(invocation, /Only for an old origin without `responseVariant`, Initial VALIDATE and APPLY prompts include the literal `requestSha256` token/u);
     assert.match(invocation, /Only for an old origin without `responseVariant`, each VALIDATE or APPLY prompt includes the literal `requestSha256` token/u);
@@ -383,8 +399,8 @@ test('all eight supported EC-1 entries are explicit in the selected native contr
   assert.match(contract,/responseVariant:"stnl-current-native-judgment-v1"/u);
   for(const owner of ['stnl-slice-executor','stnl-slice-quality-manager']) {
     const invocation=await fs.readFile(path.join(repository,'skills/workflows',owner,'references/runner-invocation.md'),'utf8');
-    assert.match(invocation,/Before every Initial dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
-    assert.match(invocation,/Before every current-S2 dispatch and after every controller restart[^\n]*same explicit candidate-distribution TOML path and SHA-256/u);
+    assert.match(invocation,/Before every Initial dispatch and after every controller restart[^\n]*same explicit candidate-distribution native adapter path and SHA-256/u);
+    assert.match(invocation,/Before every current-S2 dispatch and after every controller restart[^\n]*same explicit candidate-distribution native adapter path and SHA-256/u);
     assert.match(invocation,/reserve-dispatch --response-variant stnl-current-native-judgment-v1/u);
     assert.match(invocation,/Never fall back to the installed personal contract/u);
   }
@@ -392,9 +408,9 @@ test('all eight supported EC-1 entries are explicit in the selected native contr
 
 test("mechanical authority, candidate and serializer details stay outside runner contract", async () => {
   const contract = await fs.readFile(path.join(canonical, "claude-code/.claude/agents/stnl-validation-runner.md"), "utf8");
-  assert.doesNotMatch(contract, /RUNNER_EVIDENCE_SERIALIZER|candidateTaskArtifact|path\.relative\(|sha256:/u);
-  assert.match(contract, /runtime fornece identidade e campos mecânicos fora do payload/u);
-  assert.match(contract, /Serialização, persistência e validação determinística pertencem ao runtime\/producer/u);
+  assert.doesNotMatch(contract, /RUNNER_EVIDENCE_SERIALIZER|candidateTaskArtifact|path\.relative\(/u);
+  assert.match(contract, /não crie ou transcreva esses vínculos no JSON semântico/u);
+  assert.match(contract, /Não implemente, não corrija, não finalize, não persista em artefatos/u);
 });
 
 test("independence and read-only boundaries remain enforced", async (t) => {

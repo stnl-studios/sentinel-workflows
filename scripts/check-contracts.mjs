@@ -266,50 +266,20 @@ function checkRunner(root, platform = null) {
 }
 
 function checkClaudeObservationContract(contract) {
-  requirePattern(contract, /`EXECUTE_SLICE` e `APPLY_FINDINGS`[\s\S]{0,220}`verificationHelper` e `originFile` absolutos retornados pela admissão oficial/u,
+  requirePattern(contract, /NATIVE_VERIFICATION_HELPER e NATIVE_ORIGIN_FILE são os paths absolutos não vazios de verificationHelper e originFile da reserva oficial/u,
     'R030_CLAUDE_OBSERVATION', 'Claude must use the admitted helper and origin');
-  requirePattern(contract, /`node <verificationHelper> verify-native --origin-file <originFile>`/u,
-    'R030_CLAUDE_OBSERVATION', 'Claude must invoke the official recipe helper once');
-  requirePattern(contract, /`commands` somente os comandos e exits da observation concluída pelo helper/u,
-    'R030_CLAUDE_OBSERVATION', 'Claude commands must come from the completed observation');
-  requirePattern(contract, /captura confere essa lista com a observation ligada ao receipt; qualquer divergência bloqueia/u,
-    'R030_CLAUDE_OBSERVATION', 'Claude must reject command or exit divergence from its receipt');
-  requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/5`, `2\/5`, `3\/5`, `4\/5`, or `5\/5`/u,
-    'R030_CLAUDE_OBSERVATION', 'Claude round must match the five-call native budget');
-  requirePattern(contract, /exatamente esse ordinal em `automaticCheckRound`/u,
-    'R030_CLAUDE_OBSERVATION', 'Claude must echo the official request round');
-  requirePattern(contract, /Pending ou uncertain não autoriza novo dispatch/u,
-    'R030_CLAUDE_OBSERVATION', 'Claude must block pending or uncertain redispatch');
-  requirePattern(contract, /`resume` e a publicação\/readback reutilizam exatamente essa resposta e a observation existente sem executar a recipe novamente/u,
-    'R030_CLAUDE_OBSERVATION', 'Claude resume must reuse captured response and observation');
-  requirePattern(contract, /dentro do limite global oficial de cinco invocações/u,
-    'R030_CLAUDE_OBSERVATION', 'Claude recovery must respect the admitted five-call budget');
-  requirePattern(contract, /dentro do limite oficial de cinco invocações/u,
-    'R030_CLAUDE_OBSERVATION', 'Claude correction retries must respect the five-call budget');
-  forbidPattern(contract, /\bSDK\b|App Server|benchmark/iu,
-    'R030_CLAUDE_OBSERVATION', 'Claude distribution must remain free of SDK, App Server and benchmark mechanics');
-  forbidPattern(contract, /budgeto existente de três rodadas|three-round budget/iu,
-    'R030_CLAUDE_OBSERVATION', 'Claude contract retains the obsolete three-round limit');
-  forbidPattern(contract, /(?:Claude|agent Claude)[^\n]{0,100}(?:automaticCheckRound.{0,30}1\/3|\b1\/3\b)/u,
-    'R030_CLAUDE_OBSERVATION', 'Claude current flow must not retain the obsolete three-call round');
+  requirePattern(contract, /Execute uma vez antes do julgamento; use a observação real retornada e reporte seus comandos\/exits exatos/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must execute the admitted recipe once and report its observation');
+  requirePattern(contract, /A captura consome a observação salva e recusa divergência/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude capture must reject observation divergence');
+  requirePattern(contract, /pending\/uncertain não permite uma segunda chamada/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude must block uncertain redispatch');
+  requirePattern(contract, /retomada de persistência não cria invocação/u,
+    'R030_CLAUDE_OBSERVATION', 'Claude persistence resume must not replay the recipe');
 }
 
 function checkRunnerParity(codex, claude) {
-  const pairs = [
-    [/NATIVE_VERIFICATION_HELPER[\s\S]{0,260}NATIVE_ORIGIN_FILE[\s\S]{0,260}verify-native/u,
-      /`verificationHelper`[\s\S]{0,220}`originFile`[\s\S]{0,220}verify-native/u, 'official recipe execution'],
-    [/observação real retornada[\s\S]{0,160}reporte seus comandos\/exits exatos/u,
-      /`commands` somente os comandos e exits da observation concluída pelo helper/u, 'commands from observation'],
-    [/captura consome a observação salva e recusa divergência/u,
-      /captura confere essa lista com a observation ligada ao receipt; qualquer divergência bloqueia/u, 'capture consistency'],
-    [/pending\/uncertain não permite uma segunda chamada/u,
-      /Pending ou uncertain não autoriza novo dispatch/u, 'uncertain dispatch blocking'],
-    [/retomada de persistência não cria invocação/u,
-      /`resume` e a publicação\/readback reutilizam exatamente essa resposta e a observation existente sem executar a recipe novamente/u, 'resume without recipe replay'],
-  ];
-  for (const [left, right, label] of pairs) {
-    if (!left.test(codex) || !right.test(claude)) reject('R031_SEMANTIC_PARITY', `runner behavior differs for ${label}`);
-  }
+  if (codex !== claude) reject('R031_SEMANTIC_PARITY', 'runner semantic contracts must be identical; only native adapter metadata may differ');
 }
 
 function checkRunnerContract(contract, readmeFile, platform) {
@@ -324,7 +294,7 @@ function checkRunnerContract(contract, readmeFile, platform) {
     const actual = extractSchema(contract, operation);
     if (actual.length !== expected.length || actual.some((line, index) => line !== expected[index])) reject("R007_OUTPUT_SCHEMA", `${operation} output schema changed`);
   }
-  if(platform==='codex') {
+  if (platform === 'codex' || platform === 'claude') {
     requirePattern(contract, /responseVariant:"stnl-current-native-judgment-v1"[\s\S]{0,900}omita.*`head` e `requestSha256`/u,
       'R029_NATIVE_BINDING','native judgment variant must omit copied HEAD and request digest');
     requirePattern(contract, /nunca deduza a variante por campos ausentes/u,
@@ -354,17 +324,13 @@ function checkRunnerContract(contract, readmeFile, platform) {
   requirePattern(contract, /`commands` is an array of objects with exactly `command` and integer `exit`/u, "R027_TUPLE_GRAMMAR", "runner does not state the exact semantic command tuple grammar");
   requirePattern(contract, /The machine-key schema is fixed[\s\S]{0,500}EXECUTE_SLICE[\s\S]{0,500}APPLY_FINDINGS[\s\S]{0,500}VALIDATE_SLICE/u, "R028_FIELD_SEQUENCE", "runner does not require the literal semantic field sequence at the final response gate");
   requirePattern(contract, /Field shape is strict at the JSON boundary:[\s\S]{0,500}every judgment property except `commands` is one scalar string[\s\S]{0,300}`commands` is an array of objects with exactly `command` and integer `exit`[\s\S]{0,300}payload is one raw JSON object/u, "R029_FIELD_SHAPE", "runner does not require scalar semantic fields outside Commands");
-  if(platform==='codex') {
+  if (platform === 'codex' || platform === 'claude') {
     requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/5`, `2\/5`, `3\/5`, `4\/5`, or `5\/5`/u, 'R029_FIELD_SHAPE', 'native round requirement is missing');
+    requirePattern(contract, /matching the admitted global round only for `EXECUTE_SLICE` and `APPLY_FINDINGS`/u, 'R029_FIELD_SHAPE', 'native round must match the admitted global round');
     requirePattern(contract, /No legacy `findingsCycle` diagnostic is supported/u, 'R029_FIELD_SHAPE', 'unsupported cycle diagnostics must not acquire authority');
     requirePattern(contract,/Only native transport is supported/u,'R029_FIELD_SHAPE','native-only transport contract is missing');
-  } else {
-  requirePattern(contract,/Only native transport is supported/u,'R029_FIELD_SHAPE','native-only transport contract is missing');
-  forbidPattern(contract,/managed ownership|optional diagnostic data in managed mode/u,'R029_FIELD_SHAPE','removed managed ownership must not remain operational');
-    requirePattern(contract, /Native mode without a broker requires explicit `automaticCheckRound` equal to `1\/5`, `2\/5`, `3\/5`, `4\/5`, or `5\/5`, identical to the admitted `request\.round`/u, "R029_FIELD_SHAPE", "native round requirement is missing or not tied to the request");
-  requirePattern(contract, /optional legacy `findingsCycle` never defines ownership/u, "R029_FIELD_SHAPE", "legacy cycle cannot grant ownership");
   }
-  if(platform==='codex')requirePattern(contract,/Preserve the complete first concluded response; format refusal follows the current controller policy and never a manual replacement of those bytes/u,'R009_VALIDATION_ATTEMPT','native capture must preserve its first literal response without manual repair');
+  if (platform === 'codex' || platform === 'claude')requirePattern(contract,/Preserve the complete first concluded response; format refusal follows the current controller policy and never a manual replacement of those bytes/u,'R009_VALIDATION_ATTEMPT','native capture must preserve its first literal response without manual repair');
   for (const [operation, section] of [["EXECUTE_SLICE", execute], ["APPLY_FINDINGS", findings]]) {
     forbidPattern(section, /(?:crie|create|emita|emit|marque|mark).{0,80}(?:Validation Attempt|Effective Validation Base|PASS formal|conclusão `\[x\]`)/iu, "R015_CHECK_AUTHORITY", `${operation} claims formal authority`);
   }
@@ -417,14 +383,11 @@ function checkRunnerContract(contract, readmeFile, platform) {
   requirePattern(contract, /A ausência ou o valor pending desses campos finais desta tentativa não é causa de BLOCKED/u, "R009_VALIDATION_ATTEMPT", "runner requires fields produced only after its verdict");
   requirePattern(contract, /Para cada critério de aceitação aplicável[^\n]{0,220}evidência direta de check ou inspeção suficiente/u, "R009_VALIDATION_ATTEMPT", "runner does not require evidence for each acceptance criterion");
   requirePattern(contract, /Nunca retorne PASS enquanto algum critério aplicável estiver sem evidência suficiente/u, "R009_VALIDATION_ATTEMPT", "runner permits PASS with an unverified acceptance criterion");
-  if(platform!=='codex') requirePattern(contract, /uma única correção apenas de formato JSON[^\n]*mesmo objeto semântico[^\n]*evidência idênticos/u, "R009_VALIDATION_ATTEMPT", "format repair can change runner evidence or verdict");
-  if(platform!=='codex') requirePattern(contract, /única equivalência de tipo permitida é array vazio[^\n]*findingReferences[^\n]*findingDispositions/u, "R009_VALIDATION_ATTEMPT", "format repair permits unbounded schema conversion");
   requirePattern(contract, /check marcado com exit não zero impede[^\n]*mesmo se uma execução posterior passar/u, "R009_VALIDATION_ATTEMPT", "runner may omit earlier failed verification");
   requirePattern(contract, /runner não cria nem edita scripts ou testes[^\n]*lacuna de cobertura/u, "R009_VALIDATION_ATTEMPT", "runner may prepare checks beyond its authority");
   requirePattern(contract, /Não use heredoc, here-string[^\n]*múltiplas camadas de quoting/u, "R009_VALIDATION_ATTEMPT", "runner depends on implicit shell temporary files");
   requirePattern(contract, /Não tente novamente por outro path, ferramenta, TMPDIR\/TMPPREFIX ou modo de permissão/u, "R009_VALIDATION_ATTEMPT", "runner may bypass a denied command");
   requirePattern(contract, /Não confunda ausência de teste prévio com impossibilidade de verificar/u, "R009_VALIDATION_ATTEMPT", "runner may block instead of verifying an accessible coverage gap");
-  if(platform!=='codex') requirePattern(contract, /Não use esse caminho para resposta semântica válida, timeout, processError ou conclusão incerta/u, "R009_VALIDATION_ATTEMPT", "format repair permits an uncertain or already valid result");
   requirePattern(contract, /Checks nunca emitem[^\n]{0,160}(?:Validation Attempt|Effective Validation Base)/iu, "R015_CHECK_AUTHORITY", "check/formal authority separation is incomplete");
   requirePattern(contract, /Responda somente de forma compacta[^\n]{0,120}sem logs completos/iu, "R011_COMPACT_OUTPUT", "runner compact-output boundary is missing");
   requirePattern(contract, /nunca o reverta automaticamente/iu, "R005_READ_ONLY", "runner may automatically revert workspace effects");
@@ -438,10 +401,7 @@ function checkRunnerContract(contract, readmeFile, platform) {
   requirePattern(readme, /não existe passo manual adicional de testes/iu, "R012_README", "README manual-test-step boundary is missing");
   requirePattern(readme, /no mínimo uma vez e no máximo cinco vezes/iu, "R012_README", "README bounded automatic-round policy is missing");
   requirePattern(readme, /sem histórico da conversa[\s\S]{0,500}Históricos e logs completos não são encaminhados/iu, "R012_README", "README history/minimum-payload boundary is missing");
-  if(platform!=='codex') requirePattern(readme, /Falhas de inicialização ou transporte[\s\S]{0,300}não consomem uma rodada `N\/5`/iu, "R012_README", "README transport/round separation is missing");
-  if(platform!=='codex') requirePattern(readme, /não criam `implementation-check-NN`, `findings-check-NN` ou `attempt-NN`/iu, "R012_README", "README transport/evidence separation is missing");
-  if(platform!=='codex') requirePattern(readme, /retomam? diretamente na delegação[\s\S]{0,240}(?:não reinicia|sem reiniciar) identificadores/iu, "R012_README", "README initialization-resume semantics are missing");
-  if(platform==='codex') {
+  if (platform === 'codex' || platform === 'claude') {
     requirePattern(readme,/Uma publicação interrompida retoma esses mesmos bytes sem novo spawn nem recipe/u,'R012_README','current publication recovery must reuse its captured proof');
     requirePattern(readme,/Pending\/uncertain não concede redispatch/u,'R012_README','uncertain native transport cannot create another invocation');
     requirePattern(readme,/Somente normalização explícita admitida pelo runtime cria um sucessor, preservando o episódio e saldo originais/u,'R012_README','current successor must retain the original episode budget');

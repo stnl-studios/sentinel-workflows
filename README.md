@@ -2,10 +2,10 @@
 
 O Sentinel reúne skills e agents nativos para **Codex** e **Claude Code**. Ele ajuda equipes de software a transformar um pedido em plano aprovado, implementar mudanças delimitadas e manter evidências para uma validação independente.
 
-O fluxo é explícito e conduzido pelo usuário. Cada operação devolve o controle com um handoff; o Sentinel não executa o ciclo inteiro em segundo plano nem trata checks de implementação como aceite formal.
+O usuário aprova o Plan e as Tasks; o agente principal conduz o trabalho autorizado pelos handoffs atuais, com revisão e validação independentes. Ele continua execução, correções e validação sem pedir um comando a cada etapa e pausa antes do CLOSE, diante de decisão material, permissão ou bloqueio real. Checks de implementação não são aceite formal.
 
 <p align="center">
-  <img src="docs/workflow.svg" alt="Fluxo Sentinel: definir uma SPEC, preparar e revisar Plan e Tasks, executar uma slice e validá-la de forma independente. Findings retornam a um handoff explícito de correção." width="100%">
+  <img src="docs/workflow.svg" alt="Fluxo Sentinel: definir uma SPEC, preparar e revisar Plan e Tasks, executar uma slice e validá-la de forma independente. Findings retornam à correção aprovada, seguida de nova validação. O fluxo pausa antes do CLOSE." width="100%">
 </p>
 
 ## Fluxo de trabalho
@@ -22,12 +22,14 @@ SPEC → PLAN → REVIEW_PLAN → EXECUTE_SLICE → VALIDATE_SLICE
 4. **Execute uma slice.** `stnl-slice-executor` trabalha dentro da autoridade aprovada. Ele pode delegar os checks da recipe ao runner nativo de validação.
 5. **Valide de forma independente.** `stnl-slice-quality-manager` decide a disposição formal dos findings. Somente um `PASS` formal e atual conclui uma slice. `NEEDS_FIX` pode levar a um handoff explícito de `APPLY_FINDINGS` e a outra validação formal.
 
-Cada etapa é uma operação separada. Um check bem-sucedido durante a implementação é evidência de apoio; não significa que a slice passou pela validação formal. Siga o handoff da operação atual em vez de presumir o próximo passo.
+Cada etapa permanece uma operação separada, mas o agente principal segue os handoffs do trabalho autorizado. Um check bem-sucedido durante a implementação é evidência de apoio; não significa que a slice passou pela validação formal. Ao terminar cada operação, o principal confirma publicação e limpeza, inspeciona o estado atual e segue somente a próxima ação admitida.
+
+O Plan deve usar poucas slices justificadas por dependência, risco ou resultado verificável, e prever desde o início a validação integral. A última slice pode validar a combinação; não é obrigatório criar uma slice extra. PASS local não é conclusão integral. Depois da prova integral e do QA planejado, o agente apresenta os resultados e pede sua decisão antes do CLOSE. RECONCILE, merge e mudança material de escopo não fazem parte dessa continuidade automática.
 
 ### Skills de workflow opcionais
 
 - `stnl-spec-roadmap` decompõe requisitos amplos em SPECs candidatas e cobertura de dependências. Não substitui o ciclo de vida nem a autoridade de execução de uma SPEC.
-- `stnl-spec-test-runbook` cria um runbook offline para QA ou aceite humano quando solicitado explicitamente. A geração não é automática e não executa nem valida testes.
+- `stnl-spec-test-runbook` cria um runbook offline para QA ou aceite humano a partir da SPEC, sem depender de execution. Pode ser pedido isoladamente ou incluído no plano aprovado, quando o principal encaminha sua geração sem outro pedido. Gerar o runbook não executa nem valida testes, nem substitui resultados reais de QA.
 
 ### Orientação por domínio
 
@@ -89,8 +91,9 @@ O instalador planeja e lê o pacote selecionado antes da primeira gravação. Se
 
 1. Inicie uma conversa nova no Codex ou Claude Code.
 2. Escolha a operação que corresponde ao handoff atual. Para um trabalho novo, comece com `stnl-spec-lifecycle-manager` e informe o caminho da SPEC e a fonte dos requisitos.
-3. Use uma operação por vez. Os [templates de prompt por operação](templates/prompts/) listam as entradas necessárias; execução e validação também precisam da `SLICE` selecionada.
-4. Preserve os caminhos dos artefatos, as decisões e o handoff retornado para a próxima operação explicitamente solicitada.
+3. Aprove o Plan e as Tasks finais e autorize a execução. O principal coordena uma operação por vez e segue os handoffs; os [templates de prompt por operação](templates/prompts/) continuam disponíveis para pedidos limitados a uma etapa.
+4. Para retomar após interrupção, diga “continue” ([exemplo de pedido ao principal](docs/workflow-continue-example.md)). O agente lê os documentos aprovados, inspeciona o estado atual e recupera a operação pendente sem repetir efeitos ou provas já capturadas. Se a autoridade estiver ausente ou ambígua, ele pede somente a decisão necessária. “Continue” não autoriza CLOSE.
+5. A pasta da SPEC mantém o material útil para revisão; o rascunho editável usa um único container de planejamento vizinho, e os controles técnicos ficam na área operacional gerenciada. Use os caminhos retornados pelo runtime, não crie cópias concorrentes. Repetir PLAN retoma a única preparação registrada; repetir create não sobrescreve o rascunho. Para corrigir uma captura, revise preserva o histórico e exige nova captura e aprovação. Preparações legadas múltiplas não são apagadas nem escolhidas por inferência.
 
 Exemplo ilustrativo: para adicionar histórico de compras, primeiro defina quem pode consultar quais compras e os critérios de aceite. Conforme o repositório real, o planner pode dividir o trabalho em slices seriais, como acesso a dados e apresentação. Revise o plano completo antes de ativá-lo, execute uma slice selecionada e obtenha um resultado de validação formal separado. Esses artefatos são exemplos; nem todo produto precisa dessas slices.
 
@@ -119,7 +122,7 @@ Os pacotes dos clientes contêm somente as skills e os agents administrados pelo
 
 ## Limites e evidências
 
-- O Sentinel não executa operações futuras automaticamente nem aceita um plano apenas porque ele é sintaticamente válido.
+- A continuidade é feita pelo agente principal, dentro da execução autorizada e dos handoffs admitidos. Os helpers não iniciam agentes em segundo plano. Um pedido de etapa isolada continua isolado, e um plano sintaticamente válido ainda exige aprovação e revisão independente.
 - Descoberta nativa e checks do pacote não provam como uma sessão futura de modelo vai se comportar. O uso real de cada cliente e versão é uma observação separada.
 - O resultado do runner prova somente os checks ou a revisão que ele de fato realizou. Não garante efeitos externos arbitrários nem substitui o julgamento do mantenedor.
 - Não alegamos ganhos de desempenho, custo ou tokens sem medições completas e comparáveis.

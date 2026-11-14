@@ -2312,6 +2312,10 @@ async function captureCloseOperationalInventory(target,transactionId,{historical
     const binding=validateCurrentOperationAllocationBinding(record,{operationId:name,specKey:roots.specKey,logicalExecutionRoot:roots.executionRoot,logicalSpecRoot:roots.specRoot,
       ownershipToken:record.binding?.owner?.ownershipToken,namespaceIdentity:roots.materialRootIdentity,filesystemDevice:roots.materialRootIdentity.dev,filesystemContext:policy,
       filesystemBinding:{targetParentIdentity:roots.targetParentIdentity,leaseParentIdentity:roots.leaseParentIdentity,materialRootIdentity:roots.materialRootIdentity}});
+    // A verified operation owner proves that this execution existed. Archiving
+    // its bytes cannot turn a manually removed execution into an absent one.
+    // Restore the official execution first so CLOSE can validate its outcome.
+    if(image===null)fail('CLOSE retirement found known execution controls but execution is absent; restore the official execution before closing',file);
     // Preserve superseded committed allocations in full. This does not prove
     // a result or admit an operation: the current COMPLETE proof is independent.
     if(record.phase==='committed'&&Array.from({length:record.runner.round},(_,i)=>i+1)

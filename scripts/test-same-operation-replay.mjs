@@ -133,3 +133,66 @@ test('completed private proof copied between two real native operations is refus
  await assert.rejects(()=>verifyNative(second.originFile),/context is stale/);assert.equal(checks,0);
  assert.deepEqual(await fs.readFile(targetFile),bytes);await assert.rejects(fs.lstat(second.originFile.replace('.origin.json','.observation.json')),{code:'ENOENT'});
 });
+
+// A real native runner used a cwd-relative origin while its dispatch persisted
+// the absolute path. Both spellings must retain exactly the same admission.
+test('native origin accepts relative paths and replays absolute proof without another check',async t=>{
+ const f=await nativeOperationCase(t);
+ const start=await begin({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:f.activationId});
+ const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+ await bindNative(start.handle,'relative-origin-reviewer');
+ const relative=path.relative(process.cwd(),dispatch.originFile);
+ const raw={format:'stnl-current-native-judgment-v1',result:{status:'PASS',commands:[],evidence:'Mechanical relative-origin admission regression.',findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'Read-only review.'},newFindings:[]};
+ await assert.rejects(()=>validateNativeResponse(relative,JSON.stringify(raw)),{code:'EVIDENCE_INCOMPLETE'});
+ const measured=await verifyNative(relative);
+ const verificationFile=dispatch.originFile.replace('.origin.json','.verification.json');
+ const proof=await fs.readFile(verificationFile),observation=await fs.readFile(measured.observationFile);
+ raw.result.commands=measured.commands;
+ assert.equal((await validateNativeResponse(relative,JSON.stringify(raw))).status,'valid-envelope');
+ assert.deepEqual(await verifyNative(dispatch.originFile),measured);
+ assert.deepEqual(await fs.readFile(verificationFile),proof);
+ assert.deepEqual(await fs.readFile(measured.observationFile),observation);
+});
+for(const fault of ['symlink','tamper'])test(`native relative origin rejects ${fault} before verification`,async t=>{
+ const f=await nativeOperationCase(t);
+ const start=await begin({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:f.activationId});
+ const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+ await bindNative(start.handle,'relative-origin-reviewer');
+ let supplied=dispatch.originFile;
+ if(fault==='symlink'){
+   const alias=path.join(f.root,'origin-alias');await fs.symlink(path.dirname(dispatch.originFile),alias);
+   supplied=path.join(alias,path.basename(dispatch.originFile));
+ }else{
+   const origin=JSON.parse(await fs.readFile(supplied,'utf8'));origin.dispatchId='foreign-dispatch';
+   await fs.writeFile(supplied,JSON.stringify(origin));
+ }
+ const relative=path.relative(process.cwd(),supplied);
+ await assert.rejects(()=>verifyNative(relative));
+ await assert.rejects(()=>validateNativeResponse(relative,'{}'));
+ await assert.rejects(()=>fs.stat(dispatch.originFile.replace('.origin.json','.verification.json')),{code:'ENOENT'});
+ await assert.rejects(()=>fs.stat(dispatch.originFile.replace('.origin.json','.observation.json')),{code:'ENOENT'});
+});
+
+test('native separate processes ignore only tool-call metadata and execute recipe once',async t=>{
+ const f=await nativeOperationCase(t);
+ const temp=path.join(f.root,'tmp');await fs.mkdir(temp,{recursive:true});
+ const counter=path.join(temp,'recipe-count'),preload=path.join(temp,'observe-recipe.cjs');
+ await fs.writeFile(preload,`if(process.argv[1]?.endsWith('/src/greeting.test.mjs')) { require('node:assert/strict').equal(process.env.CODEX_TOOL_CALL_ID,undefined); require('node:fs').appendFileSync(${JSON.stringify(counter)},'x'); }`);
+ const start=await begin({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:f.activationId});
+ const dispatch=await reserveDispatch(start.handle,{responseVariant:'stnl-current-native-judgment-v1'});
+ await bindNative(start.handle,'separate-process-reviewer');
+ const run=async(command,args,id,extra={})=>new Promise((resolve,reject)=>cp.execFile(process.execPath,[dispatch.verificationHelper,command,'--origin-file',dispatch.originFile,...args],{
+   cwd:f.root,encoding:'utf8',env:{...process.env,NODE_OPTIONS:`--require=${preload}`,CODEX_TOOL_CALL_ID:id,...extra}
+ },(error,stdout,stderr)=>{if(error&&!Number.isInteger(error.code))reject(error);else resolve({exit:error?.code??0,value:JSON.parse(stdout),stderr});}));
+ const verified=await run('verify-native',[],'first-tool-call');
+ assert.equal(verified.exit,0,JSON.stringify(verified));assert.equal(verified.value.status,'completed');
+ const verificationFile=dispatch.originFile.replace('.origin.json','.verification.json');
+ const bytes=await fs.readFile(verificationFile);
+ assert.equal(await fs.readFile(counter,'utf8'),'x','recipe executes once and sees no host call identity');
+ const raw=JSON.stringify({format:'stnl-current-native-judgment-v1',result:{status:'PASS',commands:verified.value.commands,evidence:'Mechanical separate-process admission regression.',findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'Read-only review.'},newFindings:[]});
+ const validated=await run('validate-native-response',['--response-json',raw],'second-tool-call');
+ assert.equal(validated.exit,0,JSON.stringify(validated));assert.equal(validated.value.status,'valid-envelope');
+ const stale=await run('validate-native-response',['--response-json',raw],'third-tool-call',{SENTINEL_FUNCTIONAL_INPUT:'changed'});
+ assert.match(stale.value.reason,/context is stale/);
+ assert.equal(await fs.readFile(counter,'utf8'),'x');assert.deepEqual(await fs.readFile(verificationFile),bytes);
+});
