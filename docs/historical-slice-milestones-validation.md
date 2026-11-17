@@ -28,3 +28,9 @@ Handling such legacy records requires an explicit compatibility design that pres
 ## Claude/Codex distribution check
 
 Read-only installation-plan comparison found byte-identical shared content for 14 skills and 229 resources across Codex and Claude targets. The seven workflow packages passed self-containment checks; subagent-package, execution-contract, and repository-contract tests passed (36/36). Native agent descriptors remain platform-specific (Codex TOML versus Claude Markdown/tools/model configuration). No installation or actual model/app execution was performed by this validation.
+
+## Final stable-source run
+
+On `97edfac3a981e6e82ffe97a5b77af78b01f14dff`, all `scripts/test-current-*.mjs` files ran together with Node test concurrency 4: **1203 tests, 1202 passed, 1 failed, 0 skipped/cancelled** (1591.57 seconds). The only failure was the unchanged V09 legacy case described above. The detached run completed with exit code 1. An earlier connection-interrupted partial run is not counted as final evidence.
+
+The final CLOSE/distribution/budget/catalog group passed **77/77**. The corrected converted-APPLY anchor tests passed **4/4**, including real missing/corrupt anchor negatives. No runtime was relaxed to remove a baseline failure. This is not an all-green release result; integration/installation remains a separate decision.
