@@ -653,28 +653,81 @@ const contextDigest=records=>'sha256:'+createHash('sha256').update(Buffer.from(
 // then prevent the reconstructed digest from matching the historical snapshot.
 export function historicalExternalContextMatches({root,records,outputs,sealed,current,steps}) {
   if(!Array.isArray(records)||!Array.isArray(outputs)
-    ||sealed?.kind!=='directory'||current?.kind!=='directory')return false;
-  const {externalContextSha256:oldDigest,...oldDirectory}=sealed;
-  const {externalContextSha256:newDigest,...newDirectory}=current;
+    ||sealed?.kind!=='directory'||!['directory','absent'].includes(current?.kind))return false;
+  if(current.kind==='absent') {
+    const removal=[...steps].reverse().find(step=>step&&milestoneEntry(step.after,root)?.kind==='absent'
+      &&milestoneEntry(step.before,root)?.kind==='directory');
+    if(!removal||milestoneEntry(removal.before,root).mode!==sealed.mode||records.length)return false;
+    current={...sealed,children:sealed.children===undefined?undefined:[],externalContextSha256:contextDigest([])};
+  }
+  const {externalContextSha256:oldDigest,children:oldChildren,...oldDirectory}=sealed;
+  const {externalContextSha256:newDigest,children:newChildren,...newDirectory}=current;
   if(typeof oldDigest!=='string'||typeof newDigest!=='string'
     ||!isDeepStrictEqual(oldDirectory,newDirectory)||contextDigest(records)!==newDigest)return false;
   const reverted=new Map(records.map(record=>[record.path,record]));
   if(reverted.size!==records.length)return false;
-  let changed=false;
+  const children=newChildren===undefined?null:new Set(newChildren);
+  if((oldChildren===undefined)!==(newChildren===undefined))return false;
+  const projectedChildren=new Set([...(oldChildren??[]),...(newChildren??[])]);
   for(const step of [...steps].reverse()) {
     if(!step)continue;
-    for(const name of step.changes) {
-      if(!name.startsWith(root+'/')||outputs.includes(name))continue;
-      const before=step.before.get(name),after=step.after.get(name);
+    const names=[...step.changes].filter(name=>name.startsWith(root+'/'));
+    // Projected child lists contain only this predecessor's observation domain.
+    // Restore membership only when an authenticated literal absence proves the
+    // transition; omission from another slice's projected children proves nothing.
+    if(children)for(const child of projectedChildren) {
+      const name=root+'/'+child;
+      if(!names.some(leaf=>leaf===name||leaf.startsWith(name+'/')))continue;
+      const before=milestoneEntry(step.before,name),after=milestoneEntry(step.after,name);
+      if(!before||!after)continue;
+      const existed=before.kind!=='absent',exists=after.kind!=='absent';
+      if(existed===exists)continue;
+      if(children.has(child)!==exists)return false;
+      if(existed)children.add(child);else children.delete(child);
+    }
+    for(const name of names) {
+      if(outputs.includes(name))continue;
+      const before=milestoneEntry(step.before,name),after=milestoneEntry(step.after,name);
       if(isDeepStrictEqual(before,after))continue;
-      // Existing leaf changes only. Creation, removal, directories and missing
-      // inventory require their own structural proof, never this exception.
-      if(before?.kind!=='file'||after?.kind!=='file'
-        ||!isDeepStrictEqual(reverted.get(name),after))return false;
-      reverted.set(name,before);changed=true;
+      // Structural ancestors are handled below. Only exact file/absence leaves
+      // may add, replace or remove a row; absent ancestors are explicit witnesses.
+      if(before?.kind==='directory'||after?.kind==='directory')continue;
+      if(!before||!after||!['file','absent'].includes(before.kind)
+        ||!['file','absent'].includes(after.kind))return false;
+      if(after.kind==='file'?!isDeepStrictEqual(reverted.get(name),after)
+        :reverted.has(name)||[...reverted.keys()].some(row=>row.startsWith(name+'/')))return false;
+      if(before.kind==='file')reverted.set(name,before);else reverted.delete(name);
+    }
+    const directories=[...new Set([...step.before.keys(),...step.after.keys()])]
+      .filter(name=>name.startsWith(root+'/')&&names.some(leaf=>leaf===name||leaf.startsWith(name+'/')))
+      .sort((a,b)=>b.length-a.length||ordinal(a,b));
+    for(const name of directories) {
+      const before=milestoneEntry(step.before,name),after=milestoneEntry(step.after,name);
+      if(!before||!after)continue;
+      if(before.kind==='directory'&&after.kind==='directory') {
+        if(before.mode!==after.mode)return false;
+        continue;
+      }
+      const added=before.kind==='absent'&&after.kind==='directory';
+      const removed=before.kind==='directory'&&after.kind==='absent';
+      if(!added&&!removed)continue;
+      const directory=added?after:before;
+      if(!Number.isInteger(directory.mode))return false;
+      // Ancestors of this predecessor's own exact outputs are deliberately not
+      // external rows. Their membership is checked separately by the reader.
+      const included=!outputs.some(output=>output.startsWith(name+'/'));
+      if(added) {
+        if(included&&!isDeepStrictEqual(reverted.get(name),{path:name,kind:'directory',mode:directory.mode}))return false;
+        if([...reverted.keys()].some(row=>row.startsWith(name+'/')))return false;
+        reverted.delete(name);
+      } else if(included) {
+        if(reverted.has(name))return false;
+        reverted.set(name,{path:name,kind:'directory',mode:directory.mode});
+      }
     }
   }
-  return changed&&contextDigest([...reverted.values()])===oldDigest;
+  return (!children||isDeepStrictEqual([...children].sort(ordinal),[...oldChildren].sort(ordinal)))
+    &&contextDigest([...reverted.values()])===oldDigest;
 }
 
 
@@ -782,9 +835,53 @@ export function markHistoricalSliceMilestones(items,deliveries=[],archivalIds=ne
         if(owned && isDeepStrictEqual(value,from))value=to;
       }
       if(isDeepStrictEqual(value,expected))return true;
-      const captured=item.observation?.externalContexts?.get(name);
-      return Boolean(captured && historicalExternalContextMatches({root:name,...captured,
-        sealed:milestoneEntry(before,name),current:expected,steps:steps.slice(index+1)}));
+      const captured=item.observation?.externalContexts?.get(name)
+        ??(expected?.kind==='absent'&&before.get(name)?.externalContextSha256
+          ?{records:[],outputs:item.targets?.find(target=>target.path===name&&target.inventoryOutputs)?.inventoryOutputs??[]}:null);
+      if(captured && historicalExternalContextMatches({root:name,...captured,
+        sealed:milestoneEntry(before,name),current:expected,steps:steps.slice(index+1)}))return true;
+      // Projected structural ancestors have different children across slices.
+      // Their containing external inventory plus each separately checked leaf
+      // proves topology, while exact witnessed modes and absence guard the node.
+      const prior=milestoneEntry(before,name);
+      if(!['directory','absent'].includes(prior?.kind)||!['directory','absent'].includes(expected?.kind))return false;
+      const containers=[...before.values()].filter(entry=>entry.externalContextSha256&&name.startsWith(entry.path+'/'));
+      return containers.some(container=>{
+        const observed=milestoneEntry(now,container.path),inventory=item.observation?.externalContexts?.get(container.path)
+          ??(observed?.kind==='absent'?{records:[],outputs:item.targets?.find(target=>target.path===container.path&&target.inventoryOutputs)?.inventoryOutputs??[]}:null);
+        if(!inventory||!historicalExternalContextMatches({root:container.path,...inventory,
+          sealed:container,current:observed,steps:steps.slice(index+1)}))return false;
+        let kind=expected.kind,mode=expected.mode;
+        let children=new Set(expected.children??[]);
+        const projected=new Set([...(prior.children??[]),...(expected.children??[])]);
+        for(const step of steps.slice(index+1).reverse()) {
+          if(!step)continue;
+          const changes=[...step.changes].filter(leaf=>leaf===name||leaf.startsWith(name+'/'));
+          if(!changes.length)continue;
+          const from=milestoneEntry(step.before,name),to=milestoneEntry(step.after,name);
+          if(!from||!to||!['directory','absent'].includes(from.kind)||!['directory','absent'].includes(to.kind))return false;
+          if(kind!==to.kind||kind==='directory'&&mode!==to.mode)return false;
+          if(from.kind!==to.kind) {
+            kind=from.kind;mode=from.mode;
+            children=new Set((from.children??[]).filter(child=>projected.has(child)));
+            continue;
+          }
+          if(kind==='absent')continue;
+          if(from.mode!==to.mode)return false;
+          for(const child of projected) {
+            const childPath=name+'/'+child;
+            if(!changes.some(leaf=>leaf===childPath||leaf.startsWith(childPath+'/')))continue;
+            const old=milestoneEntry(step.before,childPath),next=milestoneEntry(step.after,childPath);
+            if(!old||!next)return false;
+            const existed=old.kind!=='absent',exists=next.kind!=='absent';
+            if(existed===exists)continue;
+            if(children.has(child)!==exists)return false;
+            if(existed)children.add(child);else children.delete(child);
+          }
+        }
+        return kind===prior.kind&&(kind==='absent'||mode===prior.mode
+          &&isDeepStrictEqual([...children].sort(ordinal),[...(prior.children??[])].sort(ordinal)));
+      });
     });
   }
   return items;
