@@ -1857,9 +1857,9 @@ test('lifecycle-family common barrier excludes controller with no orphan operati
 
 
 // These carriers are synthetic mechanical tool results, never native qualification.
-async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResume=false,resolved=false,successor=false,invalid=false,slice='slice-01',captureOnly=false,newFindings=[]}={}) {
+async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResume=false,resolved=false,successor=false,invalid=false,slice='slice-01',captureOnly=false,newFindings=[],retryBlocked=false}={}) {
   const image=await inspectCurrentExecution(f.specPath);
-  const start={specPath:f.specPath,slice,expectedActivationId:image.activationId,operation:kind};
+  const start={specPath:f.specPath,slice,expectedActivationId:image.activationId,operation:kind,retryBlocked};
   const started=successor?await normalizeSuccessor(start):await begin(start);
   const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal});
   const requestBefore=await fs.readFile(dispatch.requestFile);
@@ -1871,7 +1871,7 @@ async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResum
   if(kind==='EXECUTE_SLICE') {const {head,...payload}=initialPayload(1);result={...payload,commands:measured.commands};}
   else if(kind==='APPLY_FINDINGS'){const {head,...payload}=applyPayload(JSON.parse(requestBefore).round,'TESTS_PASS',0);result={...payload,commands:measured.commands};if(invalid)result.coverage='none';}
   else result={status,commands:measured.commands,evidence:'The reviewed pay assertion executed.',findingReferences:resolved?'finding-01':newFindings.length?newFindings.map(item=>item.id).join(', '):'none',
-    findingDispositions:resolved?'finding-01=resolved':newFindings.length?newFindings.map(item=>item.id+'=active').join(', '):'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
+    findingDispositions:resolved?'finding-01=resolved':newFindings.length?newFindings.map(item=>item.id+'=active').join(', '):'none',blockers:status==='BLOCKED'?'Controlled external prerequisite awaiting explicit retry.':'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
   const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result,...(kind==='VALIDATE_SLICE'?{newFindings}:{})});
   const file=path.join(f.root,agentId+'.json');await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
   const captured=await captureNative(started.handle,file);
@@ -3031,4 +3031,36 @@ for(const winner of ['install','revise'])test(`Initial generation and revise are
   }finally{releaseWrite();fs.open=open;if(pending)await pending.catch(()=>{});}
   assert.equal(paused,true);
   assert.equal((await inspectCurrentExecution(f.specPath)).state,'MATERIALIZED_PRISTINE');
+});
+
+
+test('explicit BLOCKED retry keeps authenticated predecessor overlap but rejects unowned drift',async t=>{
+  const f=await fixture();t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const source=path.join(f.root,'src/pay.mjs');
+  await bConclude(f,'EXECUTE_SLICE',{edit:()=>fs.writeFile(source,'export const pay=()=>"paid";\n')});
+  const first=await bConclude(f,'VALIDATE_SLICE');
+  const continuity=JSON.parse(Buffer.from(first.image.files.get('continuity.json')));
+  const predecessor=continuity.deliveries[0],predecessorBytes=Buffer.from(first.image.files.get(predecessor.evidence.path));
+  await bConclude(f,'EXECUTE_SLICE',{slice:'slice-02',edit:()=>fs.writeFile(source,'export const pay=()=>"paid"; // second slice\n')});
+  const blocked=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',status:'BLOCKED'});
+  assert.equal(blocked.image.inspection.deliveries[1].formalStatus,'BLOCKED');
+  assert.equal(blocked.image.inspection.deliveries[0].diagnostics[0].reason,'EVIDENCE_STALE');
+  assert.ok(blocked.image.milestoneDeliveryIds.includes(predecessor.deliveryId));
+  assert.equal(Object.hasOwn(blocked.image.inspection,'milestoneDeliveryIds'),false);
+  const selected={specPath:f.specPath,slice:'slice-02',operation:'VALIDATE_SLICE',
+    expectedActivationId:blocked.image.inspection.activationId,retryBlocked:true};
+  const bytes=await fs.readFile(source);await fs.appendFile(source,'// unauthorized later edit\n');
+  const foreign=await captureCurrentExecution(f.specPath);
+  assert.ok(!foreign.milestoneDeliveryIds.includes(predecessor.deliveryId));
+  await assert.rejects(begin(selected),error=>error.code==='BLOCKED_REVALIDATION_NOT_ELIGIBLE'
+    &&/other unresolved work/u.test(error.message));
+  await fs.writeFile(source,bytes);
+  const retried=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',retryBlocked:true});
+  assert.equal(retried.image.inspection.state,'COMPLETE');
+  assert.equal(retried.image.inspection.deliveries[1].formalStatus,'PASS');
+  assert.deepEqual(Buffer.from(retried.image.files.get(predecessor.evidence.path)),predecessorBytes);
+  const final=JSON.parse(Buffer.from(retried.image.files.get('continuity.json'))).deliveries[1];
+  const bundle=JSON.parse(Buffer.from(retried.image.files.get(final.evidence.path)));
+  assert.ok(bundle.support.some(record=>record.kind==='validation'&&/Status: BLOCKED/u.test(record.recordUtf8)));
 });

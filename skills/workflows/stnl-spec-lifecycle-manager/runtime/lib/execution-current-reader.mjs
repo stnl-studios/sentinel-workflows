@@ -1161,6 +1161,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   markHistoricalSliceMilestones([...completedOutputs,...outputs],
     [...snapshot.normativeProjection.completed,...snapshot.normativeProjection.deliveries],
     new Set(completedOutputs.map(item=>item.deliveryId)));
+  const milestoneDeliveryIds=allOutputs.filter(item=>item.milestoneSatisfied).map(item=>item.deliveryId);
   for(const item of completedOutputs)if(!item.milestoneSatisfied
     && !revalidateCompletedIds?.includes(item.deliveryId))
     fail('EVIDENCE_STALE',`${item.slice}: completed local proof has unexplained product drift`,
@@ -1176,7 +1177,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       state:'EVIDENCE_STALE',normalHandoff:null,diagnostics:stale.map(item=>({kind:'observation',artifact:item.slice,field:'observedWork',reason:'EVIDENCE_STALE'}))};
     return {inspection,context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
       activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
-      observedByDelivery:new Map(allOutputs.map(item=>[item.deliveryId,item.initialObservation?item.observation:scopedObservation(item.observation,item.targets)]))};
+      milestoneDeliveryIds,observedByDelivery:new Map(allOutputs.map(item=>[item.deliveryId,item.initialObservation?item.observation:scopedObservation(item.observation,item.targets)]))};
   }
   const certification=terminalCertification(snapshot,activation,allOutputs);
   if(certification.complete)for(const item of outputs)item.facts.terminalPending=false;
@@ -1242,7 +1243,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     }
     return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
       activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
-      observedByDelivery}:inspection;
+      milestoneDeliveryIds,observedByDelivery}:inspection;
   }
   if(converted) {
     const blocked=outputs.filter(item=>item.facts.formalStatus==='BLOCKED'
@@ -1299,7 +1300,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     }
     return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
       activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
-      observedByDelivery}:inspection;
+      milestoneDeliveryIds,observedByDelivery}:inspection;
   }
   // A later concluded refusal or BLOCKED result owns recovery for the whole
   // image. A stale predecessor must not hide it by winning the serial scan.
@@ -1342,7 +1343,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     completed:completedOutputs.map(({milestoneSatisfied,facts,targets,observation,initialObservation,retainedAuthority,...publicItem})=>publicItem),state,normalHandoff,diagnostics};
   return withCapture?{inspection:structuredClone(inspection),context:structuredClone(context),requirementsAuthority:projected.requirementsAuthority,
     activationBytes:Uint8Array.from(a.bytes),files:new Map([...image.files].map(([name,bytes])=>[name,Uint8Array.from(bytes)])),
-    observedByDelivery}:inspection;
+    milestoneDeliveryIds,observedByDelivery}:inspection;
 }
 
 export async function inspectCurrentExecution(specPath) { return readCurrentExecution(specPath); }
