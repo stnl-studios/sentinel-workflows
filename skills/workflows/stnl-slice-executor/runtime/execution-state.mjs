@@ -32,7 +32,8 @@ export async function captureCurrentSetReplacementSource(specPath,{revalidateCom
   &&image.diagnostics[0].reason==='EVIDENCE_INCOMPLETE: local PASS has no terminal judgment';
  if(!source.activationBytes||!members.length||image.normalHandoff!==null&&!missingTerminalHandoff
    ||members.some(item=>item.persistedValidation!=='current'||item.formalStatus!=='PASS'
-    ||item.observedValidation!=='current'&&!revalidateCompletedIds?.includes(item.deliveryId)))
+    ||item.observedValidation!=='current'&&!source.milestoneDeliveryIds?.includes(item.deliveryId)
+      &&!revalidateCompletedIds?.includes(item.deliveryId)))
   throw Object.assign(new ExecutionContractError('Set preparation requires a quiet inspected current PASS for every member'),{code:'REPLAN_REQUIRED'});
  if(revalidateCompletedIds!==null) {
   source.revalidationBasisSha256=currentObservedWorkBasisSha256(source.observedByDelivery);

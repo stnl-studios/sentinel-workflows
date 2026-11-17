@@ -6,10 +6,13 @@ import {createHash} from 'node:crypto';
 import {packCaptureSources} from '../skills/workflows/stnl-slice-executor/runtime/execution-evidence-proof.mjs';
 import {inspectCurrentEvidence} from '../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs';
 import {nativeRound} from './fixtures/current-initial-evidence.mjs';
-import {authenticatedSliceMilestone,markHistoricalSliceMilestones,inspectCurrentExecution}
+import {authenticatedSliceMilestone,markHistoricalSliceMilestones,inspectCurrentExecution,captureCurrentExecution,captureCompletedRevalidationSource}
   from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
-import {overlappingActiveImage,overlappingPostImage,campaignImage} from './fixtures/current-reader-campaign.mjs';
+import {overlappingActiveImage,overlappingPostImage,campaignImage,retireActive,refreshCampaign} from './fixtures/current-reader-campaign.mjs';
 import {cleanup} from './fixtures/current-quiet-reader.mjs';
+import {captureCurrentSetReplacementSource} from '../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs';
+import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
+import {setPreparationMembers} from '../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs';
 
 const file=(value,name='src/shared.mjs')=>({path:name,kind:'file',sha256:value,mode:420});
 const manifest=value=>({format:'stnl-current-work-v1',entries:[file(value)]});
@@ -140,4 +143,47 @@ test('real Initial and converted proofs retain predecessor PASS after successor 
       } finally {if(name==='Initial')await cleanup(fixture);}
     });
   }
+});
+
+
+test('set replacement consumes historical PASS without reopening explained completed drift',async()=>{
+  const fixture=await overlappingActiveImage();
+  try {
+    const source=await captureCurrentSetReplacementSource(fixture.specPath);
+    const historical=source.inspection.deliveries.find(item=>item.observedValidation!=='current');
+    assert.ok(historical);assert.ok(source.milestoneDeliveryIds.includes(historical.deliveryId));
+    await retireActive(fixture,['slice-03','slice-02']);
+    // This fixture already retired once; use a distinct authored generation ID.
+    fixture.activation.activationId='abababab-abab-4bab-8bab-abababababab';await refreshCampaign(fixture);
+    const completed=await captureCurrentSetReplacementSource(fixture.specPath);
+    assert.equal(completed.inspection.deliveries.length,0);
+    assert.equal(completed.inspection.state,'COMPLETE');
+    await assert.rejects(captureCompletedRevalidationSource(fixture.specPath,[historical.deliveryId]),
+      error=>error.code==='REPLAN_REQUIRED'&&/every and only/u.test(error.message));
+    const keep=completed.inspection.completed.map(item=>item.deliveryId).filter(id=>id!==historical.deliveryId);
+    assert.throws(()=>setPreparationMembers(completed,keep,{revalidateCompletedIds:[historical.deliveryId]}),
+      error=>error.code==='REPLAN_REQUIRED'&&/exact complete stale set/u.test(error.message));
+    await fs.appendFile(path.join(fixture.project,'verify/check.mjs'),'// foreign drift\n');
+    await assert.rejects(captureCurrentSetReplacementSource(fixture.specPath),error=>error.code==='EVIDENCE_STALE');
+    const affected=completed.inspection.completed.filter(item=>['slice-02','slice-03'].includes(item.slice)).map(item=>item.deliveryId);
+    const stale=await captureCompletedRevalidationSource(fixture.specPath,affected);
+    assert.ok(affected.every(id=>!stale.milestoneDeliveryIds.includes(id)));
+    const unaffected=completed.inspection.completed.map(item=>item.deliveryId).filter(id=>!affected.includes(id));
+    assert.equal(setPreparationMembers(stale,unaffected,{revalidateCompletedIds:affected}).length,2);
+  }finally{await cleanup(fixture);}
+});
+
+
+test('exhausted converted refusal blocks globally despite later foreign predecessor drift',async t=>{
+  const fixture=await overlappingPostImage(t,{operationOnly:true});
+  for(let index=0;index<3;index++)await normalizedFormal(fixture,{invalid:true,successor:index>0});
+  const before=await captureCurrentExecution(fixture.specPath);
+  assert.equal(before.inspection.state,'VALIDATION_BLOCKED');assert.equal(before.inspection.normalHandoff,null);
+  assert.ok(before.inspection.diagnostics.some(item=>item.reason==='normalization exhausted'));
+  await fs.appendFile(path.join(fixture.root,'src/greeting.mjs'),'// unauthorized predecessor drift\n');
+  const after=await captureCurrentExecution(fixture.specPath);
+  assert.equal(after.inspection.state,'VALIDATION_BLOCKED');assert.equal(after.inspection.normalHandoff,null);
+  assert.ok(after.inspection.diagnostics.some(item=>item.reason==='normalization exhausted'));
+  assert.equal(after.inspection.deliveries[0].observedValidation,'revalidation-required');
+  assert.deepEqual(after.activationBytes,before.activationBytes);assert.deepEqual(after.files,before.files);
 });

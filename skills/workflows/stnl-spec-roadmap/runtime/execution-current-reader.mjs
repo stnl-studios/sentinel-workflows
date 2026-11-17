@@ -1167,7 +1167,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     fail('EVIDENCE_STALE',`${item.slice}: completed local proof has unexplained product drift`,
       'evidence',item.slice,'observedWork');
   if(revalidateCompletedIds!==null) {
-    const stale=completedOutputs.filter(item=>!item.facts.observationMatches||item.observedValidation!=='current');
+    const stale=completedOutputs.filter(item=>!item.milestoneSatisfied
+      &&(!item.facts.observationMatches||item.observedValidation!=='current'));
     if(stale.length!==revalidateCompletedIds.length||stale.some(item=>!revalidateCompletedIds.includes(item.deliveryId)))
       fail('REPLAN_REQUIRED','completed revalidation selection must name every and only authenticated stale contribution: '+JSON.stringify(stale.map(item=>item.deliveryId).sort()));
     const inspection={activationId:activation.activationId,sequence:activation.sequence,
@@ -1196,7 +1197,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     const blocked=outputs.filter(({facts})=>facts.observedValidation==='uncertain'
       || facts.auxiliaryStatus==='BLOCKED'||facts.formalStatus==='BLOCKED'
       || facts.rejection&&facts.consumption?.resumable===false);
-    const pending=blocked.length?null:outputs.find(item=>item.facts.terminalPending||!item.milestoneSatisfied);
+    const pending=blocked.length?null:outputs.find(item=>item.facts.terminalPending
+      ||item.facts.observedValidation!=='current'&&!item.milestoneSatisfied);
     let state='VALIDATION_BLOCKED',normalHandoff=null;
     let diagnostics=blocked.map(item=>({kind:'evidence',artifact:item.slice,field:'status',
       reason:item.facts.observedValidation==='uncertain'?'uncertain incorporation'
@@ -1248,8 +1250,10 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   if(converted) {
     const blocked=outputs.filter(item=>item.facts.formalStatus==='BLOCKED'
       || item.facts.auxiliaryStatus==='BLOCKED'
-      || item.facts.observedValidation==='uncertain');
-    const pending=blocked.length?null:outputs.find(item=>item.facts.terminalPending||!item.milestoneSatisfied);
+      || item.facts.observedValidation==='uncertain'
+      || item.facts.rejection&&item.facts.consumption?.resumable===false);
+    const pending=blocked.length?null:outputs.find(item=>item.facts.terminalPending
+      ||item.facts.requiresFormalRevalidation&&!item.milestoneSatisfied);
     const post= pending?.facts.bundle?.validation?.recordFormat==='stnl-task-record-v2'
       || pending?.facts.rejection && pending.facts.consumption.kind==='bounded-formal-rejection';
     const hasPost=outputs.some(item=>item.facts.bundle?.validation?.recordFormat==='stnl-task-record-v2');
@@ -1285,7 +1289,8 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
       state,normalHandoff:handoff,
       diagnostics:certification.complete?[]:blocked.length?blocked.map(item=>({kind:'evidence',artifact:item.slice,
         field:'status',reason:item.facts.formalStatus==='BLOCKED'
-          ?'blocked incorporation':'uncertain incorporation'}))
+          ?'blocked incorporation':item.facts.rejection&&item.facts.consumption?.resumable===false
+            ?'normalization exhausted':'uncertain incorporation'}))
         :pending?pending.facts.terminalPending?[terminalDiagnostic]:pending.diagnostics.length?pending.diagnostics:pending.facts.diagnostics
         :awaiting?[{kind:'evidence',artifact:awaiting.slice,field:'validation',
           reason:'active delivery has no current local proof'}]
@@ -1321,7 +1326,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
   }
   for (const item of blocked.length?[]:handoffOutputs) {
     const facts=item.facts;
-    if (item.milestoneSatisfied && !facts.terminalPending) continue;
+    if ((facts.observedValidation==='current'||item.milestoneSatisfied) && !facts.terminalPending) continue;
     const operation=facts.rejection?.origin.operation??(!facts.observationMatches?'VALIDATE_SLICE':facts.bundle===null?'EXECUTE_SLICE'
       :facts.formalStatus==='NEEDS_FIX' && (!facts.cycle || facts.bundle.validation.id!==facts.cycle.admissionId)
         ?'APPLY_FINDINGS':'VALIDATE_SLICE');
@@ -1334,7 +1339,7 @@ async function readCurrentExecution(specPath,withCapture=false,expectedOwner=nul
     diagnostics=item.diagnostics; break;
   }
   if (normalHandoff===null && diagnostics.length===0) {
-    if(certification.complete)state='COMPLETE';else if(snapshot.resumption&&handoffOutputs.every(item=>item.milestoneSatisfied&&!item.facts.terminalPending))state='TARGET_CURRENT';else diagnostics=[terminalDiagnostic];
+    if(certification.complete)state='COMPLETE';else if(snapshot.resumption&&handoffOutputs.every(item=>(item.facts.observedValidation==='current'||item.milestoneSatisfied)&&!item.facts.terminalPending))state='TARGET_CURRENT';else diagnostics=[terminalDiagnostic];
   }
   const inspection={activationId:activation.activationId,sequence:activation.sequence,
     requirementsAuthority:projected.requirementsAuthority,preparationRevision:activation.preparationRevision,
