@@ -2,6 +2,10 @@
 
 Base: `046597071a376d658cbcbdea8c4cbee74def2165`. This change preserves authenticated execution and formal PASS as temporal milestones. Later authorized changes belong to the current slice; unexplained drift is not historical approval.
 
+## Scope
+
+The delivery targets new SPECs created by the current workflow. Historical milestones are earlier approved slices within that workflow, not support for obsolete record formats. Legacy migration and legacy-specific recovery are excluded.
+
 ## Coverage
 
 - Four-checkpoint simulation: execution alone cannot release slice 3; slice 2 formal PASS can.
@@ -17,13 +21,11 @@ Three converted APPLY tests expected a missing first-formal anchor after the tes
 
 V08 expected pruning that conflicts with required first-formal and BLOCKED transition evidence. Retaining this evidence is an integrity property, not a defect to fix by weakening the compositor.
 
-## Legacy witness boundary: V09
+## Current witness contract: V09
 
-`scripts/test-current-validation-evidence.mjs` V09 reproduces a baseline compatibility failure: consecutive native BLOCKED records whose captured origins omit `otherDeliveryWork` reach `assertBlockedFormalTransition`, which compares the missing values using the canonical JSON comparator. `undefined` is not canonical JSON, so the operation fails closed with `INVALID_CURRENT_IMAGE: canonical: plain object required`.
+The current native producer always captures an `otherDeliveryWork` array. V09's former positive fixture omitted this required field and no longer represented that producer. Its positive replay coverage now uses the explicit current witness, retaining old-owner, changed-bytes and changed-request replay rejections.
 
-The official current producer captures an `otherDeliveryWork` array. Modern operational blocked-retry tests cover that path. The replay-positive test now models that explicit current producer witness locally, while a dedicated negative covers missing, one-sided, malformed, and divergent witnesses. The runtime rejects absent or non-array witnesses explicitly with `EVIDENCE_INCOMPLETE`; it never maps them to an empty array. The old incidental canonicalization failure was reproduced on base `0465970`.
-
-Accepting such legacy records would require an explicit compatibility design that preserves cross-delivery protection. This change does not add that compatibility. Preserve their evidence and report the blocked transition; do not manufacture witnesses or discard history. Required first-formal retention does not grant replay permission to an old owner.
+Dedicated negative tests cover missing, one-sided, malformed and divergent witnesses. Missing/non-array witnesses are rejected explicitly with `EVIDENCE_INCOMPLETE`, never inferred as an empty sibling set. Different observations remain stale. No fallback, migration or legacy recovery was added. Required first-formal retention never grants replay permission to an old owner.
 
 ## Claude/Codex distribution check
 
@@ -31,6 +33,13 @@ Read-only installation-plan comparison found byte-identical shared content for 1
 
 ## Stable-source run before the V09 correction
 
-On `97edfac3a981e6e82ffe97a5b77af78b01f14dff`, all `scripts/test-current-*.mjs` files ran together with Node test concurrency 4: **1203 tests, 1202 passed, 1 failed, 0 skipped/cancelled** (1591.57 seconds). The only failure was the unchanged V09 legacy case described above. The detached run completed with exit code 1. An earlier connection-interrupted partial run is not counted as final evidence.
+On `97edfac3a981e6e82ffe97a5b77af78b01f14dff`, all `scripts/test-current-*.mjs` files ran together with Node test concurrency 4: **1203 tests, 1202 passed, 1 failed, 0 skipped/cancelled** (1591.57 seconds). The only failure was the former V09 positive fixture, corrected to represent the current producer as described above. The detached run completed with exit code 1. An earlier connection-interrupted partial run is not counted as final evidence.
 
-The final CLOSE/distribution/budget/catalog group passed **77/77**. The corrected converted-APPLY anchor tests passed **4/4**, including real missing/corrupt anchor negatives. No runtime was relaxed to remove a baseline failure. This is not an all-green release result; integration/installation remains a separate decision.
+The final CLOSE/distribution/budget/catalog group passed **77/77**. The corrected converted-APPLY anchor tests passed **4/4**, including real missing/corrupt anchor negatives. No runtime was relaxed to remove a baseline failure. That earlier run was not the final release result.
+
+
+## Final current-workflow result
+
+On `fd99eb165df59331525724bee0f7d0a66fb38048`, all `scripts/test-current-*.mjs` files ran together with Node test concurrency 4: **1204/1204 passed, zero failures, skips or cancellations** (1665.14 seconds), exit code 0. No source changed during this run. This documentation update does not change the tested runtime or tests.
+
+After the V09 correction, validation evidence passed **15/15**, operational BLOCKED retries **5/5**, and distribution/budget/catalog checks **70/70**. Independent review found no concrete issue. Earlier CLOSE/distribution/budget/catalog coverage passed **77/77**. No real Claude or Codex model sessions were run, and no global installation or main integration was performed by this task.
