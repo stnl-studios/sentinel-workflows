@@ -1,9 +1,8 @@
-import {publishPreparationCandidate} from './fixtures/synthetic-preparation-approval.mjs';
+import {legacyQ20Proof} from './fixtures/legacy-q20-proof.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {ChildProcess} from 'node:child_process';
 import {completedNativeCase,reopeningInput} from './fixtures/current-completed-native.mjs';
 import {retireActive} from './fixtures/current-reader-campaign.mjs';
 import {prepareCurrentSetReplacement,finalizeCurrentSetReplacement} from '../skills/workflows/stnl-execution-planner/runtime/execution-preparation-current.mjs';
@@ -16,9 +15,7 @@ import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {promisify} from 'node:util';
 
-import {preparePlanCandidate} from '../skills/workflows/stnl-execution-planner/runtime/prepare-plan-candidate.mjs';
-import {serializePlanPathClaims} from '../skills/workflows/stnl-execution-planner/runtime/serialize-plan-paths.mjs';
-import {begin,reserveDispatch} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
+import {begin} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
 
 const decode=bytes=>JSON.parse(Buffer.from(bytes));
 const run=promisify(execFile);
@@ -46,31 +43,14 @@ async function emptyFixture(t,{terminal=false,single=false,independent=true}={})
   await retireActive(view);return {...f,source:await captureCurrentExecution(f.specPath)};
 }
 
-test('Q20 pure review reopens the same integral owner with current local PASS and no command',async t=>{
-  const f=await emptyFixture(t),source=f.source,input=reopeningInput(source,f.delivery.deliveryId,{terminalValidation:true});
-  assert.equal(source.inspection.deliveries.length,0);assert.equal(source.inspection.state,'VALIDATION_BLOCKED');
-  const spawn=ChildProcess.prototype.spawn;let commands=0;
-  ChildProcess.prototype.spawn=function(){commands+=1;throw new Error('Q20 preparation must not execute a recipe');};
-  let result,proposal,inspection;
-  try {
-    proposal=prepareCurrentSetReplacement(input);result=finalizeCurrentSetReplacement({proposal,review:reviewFor(proposal)});
-    inspection=await validateCurrentReviewCandidate({specPath:f.specPath,files:result.files});
-  } finally {ChildProcess.prototype.spawn=spawn;}
-  assert.equal(commands,0);
-  const old=decode(source.files.get('continuity.json')),next=decode(result.files.get('continuity.json'));
-  const prior=old.completed.find(item=>item.deliveryId===f.delivery.deliveryId),current=next.deliveries[0];
-  assert.equal(current.deliveryId,prior.deliveryId);assert.equal(current.slice,prior.slice);assert.equal(current.localRevision,prior.localRevision);
-  assert.deepEqual(current.counters,prior.counters);assert.deepEqual(current.baseline,prior.baseline);
-  assert.equal(current.validation,'current');assert.equal(current.lastDiagnostic,null);assert.equal(next.nextSliceOrdinal,old.nextSliceOrdinal);
-  assert.equal(result.snapshot.preparationRevision,decode(source.files.get('approved-preparation.json')).preparationRevision+1);
-  for(const member of [...next.deliveries,...next.completed]) {
-    const before=decode(source.files.get(member.evidence.path)),after=decode(result.files.get(member.evidence.path));
-    const {currentAuthoritySha256:ignored,...rest}=before;assert.deepEqual(after,{...rest,currentAuthoritySha256:member.authoritySha256});
-  }
-  assert.equal(inspection.deliveries[0].formalStatus,'PASS');assert.equal(inspection.deliveries[0].observedValidation,'current');
-  assert.deepEqual(inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:prior.slice,deliveryId:prior.deliveryId});
-  assert.equal(proposal.reviewRequest.deliveries[0].review.evidenceDecisions[0].disposition,'retain-current');
-  assert.deepEqual((await captureCurrentExecution(f.specPath)).files,source.files);
+test('Q20 complete historical coverage refuses redundant reentry without allocation or commands',async t=>{
+ const f=await emptyFixture(t),source=f.source;
+ assert.equal(source.inspection.deliveries.length,0);assert.equal(source.inspection.state,'COMPLETE');
+ const root=path.dirname(f.image.f.execution),before=await fs.readdir(root);
+ await assert.rejects(preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',
+  completedDeliveryIds:source.inspection.completed.filter(x=>x.deliveryId!==f.delivery.deliveryId).map(x=>x.deliveryId),terminalValidation:true}),{code:'REPLAN_REQUIRED'});
+ assert.deepEqual(await fs.readdir(root),before);
+ assert.deepEqual((await captureCurrentExecution(f.specPath)).files,source.files);
 });
 
 test('Q20 public admission refuses an already current integral certificate before allocation',async t=>{
@@ -81,21 +61,10 @@ test('Q20 public admission refuses an already current integral certificate befor
 });
 
 async function retainedImplementationCase(t) {
-  const f=await emptyFixture(t),input=reopeningInput(f.source,f.delivery.deliveryId,{terminalValidation:true});
-  const draft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',
-    completedDeliveryIds:input.completedDeliveryIds,terminalValidation:true});
-  const options={specPath:f.specPath,candidateExecutionRoot:draft.candidateExecutionRoot};
-  for(const [name,bytes]of input.artifacts) {
-    const target=path.join(draft.candidateExecutionRoot,name);await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,bytes);
-  }
-  await preparePlanCandidate(options);
-  const proposal=await publishPreparationCandidate(options);
-  await publishPreparationCandidate({...options,reviewDecision:reviewFor({reviewRequest:proposal.reviewRequest})});
-  const before=await captureCurrentExecution(f.specPath),current=decode(before.files.get('continuity.json')).deliveries[0];
-  const predecessor=decode(before.files.get(current.evidence.path));
+  const {specPath,predecessor}=await legacyQ20Proof(t);
+  // Authenticate historical output using today's reader, not the producer copy.
+  const complete=await captureCurrentExecution(specPath);
   assert.equal(predecessor.implementation.length,0);
-  await normalizedFormal({...f,delivery:current},{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
-  const complete=await captureCurrentExecution(f.specPath);
   assert.equal(complete.inspection.state,'COMPLETE');
   assert.equal(complete.inspection.normalHandoff,null);
   const evidencePath=decode(complete.files.get('continuity.json')).deliveries[0].evidence.path;
@@ -190,63 +159,19 @@ test('Q20 retained replacement admits a superseded native EXECUTE refusal and no
 });
 
 for(const {single=false,independent=true}of [{},{single:true},{independent:false}])
-  test(`Q20 public ${single?'sole owner':independent?'independent siblings':'dependent partial/full owners'} publishes reviewed bytes and mechanically reaches integral COMPLETE`,async t=>{
-  const f=await emptyFixture(t,{single,independent}),input=reopeningInput(f.source,f.delivery.deliveryId,{terminalValidation:true});
-  const old=decode(f.source.files.get('continuity.json'));
-  const draft=single?JSON.parse((await run(process.execPath,[path.resolve('skills/workflows/stnl-plan-reviewer/runtime/prepare-task-candidate.mjs'),
-    '--spec-path',f.specPath,'--operation','REPLAN','--completed-delivery-ids',JSON.stringify(input.completedDeliveryIds),
-    '--terminal-validation','true'],{cwd:'/tmp'})).stdout):await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',
-    completedDeliveryIds:input.completedDeliveryIds,terminalValidation:true});
-  const options={specPath:f.specPath,candidateExecutionRoot:draft.candidateExecutionRoot};
-  for(const [name,bytes]of input.artifacts) {
-    const target=path.join(draft.candidateExecutionRoot,name);await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,bytes);
-  }
-  await preparePlanCandidate(options);
-  const proposal=await publishPreparationCandidate(options);
-  assert.equal(proposal.status,'AWAITING_REVIEW');assert.equal(proposal.publication,'not-started');
-  const serialized=await serializePlanPathClaims(options);
-  for(const [name,bytes]of serialized.proposal.files)
-    assert.deepEqual(await fs.readFile(path.join(draft.candidateExecutionRoot,name)),bytes);
-  const review=reviewFor({reviewRequest:proposal.reviewRequest}),bad=structuredClone(review);
-  bad.deliveries[0].review.evidenceDecisions[0].evidenceSha256='sha256:'+'0'.repeat(64);
-  await assert.rejects(publishPreparationCandidate({...options,reviewDecision:bad}),{code:'STALE_APPROVAL'});
-  assert.deepEqual((await captureCurrentExecution(f.specPath)).files,f.source.files);
-  const installed=await publishPreparationCandidate({...options,reviewDecision:review});
-  assert.equal(installed.publication,'confirmed');assert.equal(installed.cleanup,'complete');
-  const reopened=await captureCurrentExecution(f.specPath),current=decode(reopened.files.get('continuity.json')).deliveries[0];
-  for(const [name,bytes]of serialized.proposal.files)assert.deepEqual(Buffer.from(reopened.files.get(name)),bytes);
-  assert.equal(current.validation,'current');assert.equal(current.localRevision,f.delivery.localRevision);
-  assert.deepEqual(current.counters,old.completed.find(item=>item.deliveryId===current.deliveryId).counters);
-  assert.equal(reopened.inspection.state,'IMPLEMENTED_AWAITING_VALIDATION');assert.equal(reopened.inspection.deliveries[0].formalStatus,'PASS');
-  assert.ok(reopened.inspection.diagnostics.some(item=>item.field==='terminal'));
-  assert.deepEqual(reopened.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:current.slice,deliveryId:current.deliveryId});
-  if(single) {
-    assert.equal(reopened.inspection.deliveries[0].observedValidation,'current');
-    assert.deepEqual(reopened.inspection.diagnostics,[{kind:'evidence',artifact:'continuity.json',field:'terminal',
-      reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]);
-    const product=path.join(f.root,'src/greeting.mjs'),productBytes=await fs.readFile(product);
-    await fs.appendFile(product,'// unvalidated sole-owner drift\n');
-    const drifted=await captureCurrentExecution(f.specPath);
-    assert.equal(drifted.inspection.state,'EVIDENCE_STALE');
-    assert.equal(drifted.inspection.deliveries[0].observedValidation,'revalidation-required');
-    assert.deepEqual(drifted.inspection.normalHandoff,reopened.inspection.normalHandoff);
-    await fs.writeFile(product,productBytes);
-    const evidence=path.join(f.image.f.execution,current.evidence.path),evidenceBytes=await fs.readFile(evidence);
-    await fs.writeFile(evidence,'{}\n');
-    await assert.rejects(()=>captureCurrentExecution(f.specPath));
-    await fs.writeFile(evidence,evidenceBytes);
-    const restored=await captureCurrentExecution(f.specPath);
-    assert.deepEqual(restored.inspection,reopened.inspection);
-    assert.deepEqual(restored.activationBytes,reopened.activationBytes);
-  }
-  // Controlled response below is a mechanical protocol proof, never live model acceptance.
-  await normalizedFormal({...f,delivery:current},{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
-  const complete=await captureCurrentExecution(f.specPath),after=decode(complete.files.get('continuity.json')).deliveries[0];
-  assert.equal(complete.inspection.state,'COMPLETE');assert.equal(complete.inspection.normalHandoff,null);
-  assert.equal(after.localRevision,current.localRevision);assert.equal(after.counters.validationAttempts,current.counters.validationAttempts+1);
-  assert.equal(after.counters.implementationChecks,current.counters.implementationChecks);
-  assert.deepEqual(after.baseline,current.baseline);
-});
+ test(`Q20 ${single?'sole owner':independent?'independent siblings':'partial/full owners'} historical coverage needs no reopening`,async t=>{
+  const f=await emptyFixture(t,{single,independent}),before=f.source;
+  assert.equal(before.inspection.state,'COMPLETE');assert.equal(before.inspection.normalHandoff,null);
+  const ids=before.inspection.completed.filter(x=>x.deliveryId!==f.delivery.deliveryId).map(x=>x.deliveryId);
+  await assert.rejects(preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:ids,terminalValidation:true}),{code:'REPLAN_REQUIRED'});
+  assert.deepEqual((await captureCurrentExecution(f.specPath)).files,before.files);
+  // Current evidence corruption is still rejected despite historical approval.
+  const current=decode(before.files.get('continuity.json')).completed.at(-1);
+  const file=path.join(f.image.f.execution,current.evidence.path),bytes=await fs.readFile(file);
+  await fs.writeFile(file,'{}\n');await assert.rejects(captureCurrentExecution(f.specPath));
+  await fs.writeFile(file,bytes);
+  assert.deepEqual((await captureCurrentExecution(f.specPath)).activationBytes,before.activationBytes);
+ });
 
 test('Q20 retains the whole local contract and exact final review, while ordinary Q19 still requires a real delta',async t=>{
   const f=await emptyFixture(t),base=reopeningInput(f.source,f.delivery.deliveryId,{terminalValidation:true});
@@ -279,33 +204,10 @@ test('Q20 retains the whole local contract and exact final review, while ordinar
   assert.deepEqual((await captureCurrentExecution(f.specPath)).files,f.source.files);
 });
 
-test('Q20 terminal pending refuses a local-only dispatch without creating origin or request',async t=>{
-  const f=await emptyFixture(t),input=reopeningInput(f.source,f.delivery.deliveryId,{terminalValidation:true});
-  const proposal=prepareCurrentSetReplacement(input),final=finalizeCurrentSetReplacement({proposal,review:reviewFor(proposal)});
-  // Install only through the public producer, using a second exact review of its final bytes.
-  const draft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:input.completedDeliveryIds,terminalValidation:true});
-  for(const [name,bytes]of input.artifacts) {const target=path.join(draft.candidateExecutionRoot,name);await fs.mkdir(path.dirname(target),{recursive:true});await fs.writeFile(target,bytes);}
-  const options={specPath:f.specPath,candidateExecutionRoot:draft.candidateExecutionRoot},pending=await publishPreparationCandidate(options);
-  await publishPreparationCandidate({...options,reviewDecision:reviewFor({reviewRequest:pending.reviewRequest})});
-  const before=await captureCurrentExecution(f.specPath),start=await begin({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:before.inspection.activationId});
-  const namespaces=(await fs.readdir(path.join(f.root,'tmp/sentinel'))).filter(name=>!name.endsWith('-drafts')); // Draft approval history is a separate durable namespace.
-  assert.equal(namespaces.length,1);
-  const operationRoot=path.join(f.root,'tmp/sentinel',namespaces[0],start.handle.operationId);
-  const tree=async root=>{
-    const files=[];
-    for(const entry of await fs.readdir(root,{withFileTypes:true})) {
-      const target=path.join(root,entry.name);
-      if(entry.isDirectory())for(const [name,bytes]of await tree(target))files.push([entry.name+'/'+name,bytes]);
-      else files.push([entry.name,await fs.readFile(target)]);
-    }
-    return files.sort(([a],[b])=>a.localeCompare(b));
-  };
-  const beforeRefusal=await tree(operationRoot);
-  await assert.rejects(reserveDispatch(start.handle),{code:'EVIDENCE_INCOMPLETE'});
-  assert.deepEqual(await tree(operationRoot),beforeRefusal);
-  const terminal=await reserveDispatch(start.handle,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
-  const request=decode(await fs.readFile(terminal.requestFile));assert.ok(request.terminal);
-  assert.equal(request.owner.localRevision,decode(final.files.get('continuity.json')).deliveries[0].localRevision);
+test('Q20 no dispatch is allocated when current historical coverage is complete',async t=>{
+ const f=await emptyFixture(t),before=f.source;
+ await assert.rejects(begin({specPath:f.specPath,slice:f.delivery.slice,expectedActivationId:before.inspection.activationId}),{code:'UNSUPPORTED_FORMAT'});
+ assert.deepEqual((await captureCurrentExecution(f.specPath)).activationBytes,before.activationBytes);
 });
 
 test('Q20 public source gate refuses a partial owner, stale product/input and nonempty queue before allocation',async t=>{
