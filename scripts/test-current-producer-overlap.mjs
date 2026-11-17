@@ -139,7 +139,8 @@ syncBuiltinESMExports();\n`);
       assert.deepEqual(completed.inspection.deliveries.map(item=>item.slice),selectors.length===1?['slice-03','slice-02']:['slice-02']);
       assert.deepEqual(Buffer.from(completed.files.get('tasks/slice-02.md')),Buffer.from(first.files.get('tasks/slice-02.md')));
       assert.deepEqual(Buffer.from(completed.files.get(current.evidence.path)),Buffer.from(first.files.get(current.evidence.path)));
-      assert.notEqual(completed.inspection.state,'COMPLETE');
+      assert.equal(completed.inspection.state,'COMPLETE');
+      assert.equal(completed.inspection.normalHandoff,null);
     } finally {
       for(const [name,bytes]of first.files) {await fs.mkdir(path.dirname(path.join(view.execution,name)),{recursive:true});await fs.writeFile(path.join(view.execution,name),bytes);}
       await fs.writeFile(path.join(view.execution,'activation.json'),first.activationBytes);
@@ -152,11 +153,10 @@ syncBuiltinESMExports();\n`);
   const final=await captureCurrentExecution(fixture.specPath);
   assert.equal(body(Buffer.from(final.files.get('tasks/slice-02.md')).toString('utf8'),'Prior Validation Overlap'),'- none');
   assert.equal(final.inspection.deliveries.at(-1).counters.validationAttempts,3);
-  // Clearing obsolete local overlap does not supply the missing integral proof.
-  assert.deepEqual(final.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:fixture.delivery.slice,deliveryId:fixture.delivery.deliveryId});
-  assert.notEqual(final.inspection.state,'COMPLETE');
-  assert.deepEqual(final.inspection.diagnostics,[{kind:'evidence',artifact:'continuity.json',field:'terminal',
-    reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]);
+  // Authenticated PASS covers the updated private output; old milestones survive.
+  assert.equal(final.inspection.normalHandoff,null);
+  assert.equal(final.inspection.state,'COMPLETE');
+  assert.deepEqual(final.inspection.diagnostics,[]);
 });
 
 async function captureCurrentExecutionAfterAdmission(fixture) {

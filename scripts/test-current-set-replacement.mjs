@@ -351,7 +351,8 @@ test('Q19 reopens private B from Q18 in memory, retaining independent A and lite
   const live=await captureCurrentExecution(fixture.specPath),before=decode(live.files.get('continuity.json'));
   assert.deepEqual(decode(live.files.get('approved-preparation.json')).normativeProjection.completed[0].dependencies,[]);
   const first=await composeVerified(inputFor(live),fixture.specPath);
-  assert.equal(first.inspection.state,'VALIDATION_BLOCKED');assert.equal(first.inspection.normalHandoff,null);
+  assert.equal(first.inspection.state,'COMPLETE');assert.equal(first.inspection.normalHandoff,null);
+  assert.deepEqual(first.inspection.diagnostics,[]);
   const q18=inertReviewSource(live,first.result),prior=decode(q18.files.get('continuity.json'));
   assert.equal(prior.deliveries.length,0);
   for(const group of ['plans','tasks']) {

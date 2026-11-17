@@ -43,10 +43,10 @@ test('Public Q18 API prepares a complete owned proposal, stays awaiting review a
  const f=await sourceFixture(t);
  const retainedDocuments=new Map(['plans/slice-02.md','tasks/slice-02.md']
   .map(name=>[name,Buffer.from(f.source.files.get(name))]));
- // A future terminal offer is not an active owner or unfinished local proof.
- assert.equal(f.source.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
- assert.equal(f.source.inspection.diagnostics[0].reason,'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment');
- assert.notEqual(f.source.inspection.state,'COMPLETE');
+ // Complete historical coverage is quiet; no extra terminal offer is needed.
+ assert.equal(f.source.inspection.normalHandoff,null);
+ assert.deepEqual(f.source.inspection.diagnostics,[]);
+ assert.equal(f.source.inspection.state,'COMPLETE');
  assert.ok([...f.source.inspection.deliveries,...f.source.inspection.completed]
   .every(item=>item.persistedValidation==='current'&&item.observedValidation==='current'&&item.formalStatus==='PASS'));
  assert.equal((await preflightExecutionOperation(f.specPath,'REPLAN')).operation,'REPLAN');
@@ -79,7 +79,7 @@ test('Public Q18 API prepares a complete owned proposal, stays awaiting review a
  const reviewed=await publishPreparationCandidate({...options,reviewDecision:review});
  assert.equal(reviewed.reviewValidated,true);assert.equal(reviewed.publication,'confirmed');assert.equal(reviewed.cleanup,'complete');
  const final=await captureCurrentExecution(f.specPath);
- assert.equal(final.inspection.state,'VALIDATION_BLOCKED');assert.equal(final.inspection.normalHandoff,null);
+ assert.equal(final.inspection.state,'COMPLETE');assert.equal(final.inspection.normalHandoff,null);
  assert.equal(final.inspection.deliveries.length,0);assert.equal(final.inspection.completed.length,2);
  for(const [name,bytes] of retainedDocuments)assert.deepEqual(Buffer.from(final.files.get(name)),bytes);
 });
