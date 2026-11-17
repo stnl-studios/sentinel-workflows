@@ -47,7 +47,7 @@ After semantic GLOBAL/READY, an already-ready workspace may serve an explicitly 
 
 ## CLOSE
 
-Follow close-policy.md: reuse historical coverage; delegate missing/contradicted proof; publish only when admitted. No candidate or substitute attestation.
+Follow close-policy.md: reuse historical coverage; resume pending work, delegate only the smallest normalHandoff and reinspect before publishing. No candidate or substitute attestation.
 
 ## Outcome contract
 

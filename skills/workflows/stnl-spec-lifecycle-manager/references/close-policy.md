@@ -12,19 +12,19 @@ update_policy: CLOSE changes.
 
 # CLOSE Policy
 
-CLOSE publishes SPEC_CLOSED, not implementation approval. Substantive RESUME requires REPLAN. Retire execution only if absent or authenticated COMPLETE with ownership; preserve other externals.
+CLOSE publishes SPEC_CLOSED, not implementation PASS. Substantive RESUME requires REPLAN. Retire only absent or authenticated COMPLETE execution with ownership; preserve externals.
 
 ## Evidence and validation
 
-Inspect execution. Reuse authenticated historical PASS criteria/evidence, including last-slice or runbook-linked proof; retain executed/validated/approved milestones. Runbook instructions/checklists or PASS labels alone prove nothing. Sufficient coverage needs no generic final test/terminal attestation. Validate authorized changes/impacts in the current slice; file changes alone never reopen prior approvals.
+Reuse authenticated historical PASS criteria/evidence, including last-slice/runbook-linked proof; retain executed/validated/approved milestones. Checklists/PASS labels prove nothing. Coverage needs no extra final test/attestation. Validate authorized changes/impacts in the current slice; file changes alone never reopen prior approvals.
 
-Missing coverage or concrete contradiction: automatically delegate the exact current `VALIDATE_SLICE` handoff to `stnl-slice-quality-manager` with affected criteria/evidence, preserving approved scope/checks. Use its controller, independent runner and formal publication; never fabricate evidence, owner or earlier-slice selection, replan or RECONCILE.
+For missing/contradicted proof in a current SPEC, resume saved pending handles first; never repeat uncertain effects. Otherwise automatically delegate the smallest `normalHandoff`: EXECUTE_SLICE/APPLY_FINDINGS to `stnl-slice-executor`, VALIDATE_SLICE to `stnl-slice-quality-manager`. Stay within approved Plan/Tasks, checks and budgets; use the controller, independent runner and formal publication. Preserve history; no invented authority, predecessor reopening, REPLAN or RECONCILE.
 
-Reinspect; publish only authenticated COMPLETE with all closure criteria proved and ownership resolved. Failure, uncertainty, prerequisites or no legal handoff block CLOSE; preserve execution and report. No unchanged retries, implementation or automatic fixes. Absent execution permits documentary close, never implementation PASS.
+Reinspect each step. Close only authenticated COMPLETE with all criteria proved and ownership settled. Corruption, uncertainty, blockers or no legal handoff stop CLOSE. Never retry an exhausted operation. No budget resets or legacy reconstruction. Absent execution permits documentary close, never implementation PASS.
 
 ## Publication
 
-Explicit CLOSE requires active ready.
+CLOSE requires active ready.
 
 Run `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" CLOSE <TARGET>` without candidate; runtime derives disposition and renders in its owned stage. Preview grants no authority. Common lease precedes lifecycle lease; recheck source identity/digest, execution authority/activation/manifest and rendered bytes before promotion. Pending/uncertain/foreign producers block discard. Retain source/backup and recovery authority until commit/settlement; remove only bound roles before empty namespace/lease. Partial integration cannot authorize discard. Never model-rebuild output.
 
@@ -40,7 +40,7 @@ Darwin symlink hardlink groups use fixed `/bin/ln -P -h --`, no shell, 2-second/
 
 Archive the final execution snapshot and committed same-SPEC native sources byte-for-byte before retirement. Bound hash/identity guards recovery. Foreign/uncertain sources block. Archives grant no live PASS.
 
-Report historicalArchive; retain history. Never adopt/delete unbound archives. Recovery reuses only its bound archive.
+Report historicalArchive; preserve history and unbound archives. Recovery uses only its bound archive.
 
 ## Results
 
