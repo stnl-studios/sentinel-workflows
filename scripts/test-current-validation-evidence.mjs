@@ -410,7 +410,17 @@ test('V08 trinta formais preservam âncora de implementação e transições BLO
 });
 
 test('V09 replay usa só última incorporação e mesmos bytes',()=>{
-  const f=first();const once=composeCurrentValidationEvidence(f.input);
+  // Explicit witness emitted by the current producer. Do not retrofit the
+  // global legacy fixture: absent witnesses are rejected in the test below.
+  const witnessed=fixture=>{
+    for(const name of ['origin','dispatch']) {
+      const value=parse(fixture.cap[name]);value.otherDeliveryWork=[];fixture.cap[name]=json(value);
+    }
+    return fixture;
+  };
+  const formal=options=>witnessed(first(options));
+  const successor=(prior,number,options={})=>witnessed(next(prior,number,options));
+  const f=formal();const once=composeCurrentValidationEvidence(f.input);
   const replay=clone(f.input);replay.previous={bundleBytes:once.bytes,counters:once.counters};
   const twice=composeCurrentValidationEvidence(replay);
   assert.equal(twice.replayed,true);assert.equal(twice.consumedInvocations,1);
@@ -418,25 +428,26 @@ test('V09 replay usa só última incorporação e mesmos bytes',()=>{
   const changed=clone(replay);const raw=parse(changed.capture.rawResponse);
   raw.result.evidence='Different claim under same owner.';rebindRaw(changed.capture,raw);
   assert.throws(()=>composeCurrentValidationEvidence(changed),code('OWNER_MISMATCH','different captured sources'));
-  const firstBad=first({status:'NEEDS_FIX',newFindings:[finding(1,1)],
+  const firstBad=formal({status:'NEEDS_FIX',newFindings:[finding(1,1)],
     findingReferences:'finding-01',findingDispositions:'finding-01=active'});
   const a=composeCurrentValidationEvidence(firstBad.input);
-  const b=composeCurrentValidationEvidence(next(a,2,{status:'BLOCKED',findingReferences:'finding-01',
+  const b=composeCurrentValidationEvidence(successor(a,2,{status:'BLOCKED',findingReferences:'finding-01',
     findingDispositions:'finding-01=active'}).input);
   const old=clone(firstBad.input);old.previous={bundleBytes:b.bytes,counters:b.counters};
   assert.throws(()=>composeCurrentValidationEvidence(old),code('STALE_BASE'));
-  const third=composeCurrentValidationEvidence(next(b,3,{status:'BLOCKED',findingReferences:'finding-01',
+  const third=composeCurrentValidationEvidence(successor(b,3,{status:'BLOCKED',findingReferences:'finding-01',
     findingDispositions:'finding-01=active'}).input);
   const retainedReplay=clone(firstBad.input);retainedReplay.previous={bundleBytes:third.bytes,counters:third.counters};
   assert.throws(()=>composeCurrentValidationEvidence(retainedReplay),code('STALE_BASE'));
-  const prunedFirst=first();const prunedOne=composeCurrentValidationEvidence(prunedFirst.input);
-  const prunedTwo=composeCurrentValidationEvidence(next(prunedOne,2).input);
-  const prunedThree=composeCurrentValidationEvidence(next(prunedTwo,3).input);
-  assert.deepEqual(prunedThree.bundle.support,[]);
+  const prunedFirst=formal();const prunedOne=composeCurrentValidationEvidence(prunedFirst.input);
+  const prunedTwo=composeCurrentValidationEvidence(successor(prunedOne,2).input);
+  const prunedThree=composeCurrentValidationEvidence(successor(prunedTwo,3).input);
+  assert.deepEqual(prunedThree.bundle.support.map(item=>item.id),['attempt-01'],
+    'retained implementation anchor does not authorize replay of that old owner');
   const prunedReplay=clone(prunedFirst.input);
   prunedReplay.previous={bundleBytes:prunedThree.bytes,counters:prunedThree.counters};
   assert.throws(()=>composeCurrentValidationEvidence(prunedReplay),code('STALE_BASE'));
-  const second=next(once,2);const applied=composeCurrentValidationEvidence(second.input);
+  const second=successor(once,2);const applied=composeCurrentValidationEvidence(second.input);
   assert.equal(applied.bundle.validation.id,'attempt-02');
   assert.deepEqual(parse(f.cap.rawResponse).result,parse(second.cap.rawResponse).result);
   assert.notEqual(digest(f.cap.validationRequest),digest(second.cap.validationRequest));
@@ -445,6 +456,34 @@ test('V09 replay usa só última incorporação e mesmos bytes',()=>{
   assert.throws(()=>composeCurrentValidationEvidence(differentRequestBytes),code('EVIDENCE_STALE','requestSha256'));
   const stale=clone(second.input);stale.capture.validationRequest=f.cap.validationRequest;
   assert.throws(()=>composeCurrentValidationEvidence(stale),error=>['STALE_BASE','OWNER_MISMATCH'].includes(error?.code));
+});
+
+
+test('V09 BLOCKED retry requires explicit matching sibling witnesses, never inferred emptiness',()=>{
+  const withWitness=(fixture,witness)=>{
+    if(witness!==undefined)for(const name of ['origin','dispatch']) {
+      const value=parse(fixture.cap[name]);value.otherDeliveryWork=clone(witness);fixture.cap[name]=json(value);
+    }
+    return fixture;
+  };
+  for(const [label,priorWitness,nextWitness,expected]of [
+    ['absent both',undefined,undefined,'EVIDENCE_INCOMPLETE'],
+    ['absent prior',undefined,[],'EVIDENCE_INCOMPLETE'],
+    ['absent next',[],undefined,'EVIDENCE_INCOMPLETE'],
+    ['null is not an empty array',null,[],'EVIDENCE_INCOMPLETE'],
+    ['object is not an array',{},[],'EVIDENCE_INCOMPLETE'],
+    ['next object is not an array',[],{},'EVIDENCE_INCOMPLETE'],
+    ['string is not an array',[],'[]','EVIDENCE_INCOMPLETE'],
+    ['different observations',[],[{deliveryId:'other',slice:'slice-02',manifest:manifest(1)}],'EVIDENCE_STALE'],
+    ['explicit empty set',[],[],null],
+  ]) {
+    const blocked=withWitness(first({status:'BLOCKED'}),priorWitness);
+    const base=composeCurrentValidationEvidence(blocked.input);
+    const retry=withWitness(next(base,2),nextWitness);
+    if(expected)assert.throws(()=>composeCurrentValidationEvidence(retry.input),
+      code(expected,expected==='EVIDENCE_INCOMPLETE'?'explicit otherDeliveryWork arrays':'changed another active or completed delivery'),label);
+    else assert.equal(composeCurrentValidationEvidence(retry.input).formalStatus,'PASS',label);
+  }
 });
 
 test('V10 recusa concluída preserva raw sem criar attempt',()=>{
