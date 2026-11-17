@@ -1139,7 +1139,8 @@ for(const {priorPass,terminal,blockedTerminal,blockedLocal,retryScenario} of [
     }
   }
   if(blockedTerminal==='plain') {
-    if(!blockedLocal)await operation('VALIDATE_SLICE',{status:'PASS'});
+    // The first formal may request integral scope; do not manufacture a second
+    // validation after a complete local PASS merely to exercise BLOCKED.
     await terminalBlocked();return;
   }
   const finding={id:'finding-01',severity:'blocking',problem:'The pay export returns broken.',
@@ -1149,12 +1150,11 @@ for(const {priorPass,terminal,blockedTerminal,blockedLocal,retryScenario} of [
   assert.equal(formal.normalHandoff.operation,'APPLY_FINDINGS');
   const apply=await operation('APPLY_FINDINGS',{after:paid});
   assert.equal(apply.normalHandoff.operation,'VALIDATE_SLICE');
-  if(blockedLocal&&blockedTerminal==='after-findings'){await terminalBlocked();return;}
+  if(blockedTerminal==='after-findings'){await terminalBlocked();return;}
   const final=await operation('VALIDATE_SLICE',{status:'PASS'});
   assert.equal(final.deliveries[0].formalStatus,'PASS');
   assert.deepEqual(final.deliveries[0].counters,
     {implementationChecks:1,findingsChecks:1,validationAttempts:priorPass?3:2,findings:1});
-  if(blockedTerminal==='after-findings')await terminalBlocked();
 });
 
 test('Initial ingress installs reviewed bytes once and reads back pristine',async()=>{
