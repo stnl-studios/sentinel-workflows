@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-export async function legacyQ20Proof(t){
+async function legacyTerminalRuntime(t){
  const runtime=await fs.mkdtemp('/tmp/sentinel-legacy-q20-');
  t.after(()=>fs.rm(runtime,{recursive:true,force:true}));
  await fs.cp(path.resolve('skills'),path.join(runtime,'skills'),{recursive:true});
@@ -25,6 +25,11 @@ export async function legacyQ20Proof(t){
  }};
  await visit(path.join(runtime,'skills'));
  if(patched<7)throw new Error('legacy producer distribution incomplete');
+ await fs.mkdir(path.join(runtime,'tmp'),{recursive:true});
+ return runtime;
+}
+export async function legacyQ20Proof(t){
+ const runtime=await legacyTerminalRuntime(t);
  const script=`import fs from 'node:fs/promises';import path from 'node:path';
  import {completedNativeCase,reopeningInput} from './scripts/fixtures/current-completed-native.mjs';
  import {retireActive} from './scripts/fixtures/current-reader-campaign.mjs';
@@ -49,4 +54,22 @@ export async function legacyQ20Proof(t){
  console.log(JSON.stringify({root:f.root,specPath:f.specPath,predecessor}));`;
  const {stdout}=await promisify(execFile)(process.execPath,['--input-type=module','-e',script],{cwd:runtime,timeout:180000,maxBuffer:8*1024*1024});
  const result=JSON.parse(stdout);t.after(()=>fs.rm(result.root,{recursive:true,force:true}));return result;
+}
+
+
+export async function legacyInitialQ20Proof(t){
+ const runtime=await legacyTerminalRuntime(t),resultPath=path.join(runtime,'initial-q20-result.json');
+ const testPath='scripts/test-current-initial-native-operation.mjs';
+ let source=await fs.readFile(path.resolve(testPath),'utf8');
+ const title='Initial EXECUTE proof survives Q18 and the Q20 terminal formal after Q18 moved its normative hash';
+ const start=source.indexOf(`test('${title}',async t=>{`),end=source.indexOf("\nfor(const metadata of ['head','requestSha256'])",start);
+ if(start<0||end<0)throw new Error('legacy Initial producer seam missing');
+ const body=await fs.readFile(new URL('./legacy-initial-q20-body.txt',import.meta.url),'utf8');
+ source=source.slice(0,start)+`test('${title}',async t=>{\n${body}\n await fs.writeFile(${JSON.stringify(resultPath)},JSON.stringify({root:f.root,specPath:f.specPath,implementation}));\n});\n`+source.slice(end);
+ await fs.writeFile(path.join(runtime,testPath),source);
+ const env={...process.env};delete env.NODE_TEST_CONTEXT;
+ const result=await promisify(execFile)(process.execPath,['--test','--test-name-pattern='+title,testPath],{cwd:runtime,env,timeout:180000,maxBuffer:1024*1024})
+  .catch(error=>{error.message+='\n'+(error.stdout??'')+'\n'+(error.stderr??'');throw error;});
+ if(!await fs.stat(resultPath).catch(()=>null))throw new Error('Historical Initial producer emitted no snapshot: '+result.stdout+' '+result.stderr);
+ return JSON.parse(await fs.readFile(resultPath,'utf8'));
 }

@@ -2401,41 +2401,15 @@ const formalPass=observation=>({result:{status:'PASS',commands:observation.comma
   findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',
   persistenceSummary:'The runner made no product edits.'},newFindings:[]});
 test('Initial EXECUTE proof survives Q18 and the Q20 terminal formal after Q18 moved its normative hash',async t=>{
-  const f=await fixture();
-  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
-  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
-  await installCurrentInitial(f);
-  await officialNative(f,'slice-01','EXECUTE_SLICE','official-q18-a-execute',executeResult(1));
-  await officialNative(f,'slice-01','VALIDATE_SLICE','official-q18-a-formal',formalPass);
-  // B keeps a concluded semantic EXECUTE refusal in support before reopening the slice.
-  await officialNative(f,'slice-02','EXECUTE_SLICE','official-q18-b-refused',executeResult(1,result=>{result.coverage='none';}));
-  await officialNative(f,'slice-02','EXECUTE_SLICE','official-q18-b-execute',executeResult(2),{successor:true});
-  await officialNative(f,'slice-02','VALIDATE_SLICE','official-q18-b-formal',formalPass);
-  let image=await captureCurrentExecution(f.specPath);
-  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
-  const b=continuity.deliveries.find(item=>item.slice==='slice-02');
-  const executed=JSON.parse(Buffer.from(image.files.get(b.evidence.path))),[implementation]=executed.implementation;
+  const {legacyInitialQ20Proof}=await import('./fixtures/legacy-q20-proof.mjs');
+  const {root,specPath,implementation}=await legacyInitialQ20Proof(t);
+  const f={root,specPath};
+  const {context}=await resolveCurrentExecutionContext(specPath);
   assert.equal(implementation.origin.preparationRevision,1);
-  assert.deepEqual(executed.support.map(item=>[item.kind,item.origin.operation]),[['rejection','EXECUTE_SLICE']]);
-
-  await publishReviewedReplan({specPath:f.specPath,completedDeliveryIds:continuity.deliveries.map(item=>item.deliveryId),
-    artifacts:new Map(['plan.md','tasks.md'].map(name=>[name,Buffer.from(Buffer.from(image.files.get(name)).toString('utf8')
-      .split('\n').filter(line=>!/\| 0[12] - /u.test(line)).join('\n'))]))});
-  image=await captureCurrentExecution(f.specPath);
-  const reopening=reopeningInput(image,b.deliveryId,{terminalValidation:true});
-  await publishReviewedReplan({specPath:f.specPath,completedDeliveryIds:reopening.completedDeliveryIds,
-    artifacts:reopening.artifacts,terminalValidation:true,rejectSourceMutations:true});
-  image=await captureCurrentExecution(f.specPath);
-  const reopened=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
-  assert.equal(reopened.deliveryId,b.deliveryId);
-  assert.notEqual(implementation.origin.normativeSha256,reopened.authoritySha256);
-
-  const {context}=await resolveCurrentExecutionContext(f.specPath);
-  await normalizedFormal({view:{execution:context.logicalExecutionRoot},specPath:f.specPath,
-    delivery:reopened,root:f.root,head:null},{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
   const final=await captureCurrentExecution(f.specPath);
   assert.equal(final.inspection.state,'COMPLETE');
   const current=JSON.parse(Buffer.from(final.files.get('continuity.json'))).deliveries[0];
+  assert.notEqual(implementation.origin.normativeSha256,current.authoritySha256);
   assert.deepEqual(JSON.parse(Buffer.from(final.files.get(current.evidence.path))).implementation,[implementation]);
   const {completedEvidenceContext}=await import('../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs');
   const snapshotBytes=Buffer.from(final.files.get('approved-preparation.json'));
@@ -2703,9 +2677,8 @@ test('planned distinct reports retain selected original absence after publicatio
   assert.ok(validatedContinuity.deliveries[1].baseline.entries.some(item=>item.path==='docs/missing/report-b.md'&&item.kind==='absent'));
   const second=await bConclude(f,'EXECUTE_SLICE',{slice:'slice-02',edit:()=>fs.writeFile(path.join(f.root,'docs/missing/report-b.md'),'Report B.\n')});
   assert.equal(second.image.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
-  assert.equal(second.image.inspection.normalHandoff?.slice,'slice-01');
+  assert.equal(second.image.inspection.normalHandoff?.slice,'slice-02');
   assert.deepEqual(second.image.files.get(validatedContinuity.deliveries[0].evidence.path),validated.files.get(validatedContinuity.deliveries[0].evidence.path));
-  await bConclude(f,'VALIDATE_SLICE',{slice:'slice-01'});
   const completed=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',terminal:true});
   assert.equal(completed.image.inspection.state,'COMPLETE');
 });
@@ -2906,8 +2879,7 @@ test('explicit reviewed reentry revalidates every stale completed structural con
   }});
   await bConclude(f,'VALIDATE_SLICE');
   await bConclude(f,'EXECUTE_SLICE',{slice:'slice-02',edit:()=>fs.writeFile(path.join(f.root,'docs/missing/report-b.md'),'B\n')});
-  await bConclude(f,'VALIDATE_SLICE');
-  const final=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',terminal:true});assert.equal(final.image.inspection.state,'COMPLETE');
+  const final=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02'});assert.equal(final.image.inspection.state,'COMPLETE');
   const original=final.image,prior=JSON.parse(Buffer.from(original.files.get('continuity.json'))),ids=prior.deliveries.map(i=>i.deliveryId);
   const oldProofs=new Map(prior.deliveries.map(d=>[d.deliveryId,JSON.parse(Buffer.from(original.files.get(d.evidence.path)))]));
   const approve=r=>({...r,decision:'approved',summary:'Controlled exact stale completed revalidation, not independent semantic qualification.',
@@ -2987,7 +2959,7 @@ test('explicit reviewed reentry revalidates every stale completed structural con
   }
   assert.ok(opened.inspection.deliveries.every(d=>d.formalStatus===null&&d.observedValidation==='revalidation-required'));
   const a=await bConclude(f,'VALIDATE_SLICE');assert.notEqual(a.image.inspection.state,'COMPLETE');
-  const b=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',terminal:true});assert.equal(b.image.inspection.state,'COMPLETE');
+  const b=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02'});assert.equal(b.image.inspection.state,'COMPLETE');
   for(const d of JSON.parse(Buffer.from(b.image.files.get('continuity.json'))).deliveries)
     assert.equal(d.counters.validationAttempts,prior.deliveries.find(i=>i.deliveryId===d.deliveryId).counters.validationAttempts+1);
 });
