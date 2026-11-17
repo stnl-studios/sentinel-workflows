@@ -715,13 +715,43 @@ function validateCloseArchiveBinding(value){
   if(value.format!=='stnl-close-history-binding-v1'||typeof value.path!=='string'||!path.isAbsolute(value.path)
     ||path.normalize(value.path)!==value.path||!hasPhysicalIdentity(value.identity)||!/^sha256:[a-f0-9]{64}$/u.test(value.sha256??'')
     ||!Number.isSafeInteger(value.size)||value.size<1||value.size>MAX_CLOSE_ARCHIVE_BYTES
-    ||!Array.isArray(value.names)||!value.names.length||value.names.length>1024||new Set(value.names).size!==value.names.length
+    ||!Array.isArray(value.names)||value.names.length>1024||new Set(value.names).size!==value.names.length
     ||value.names.some(name=>!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u.test(name)))fail('invalid historical archive binding');
   return value;
 }
 function closeArchivePath(roots,transactionId){
   if(!/^[0-9a-f]{32}$/u.test(transactionId??''))fail('invalid historical archive transaction');
   return path.join(roots.leaseParent,roots.specKey+'.close-history-'+transactionId+'.json');
+}
+// Inert, byte-exact final execution image. The archive binding authenticates
+// these bytes during retirement/recovery; this never grants a new live PASS.
+function validateCloseExecutionSnapshot(snapshot){
+  closed(snapshot,['requirementsAuthority','activationId','files'],'historical execution snapshot');
+  if(!/^sha256:[a-f0-9]{64}$/u.test(snapshot.requirementsAuthority??'')
+    ||!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/u.test(snapshot.activationId??''))
+    fail('historical execution authority invalid');
+  if(!Array.isArray(snapshot.files)||!snapshot.files.length||snapshot.files.length>10000)
+    fail('historical execution snapshot files invalid');
+  const files=new Map();let previous='';
+  for(const row of snapshot.files){
+    closed(row,['path','sha256','bytesBase64'],'historical execution file');
+    if(typeof row.path!=='string'||!row.path||row.path.includes('\\')||row.path.includes('\0')
+      ||row.path.startsWith('/')||row.path.split('/').some(part=>!part||part==='.'||part==='..')
+      ||row.path<=previous||typeof row.bytesBase64!=='string')fail('historical execution paths invalid');
+    previous=row.path;
+    const bytes=Buffer.from(row.bytesBase64,'base64');
+    if(bytes.length>MAX_CLOSE_ARCHIVE_SOURCE_BYTES||bytes.toString('base64')!==row.bytesBase64
+      ||digest(bytes)!==row.sha256)fail('historical execution bytes differ');
+    files.set(row.path,bytes);
+  }
+  if(!files.has('activation.json'))fail('historical execution activation absent');
+  const activation=parseStrictJson(files.get('activation.json').toString('utf8'));
+  if(activation.activationId!==snapshot.activationId||activation.requirementsAuthority!==snapshot.requirementsAuthority
+    ||activation.activeAttempt!==null||!Array.isArray(activation.artifacts)
+    ||activation.artifacts.length!==files.size-1||new Set(activation.artifacts.map(row=>row.path)).size!==activation.artifacts.length
+    ||activation.artifacts.some(row=>row.path==='activation.json'||!files.has(row.path)||digest(files.get(row.path))!==row.sha256))
+    fail('historical execution manifest differs');
+  return snapshot;
 }
 export async function verifyLifecycleCloseArchive(roots,transactionId,binding,inventory){
   if(binding===undefined)return null;
@@ -730,7 +760,9 @@ export async function verifyLifecycleCloseArchive(roots,transactionId,binding,in
   const read=await readFileWithLinks(binding.path,[1],binding.size);
   if(!equal(read.identity,binding.identity)||digest(read.bytes)!==binding.sha256||read.bytes.length!==binding.size||read.mode!==0o600)fail('historical archive identity or bytes changed');
   const value=parseStrictJson(read.bytes.toString('utf8'));
-  closed(value,['format','specRoot','executionRoot','transactionId','materialRootIdentity','names','entries'],'historical archive');
+  closed(value,['format','specRoot','executionRoot','transactionId','materialRootIdentity','names','entries',...(Object.hasOwn(value,'executionSnapshot')?['executionSnapshot']:[])],'historical archive');
+  if(value.executionSnapshot!==undefined)validateCloseExecutionSnapshot(value.executionSnapshot);
+  else if(!binding.names.length)fail('historical archive lacks preserved execution or owners');
   if(value.format!=='stnl-close-history-v1'||value.specRoot!==roots.specRoot||value.executionRoot!==roots.executionRoot
     ||value.transactionId!==transactionId||!equal(value.names,binding.names)
     ||!isDeepStrictEqual(value.materialRootIdentity,roots.materialRootIdentity??value.materialRootIdentity))fail('historical archive source context changed');
@@ -757,7 +789,8 @@ export async function verifyLifecycleCloseArchive(roots,transactionId,binding,in
   }
   return value;
 }
-export async function createLifecycleCloseArchive(roots,transactionId,names,inventory){
+export async function createLifecycleCloseArchive(roots,transactionId,names,inventory,executionSnapshot=null){
+  if(executionSnapshot!==null)validateCloseExecutionSnapshot(executionSnapshot);
   const entries=[];let total=0;
   for(const role of inventory){
     let bytesBase64=null;
@@ -770,7 +803,8 @@ export async function createLifecycleCloseArchive(roots,transactionId,names,inve
     entries.push({role,bytesBase64});
   }
   const bytes=Buffer.from(JSON.stringify({format:'stnl-close-history-v1',specRoot:roots.specRoot,executionRoot:roots.executionRoot,
-    transactionId,materialRootIdentity:roots.materialRootIdentity,names,entries})+'\n');
+    transactionId,materialRootIdentity:roots.materialRootIdentity,names,entries,
+    ...(executionSnapshot===null?{}:{executionSnapshot})})+'\n');
   if(bytes.length>MAX_CLOSE_ARCHIVE_BYTES)fail('historical archive exceeds bounded size');
   const file=closeArchivePath(roots,transactionId);await ancestry(file);
   const handle=await fs.open(file,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
