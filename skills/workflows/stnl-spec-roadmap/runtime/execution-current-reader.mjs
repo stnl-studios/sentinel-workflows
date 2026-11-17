@@ -226,7 +226,7 @@ function provenAbsent(entries,name) {
   }
   return false;
 }
-async function externalOutputContext(context,root,outputs,limits) {
+async function externalOutputContext(context,root,outputs,limits,recordsCapture=null) {
   const records=[],directories=new Map(),files=new Map();
   const walk=async relative=>{
     const absolute=path.join(context.productRoot,...relative.split('/'));
@@ -266,10 +266,11 @@ async function externalOutputContext(context,root,outputs,limits) {
       fail('EVIDENCE_STALE','output context file changed after inventory','integrity',absolute);
   }
   records.sort((a,b)=>ordinal(a.path,b.path));
+  if(recordsCapture)recordsCapture.set(root,{records,outputs:[...outputs]});
   return digest(Buffer.from('stnl-output-external-context-v1\0'+JSON.stringify(records)));
 }
 async function observeProduct(context,targets,limits) {
-  const entries=new Map(),identities=new Map(),visiting=new Set();
+  const entries=new Map(),identities=new Map(),visiting=new Set(),externalContexts=new Map();
   const root=context.productRoot;
   const control=context.logicalExecutionRoot;
   const rootIdentity=await realDirectory(root,'product root');
@@ -326,7 +327,7 @@ async function observeProduct(context,targets,limits) {
     const entry=entries.get(target.path);
     if(entry?.kind!=='directory')continue;
     const before=identities.get(target.path);
-    entry.externalContextSha256=await externalOutputContext(context,target.path,target.inventoryOutputs,limits);
+    entry.externalContextSha256=await externalOutputContext(context,target.path,target.inventoryOutputs,limits,externalContexts);
     for(const structural of entries.values())if(structural.kind==='directory'
       &&(structural.path===target.path||structural.path.startsWith(target.path+'/')
         &&target.inventoryOutputs.some(output=>output.startsWith(structural.path+'/'))))
@@ -336,7 +337,7 @@ async function observeProduct(context,targets,limits) {
   }
   if (!equal(rootIdentity,await realDirectory(root,'product root')))
     fail('EVIDENCE_STALE','product root changed during observation','integrity',root);
-  return {manifest:{format:'stnl-current-work-v1',entries:[...entries.values()].sort((a,b)=>ordinal(a.path,b.path))},identities,rootIdentity};
+  return {manifest:{format:'stnl-current-work-v1',entries:[...entries.values()].sort((a,b)=>ordinal(a.path,b.path))},identities,rootIdentity,externalContexts};
 }
 function authorityFor(snapshot,delivery) {
   const leaf=snapshot.normativeProjection.deliveries.find(item=>item.deliveryId===delivery.deliveryId);
@@ -642,6 +643,41 @@ export function currentTerminalProductBasisMatches(basis,others) {
     });
 }
 
+const contextDigest=records=>'sha256:'+createHash('sha256').update(Buffer.from(
+  'stnl-output-external-context-v1\0'+JSON.stringify([...records].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)))).digest('hex');
+
+// Pure attribution over authenticated records and a stable current inventory.
+// Fingerprints of different output projections are not comparable. Reconstruct
+// this predecessor's exact projection by undoing only proved successor edits.
+// Retain every other row: unexplained changes (including pre-admission changes)
+// then prevent the reconstructed digest from matching the historical snapshot.
+export function historicalExternalContextMatches({root,records,outputs,sealed,current,steps}) {
+  if(!Array.isArray(records)||!Array.isArray(outputs)
+    ||sealed?.kind!=='directory'||current?.kind!=='directory')return false;
+  const {externalContextSha256:oldDigest,...oldDirectory}=sealed;
+  const {externalContextSha256:newDigest,...newDirectory}=current;
+  if(typeof oldDigest!=='string'||typeof newDigest!=='string'
+    ||!isDeepStrictEqual(oldDirectory,newDirectory)||contextDigest(records)!==newDigest)return false;
+  const reverted=new Map(records.map(record=>[record.path,record]));
+  if(reverted.size!==records.length)return false;
+  let changed=false;
+  for(const step of [...steps].reverse()) {
+    if(!step)continue;
+    for(const name of step.changes) {
+      if(!name.startsWith(root+'/')||outputs.includes(name))continue;
+      const before=step.before.get(name),after=step.after.get(name);
+      if(isDeepStrictEqual(before,after))continue;
+      // Existing leaf changes only. Creation, removal, directories and missing
+      // inventory require their own structural proof, never this exception.
+      if(before?.kind!=='file'||after?.kind!=='file'
+        ||!isDeepStrictEqual(reverted.get(name),after))return false;
+      reverted.set(name,before);changed=true;
+    }
+  }
+  return changed&&contextDigest([...reverted.values()])===oldDigest;
+}
+
+
 // These predicates consume already-authenticated facts, never raw task prose.
 // A historical approval and a current byte observation answer different questions.
 export function authenticatedSliceMilestone(facts) {
@@ -745,7 +781,10 @@ export function markHistoricalSliceMilestones(items,deliveries=[],archivalIds=ne
             && [...step.changes].some(changed=>changed.startsWith(name+'/'));
         if(owned && isDeepStrictEqual(value,from))value=to;
       }
-      return isDeepStrictEqual(value,expected);
+      if(isDeepStrictEqual(value,expected))return true;
+      const captured=item.observation?.externalContexts?.get(name);
+      return Boolean(captured && historicalExternalContextMatches({root:name,...captured,
+        sealed:milestoneEntry(before,name),current:expected,steps:steps.slice(index+1)}));
     });
   }
   return items;

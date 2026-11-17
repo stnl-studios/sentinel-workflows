@@ -2558,8 +2558,8 @@ test(`Initial composer publishes verified prior PASS overlap (${scenario})`,asyn
   assert.equal(current.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
   assert.deepEqual(await inspectQualityExecution(f.specPath),current.image.inspection);
   if(scenario==='v1-overlap') {
-    // Revalidate the earlier shared proof in the legal serial handoff order.
-    await bConclude(f,'VALIDATE_SLICE');
+    // The current slice owns this overlap; never reopen the historical PASS.
+    assert.equal(current.image.inspection.normalHandoff.slice,'slice-02');
     const blocked=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',status:'NEEDS_FIX',newFindings:[{
       id:'finding-01',severity:'blocking',originAttempt:'attempt-01',problem:'The controlled second-delivery review requests a correction.',
       evidence:'Mechanical formal finding for the overlapping current slice.',impact:'The controlled AC-001 review remains open.',relatedAuthority:'AC-001; obligation-01',
@@ -2569,7 +2569,8 @@ test(`Initial composer publishes verified prior PASS overlap (${scenario})`,asyn
     const task=Buffer.from(applied.image.files.get('tasks/slice-02.md')).toString('utf8');
     assert.match(task.split('## Prior Validation Overlap\n\n')[1].split('\n## ')[0],/Slice 01 overlap:.*src\/pay\.mjs/u);
     assert.equal(applied.image.inspection.deliveries[1].auxiliaryStatus,'TESTS_PASS');
-    await bConclude(f,'VALIDATE_SLICE');
+    assert.equal(applied.image.inspection.normalHandoff.slice,'slice-02');
+    assert.deepEqual(Buffer.from(applied.image.files.get(first.evidence.path)),priorEvidence);
     const resolved=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',resolved:true});
     assert.equal(JSON.parse(await fs.readFile(resolved.dispatch.requestFile)).format,'stnl-current-validation-request-v2');
     assert.equal(resolved.image.inspection.deliveries[1].formalStatus,'PASS');
