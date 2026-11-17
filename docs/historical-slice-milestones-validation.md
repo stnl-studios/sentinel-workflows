@@ -43,3 +43,11 @@ The final CLOSE/distribution/budget/catalog group passed **77/77**. The correcte
 On `fd99eb165df59331525724bee0f7d0a66fb38048`, all `scripts/test-current-*.mjs` files ran together with Node test concurrency 4: **1204/1204 passed, zero failures, skips or cancellations** (1665.14 seconds), exit code 0. No source changed during this run. This documentation update does not change the tested runtime or tests.
 
 After the V09 correction, validation evidence passed **15/15**, operational BLOCKED retries **5/5**, and distribution/budget/catalog checks **70/70**. Independent review found no concrete issue. Earlier CLOSE/distribution/budget/catalog coverage passed **77/77**. No real Claude or Codex model sessions were run, and no global installation or main integration was performed by this task.
+
+## Current CLOSE continuation coverage
+
+An authorized CLOSE request instructs the principal skill to resume an existing operation before selecting the smallest legal `normalHandoff` (EXECUTE, APPLY_FINDINGS or VALIDATE) within approved Plan/Tasks and existing budgets. The deterministic CLOSE publisher itself does not start an agent or manufacture evidence; it publishes only authenticated COMPLETE.
+
+Three additional current Initial controller-integration tests passed, including an independent rerun (**3/3**, no skips). They explicitly drive the controllers with fixture semantic responses while real verification checks execute: absent execution/validation prevents CLOSE; the normal handoff chain reaches COMPLETE; NEEDS_FIX requires APPLY and new validation; BLOCKED prevents closing; resume/publication do not rerun captured checks, verified by a counter; archived evidence stays byte-exact. They do **not** simulate an LLM deciding what to do after the user says CLOSE.
+
+The documentation/contract update passed **263/263** focused tests; final platform contracts passed **36/36** and read-only install-plan comparison again found **14 skills / 229 resources** byte-identical. Runtime files remain byte-identical to the full 1204/1204 tested revision. The three added tests were run separately; no claim of a new combined 1207-test run is made.
