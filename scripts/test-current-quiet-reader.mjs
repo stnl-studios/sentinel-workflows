@@ -318,7 +318,7 @@ test('R02 cosmetic carriers and stale normative approval',async t=>{
       const literal={
         pristine:['MATERIALIZED_PRISTINE','EXECUTE_SLICE',0,0,0,0],
         Initial:['IMPLEMENTED_AWAITING_VALIDATION','VALIDATE_SLICE',1,0,0,0],
-        formal:['VALIDATION_BLOCKED',null,1,0,1,0],
+        formal:['COMPLETE',null,1,0,1,0],
         APPLY:['FINDINGS_CORRECTED','VALIDATE_SLICE',1,1,1,1],
       }[stage];
       assert.equal(before.state,literal[0]);assert.equal(before.normalHandoff?.operation??null,literal[1]);
@@ -422,15 +422,15 @@ test('R02 cosmetic carriers and stale normative approval',async t=>{
 });
 
 test('R03b completed A and active B with retained local proof',async t=>{
-  await t.test('both local proofs are current without global completion',async()=>using(authoredCompletedWithActiveProof,async f=>{
+  await t.test('historical local proofs cover completed and active contributions',async()=>using(authoredCompletedWithActiveProof,async f=>{
     const before=await manifest(f.project),result=await inspectCurrentExecution(f.specPath);
     assert.equal(result.completed[0].deliveryId,DELIVERY);
     assert.equal(result.completed[0].observedValidation,'current');
     assert.equal(result.deliveries[0].deliveryId,'22222222-2222-4222-8222-222222222222');
     assert.equal(result.deliveries[0].formalStatus,'PASS');
     assert.equal(result.deliveries[0].observedValidation,'current');
-    assert.notEqual(result.state,'COMPLETE');assert.equal(result.normalHandoff,null);
-    assert.equal(result.diagnostics[0].field,'terminal');
+    assert.equal(result.state,'COMPLETE');assert.equal(result.normalHandoff,null);
+    assert.deepEqual(result.diagnostics,[]);
     for(const selected of [reader,quality]) {
       const observed=await workerRun(f,{selected});assert.equal(observed.process.status,0);noAttempts(observed);
       assert.deepEqual(observed.log.result,result);
@@ -686,8 +686,8 @@ test('R06 formal v2 PASS after APPLY with local terminal null',async t=>{
       assert.equal(first.formalStatus,'PASS');assert.equal(first.observedValidation,'current');
       assert.deepEqual(first.counters,{implementationChecks:1,findingsChecks:1,validationAttempts:2,findings:1});
       assert.equal(f.postApply.bundle.validation.contract.terminal,null);
-      assert.equal(result.state,'VALIDATION_BLOCKED');assert.equal(result.normalHandoff,null);
-      assert.match(result.diagnostics[0].reason,/terminal/u);
+      assert.equal(result.state,'COMPLETE');assert.equal(result.normalHandoff,null);
+      assert.deepEqual(result.diagnostics,[]);
     }));
   await t.test('equivalent retained bundle serialization',async()=>using(producerPostApplyPass,async f=>{
     const name=`evidence/${DELIVERY}.json`,pretty=Buffer.from(JSON.stringify(f.postApply.bundle,null,2)+'\n');
@@ -1353,7 +1353,7 @@ test('R16 serial frontier and terminal absence',async t=>{
     assert.equal(stale.normalHandoff?.slice,'slice-01');assert.equal(stale.state,'EVIDENCE_STALE');
   }));
 
-  for(const presentation of ['compact','structured']) await t.test(`${presentation} verified overlap cannot hide predecessor drift`,async()=>using(
+  for(const presentation of ['compact','structured']) await t.test(`${presentation} verified successor overlap preserves historical predecessor PASS`,async()=>using(
     ()=>producerTwoFormalPass({changeSecond:true}),async f=>{
       if(presentation==='structured') {
         editSection(f,'slice-02','Prior Validation Overlap','### overlap-01\n* Paths: `../../../../src/pay.mjs`\n* Regressions: Direct pay regression.\n* Prior slice: `slice-01`\n* Affected behavior: The pay export\n  remains observable.');
@@ -1361,7 +1361,7 @@ test('R16 serial frontier and terminal absence',async t=>{
       }
       const result=await inspectCurrentExecution(f.specPath);
       assert.deepEqual(result.deliveries.map(item=>item.observedValidation),['revalidation-required','current']);
-      assert.equal(result.normalHandoff?.slice,'slice-01');assert.equal(result.state,'EVIDENCE_STALE');
+      assert.equal(result.normalHandoff,null);assert.equal(result.state,'COMPLETE');
     }));
   for(const [label,body] of [
     ['required overlap omitted','- none'],
@@ -1382,13 +1382,13 @@ test('R16 serial frontier and terminal absence',async t=>{
       assert.deepEqual(result.normalHandoff,{operation:'EXECUTE_SLICE',slice:'slice-02',
         deliveryId:'22222222-2222-4222-8222-222222222222'});
     }));
-  await t.test('two local PASS results have no terminal judgment',async()=>using(producerTwoFormalPass,async f=>{
+  await t.test('two local PASS results cover criteria without a terminal judgment',async()=>using(producerTwoFormalPass,async f=>{
     const result=await inspectCurrentExecution(f.specPath);
-    assert.equal(result.state,'VALIDATION_BLOCKED');assert.equal(result.normalHandoff,null);
+    assert.equal(result.state,'COMPLETE');assert.equal(result.normalHandoff,null);
     assert.deepEqual(result.deliveries.map(item=>[item.deliveryId,item.formalStatus,item.observedValidation]),[
       [DELIVERY,'PASS','current'],
       ['22222222-2222-4222-8222-222222222222','PASS','current']]);
-    assert.match(result.diagnostics[0].reason,/terminal/u);
+    assert.deepEqual(result.diagnostics,[]);
   }));
 });
 
@@ -1399,8 +1399,8 @@ test('R17 new processes read official image with historical canary denied',async
       const result=mode==='api'?observed.log.result:JSON.parse(observed.process.stdout);
       assert.equal(result.activationId,f.activation.activationId);assert.equal(result.sequence,9);
       assert.deepEqual(result.deliveries[0].counters,{implementationChecks:1,findingsChecks:3,validationAttempts:4,findings:1});
-      assert.equal(result.deliveries[0].observedValidation,'current');assert.equal(result.state,'VALIDATION_BLOCKED');
-      assert.equal(result.normalHandoff,null);assert.match(result.diagnostics[0].reason,/terminal/u);
+      assert.equal(result.deliveries[0].observedValidation,'current');assert.equal(result.state,'COMPLETE');
+      assert.equal(result.normalHandoff,null);assert.deepEqual(result.diagnostics,[]);
       assert.equal(observed.log.opens[path.join(f.execution,'activation.json')],2);
       assert.equal(observed.log.opens[path.join(f.project,'src/pay.mjs')],2);
     }));
@@ -1501,7 +1501,7 @@ test('R19 isolated reader closure and copy equivalence',async t=>{
   await t.test('foreign main basename does not execute the imported reader',async()=>using(authoredImage,async f=>{
     const imported=await workerRun(f,{mode:'import-only'});noAttempts(imported);
     assert.equal(imported.process.status,0,imported.process.stderr);assert.deepEqual(JSON.parse(imported.process.stdout),
-      {exports:['captureCompletedRevalidationSource','captureCurrentActiveExecution','captureCurrentExecution','currentTerminalProductBasisMatches','inspectCurrentExecution','main','observeCurrentDeliveryWork','preflightCurrentPreparationPaths','validateCurrentReviewCandidate']});
+      {exports:['authenticatedSliceMilestone','captureCompletedRevalidationSource','captureCurrentActiveExecution','captureCurrentExecution','currentTerminalProductBasisMatches','inspectCurrentExecution','main','markHistoricalSliceMilestones','observeCurrentDeliveryWork','preflightCurrentPreparationPaths','validateCurrentReviewCandidate']});
     assert.deepEqual(imported.log.opens,{});
   }));
   for(const label of ['no argument','mutating flag','unknown flag']) await t.test(`CLI usage ${label}`,async()=>using(authoredImage,async f=>{

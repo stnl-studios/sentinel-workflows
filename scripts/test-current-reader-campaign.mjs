@@ -42,14 +42,14 @@ test('C01 ownership aliases preserve literal old proofs and normal current diges
       const before=literals(f);await retireActive(f);assert.deepEqual(literals(f),before);
       const observed=await tree(f.project),result=await inspectCurrentExecution(f.specPath);
       assert.equal(result.completed.length,1);assert.equal(result.completed[0].observedValidation,'current');
-      assert.deepEqual(result.deliveries,[]);assert.notEqual(result.state,'COMPLETE');assert.equal(result.normalHandoff,null);
+      assert.deepEqual(result.deliveries,[]);assert.equal(result.state,'COMPLETE');assert.equal(result.normalHandoff,null);
       assert.deepEqual(await tree(f.project),observed);
     }));
   await t.test('shared integral owner, two completed and zero active',async()=>using(campaignImage,async f=>{
     const before=literals(f);await retireActive(f);assert.deepEqual(literals(f),before);
     const observed=await tree(f.project),result=await inspectCurrentExecution(f.specPath);
     assert.equal(result.completed.length,2);assert.ok(result.completed.every(item=>item.observedValidation==='current'));
-    assert.notEqual(result.state,'COMPLETE');assert.equal(result.normalHandoff,null);
+    assert.equal(result.state,'COMPLETE');assert.equal(result.normalHandoff,null);
     assert.deepEqual(await tree(f.project),observed);
   }));
   await t.test('ownership equivalence compares JSON meaning without rewriting literal source bytes',async()=>using(campaignImage,async f=>{
@@ -144,7 +144,8 @@ test('C02 existing native proof families compose with completed independently',a
     const before=await tree(f.project),result=await inspectCurrentExecution(f.specPath),b=result.deliveries[0];
     assert.equal(result.completed[0].observedValidation,'current');
     assert.equal(b.formalStatus,formalStatus);if(auxiliaryStatus!==null)assert.equal(b.auxiliaryStatus,auxiliaryStatus);
-    assert.notEqual(result.state,'COMPLETE');
+    if(kind==='APPLY_PASS')assert.equal(result.state,'COMPLETE');
+    else assert.notEqual(result.state,'COMPLETE');
     if(['BLOCKED','APPLY_BLOCKED','INITIAL_REFUSAL','FORMAL_REFUSAL','APPLY_REFUSAL'].includes(kind))
       assert.equal(result.state,'VALIDATION_BLOCKED');
     if(kind==='NEEDS_FIX')assert.equal(result.normalHandoff.operation,'APPLY_FINDINGS');
@@ -231,7 +232,7 @@ test('C05 completed plus two historically bound active deliveries check real pri
     assert.equal(result.completed.length,1);assert.equal(result.completed[0].observedValidation,'current');
     assert.deepEqual(result.deliveries.map(item=>[item.slice,item.formalStatus,item.observedValidation]),
       [['slice-03','PASS','revalidation-required'],['slice-02','PASS','current']]);
-    assert.equal(result.normalHandoff.slice,'slice-03');assert.equal(result.normalHandoff.operation,'VALIDATE_SLICE');
+    assert.equal(result.normalHandoff,null);assert.equal(result.state,'COMPLETE');
     assert.deepEqual(literals(f),before);assert.deepEqual(await tree(f.project),disk);
   }));
   for(const [name,declaration] of [['omitted','- none'],['false reference','- Slice 01 overlap: `../../../../verify/check.mjs`; False prior reference.']])
