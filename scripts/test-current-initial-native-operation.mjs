@@ -3036,3 +3036,87 @@ test('explicit BLOCKED retry keeps authenticated predecessor overlap but rejects
   const bundle=JSON.parse(Buffer.from(retried.image.files.get(final.evidence.path)));
   assert.ok(bundle.support.some(record=>record.kind==='validation'&&/Status: BLOCKED/u.test(record.recordUtf8)));
 });
+
+// Fresh approved SPECs only: exercise the approved controller handoff chain
+// before CLOSE. Mechanical results prove guards/resume/archive, not an LLM
+// orchestrator. No compatibility reset or manufactured historical approval.
+async function assertFreshCloseRefused(f) {
+  const before=await captureCurrentExecution(f.specPath),spec=await fs.readFile(f.specPath);
+  await assert.rejects(publishCandidate('CLOSE',path.dirname(f.specPath),null),/requires current integral COMPLETE/u);
+  const after=await captureCurrentExecution(f.specPath);
+  assert.deepEqual(after.activationBytes,before.activationBytes);
+  assert.deepEqual(after.files,before.files);
+  assert.deepEqual(await fs.readFile(f.specPath),spec);
+}
+async function closeFreshProofAndCheckArchive(f) {
+  const before=await captureCurrentExecution(f.specPath);
+  assert.equal(before.inspection.state,'COMPLETE');assert.equal(before.inspection.normalHandoff,null);
+  const result=await publishCandidate('CLOSE',path.dirname(f.specPath),null);
+  assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');
+  const archive=JSON.parse(await fs.readFile(result.historicalArchive));
+  const retained=new Map(archive.executionSnapshot.files.map(item=>[item.path,Buffer.from(item.bytesBase64,'base64')]));
+  assert.deepEqual(retained.get('activation.json'),Buffer.from(before.activationBytes));
+  for(const [name,value]of before.files)assert.deepEqual(retained.get(name),Buffer.from(value),name);
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
+}
+
+test('fresh SPEC approved EXECUTE and VALIDATE handoff chain permits CLOSE without rerunning captured checks',async t=>{
+  const f=await fixture({kind:'lifecycle',single:true,productRefs:true,closeReady:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const counterRoot=await fs.mkdtemp('/tmp/sentinel-close-check-count-');
+  t.after(()=>fs.rm(counterRoot,{recursive:true,force:true}));
+  const counter=path.join(counterRoot,'checks');
+  await fs.appendFile(path.join(f.root,'src/pay.test.mjs'),
+    '\nimport {appendFileSync as countCloseCheck} from "node:fs";countCloseCheck('+JSON.stringify(counter)+',"check\\n");\n');
+  await installCurrentInitial(f);
+  const initial=await captureCurrentExecution(f.specPath);
+  assert.equal(initial.inspection.preparationRevision,1);
+  assert.equal(initial.inspection.normalHandoff.operation,'EXECUTE_SLICE');
+  await assertFreshCloseRefused(f);
+  const executed=await bConclude(f,initial.inspection.normalHandoff.operation,{captureOnly:true,
+    slice:initial.inspection.normalHandoff.slice,
+    edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  const checks=await fs.readFile(counter);
+  assert.equal(checks.toString(),'check\n');
+  const response=await fs.readFile(path.join(executed.root,'round-1.response.json'));
+  assert.equal((await resume(executed.started.handle)).nextAction,'publish');
+  assert.equal((await resume(executed.started.handle)).nextAction,'publish');
+  assert.deepEqual(await fs.readFile(counter),checks,'resume must not repeat the captured verification');
+  await publish(executed.started.handle);
+  assert.deepEqual(await fs.readFile(counter),checks,'publishing captured proof must not rerun the checks');
+  assert.deepEqual(await fs.readFile(path.join(executed.root,'round-1.response.json')),response);
+  const implemented=await captureCurrentExecution(f.specPath);
+  assert.equal(implemented.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  await assertFreshCloseRefused(f);
+  const validated=await bConclude(f,implemented.inspection.normalHandoff.operation,{slice:implemented.inspection.normalHandoff.slice});
+  assert.equal(validated.image.inspection.state,'COMPLETE');
+  assert.equal((await fs.readFile(counter,'utf8')),'check\ncheck\n');
+  await closeFreshProofAndCheckArchive(f);
+});
+
+test('fresh SPEC CLOSE refuses NEEDS_FIX until the approved APPLY and fresh validation chain passes',async t=>{
+  const f=await fixture({kind:'lifecycle',single:true,productRefs:true,closeReady:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const needsFix=await sealedBlockingFormal(f);
+  assert.equal(needsFix.deliveries[0].formalStatus,'NEEDS_FIX');
+  assert.equal(needsFix.normalHandoff.operation,'APPLY_FINDINGS');
+  await assertFreshCloseRefused(f);
+  const applied=await bConclude(f,needsFix.normalHandoff.operation,{slice:needsFix.normalHandoff.slice,
+    edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  assert.equal(applied.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  assert.equal(applied.image.inspection.deliveries[0].formalStatus,'NEEDS_FIX','APPLY is not formal approval');
+  await assertFreshCloseRefused(f);
+  await bConclude(f,'VALIDATE_SLICE',{resolved:true});
+  await closeFreshProofAndCheckArchive(f);
+});
+
+test('fresh SPEC CLOSE preserves formal BLOCKED and offers no unrequested execution handoff',async t=>{
+  const f=await fixture({kind:'lifecycle',single:true,productRefs:true,closeReady:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  await bConclude(f,'EXECUTE_SLICE',{edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  const blocked=await bConclude(f,'VALIDATE_SLICE',{status:'BLOCKED'});
+  assert.equal(blocked.image.inspection.deliveries[0].formalStatus,'BLOCKED');
+  assert.equal(blocked.image.inspection.normalHandoff,null);
+  await assertFreshCloseRefused(f);
+});
