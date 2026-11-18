@@ -38,7 +38,9 @@ test('native slice and round suffixes are anchored, not broad prefix guessing',a
 });
 async function nativeFixture(t,name='/root/arbitrary_check'){
  const f=await fixture(t,[meta('p'),meta('c','p',name),ctx('ct'),rec('r',u(),{thread_id:'c',turn_id:'ct',root_turn_id:'pt'})]);
- const runtime=path.join(f.dir,'skills/stnl-slice-executor/runtime/execution-current-operation.mjs'),origin=path.join(f.dir,'workspace/tmp/sentinel/op/round-1.origin.json');
+ // Native fixtures model the installed Codex home, not repository skill source paths.
+ const codexHome=path.join(f.dir,'.codex');await fs.mkdir(codexHome);const sessions=path.join(codexHome,'sessions');await fs.rename(f.sessionRoot,sessions);f.sessionRoot=sessions;
+ const runtime=path.join(codexHome,'skills','stnl-slice-executor','runtime','execution-current-operation.mjs'),origin=path.join(f.dir,'workspace/tmp/sentinel/op/round-1.origin.json');
  const parentMeta=meta('p');parentMeta.payload.cwd=path.join(f.dir,'workspace');
  await fs.appendFile(path.join(f.sessionRoot,'a.jsonl'),JSON.stringify(parentMeta)+'\n');
  const event=(operation,data,id)=>({payload:{method:'item/completed',params:{threadId:'p',turnId:'pt',item:{id,type:'commandExecution',cwd:path.join(f.dir,'workspace'),command:'node '+runtime+' '+operation+' --handle handle.json'+(operation==='bind-native'?' --agent-id '+name:''),exitCode:0,aggregatedOutput:JSON.stringify(data)}}}});
