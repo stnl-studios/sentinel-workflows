@@ -36,3 +36,8 @@ test('execution and close route to exact already-installed skill entrypoints',()
   assert(p.includes('nem exija Sentinel ou SDK no package.json do produto'));assert(p.includes('Não instale dependências para descobrir o controlador'));assert(p.includes('realmente ausente ou ilegível'));assert(p.includes('Nunca repita begin para recuperar handle'));assert(p.includes('sem redirecionamento, encadeamento ou composição'));
  }
 });
+
+test('capture envelope keeps original final response string and requires real completion',()=>{
+ const p=stagePrompt({manifest,operation:'INIT',authority});
+ for(const text of ['somente após conclusão real comprovada do filho','{agentId,status:"completed",finalResponse:<STRING original>}','finalResponse é uma string','nunca um objeto JSON','Não faça JSON.parse/stringify do conteúdo da resposta','serialize apenas o envelope externo','não fabrique completion','não repita o trabalho do filho'])assert(p.includes(text),text);
+});

@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "reference-gpt-61-sol-high-v1",
+  "cli": "/opt/homebrew/bin/codex",
+  "cliVersion": "0.163.0",
+  "sentinelRevision": "2cdc33d39b801bc3e90ba09175e6a262977d3d62",
+  "roles": {
+    "coordinator": {
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "plan_approver": {
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "plan_review": {
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "execute_check": {
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "formal_validate": {
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    }
+  },
+  "repetitions": 2,
+  "concurrency": 1,
+  "limits": {
+    "campaignMs": 14400000,
+    "caseMs": 2400000,
+    "turnMs": 900000,
+    "maxTurns": 20,
+    "maxNoProgress": 2,
+    "maxReportedTokens": 12000000,
+    "maxCampaignReportedTokens": 60000000
+  },
+  "contextPolicy": "stage",
+  "stageRoles": {},
+  "caseOverrides": {}
+}
