@@ -5,13 +5,17 @@ import {fileURLToPath} from 'node:url';
 const sha=value=>'sha256:'+createHash('sha256').update(value).digest('hex');
 const nonempty=value=>typeof value==='string'&&value.length>0;
 /** Read-only byte-chain comparison. No sessions, reasoning, authentication or outside paths. */
-export async function collectCommunicationProof({events=[],workspace,sessionRoot,home}){
- const root=await fs.realpath(workspace),gaps=[],envelopes=[],native=[],captures=[],relations=new Map();
+export async function collectCommunicationProof({events=[],workspace,sessionRoot,home,tmpDir}){
+ async function canonical(file){const absolute=path.resolve(file);let cursor=path.parse(absolute).root;for(const part of absolute.slice(cursor.length).split(path.sep)){cursor=path.join(cursor,part);if((await fs.lstat(cursor)).isSymbolicLink())throw Error('symlink refused');}if(await fs.realpath(absolute)!==absolute)throw Error('noncanonical path');return absolute;}
+ const root=await canonical(workspace),gaps=[],envelopes=[],native=[],captures=[],relations=new Map();
+ let authorizedTemp=null;
+ if(tmpDir!==undefined){if(typeof tmpDir!=='string'||!path.isAbsolute(tmpDir)||tmpDir.split(path.sep).includes('..')||path.resolve(tmpDir)!==path.join(path.dirname(root),'temp'))throw Error('tmpDir must be explicit isolated case temp');authorizedTemp=await canonical(tmpDir);if(!(await fs.stat(authorizedTemp)).isDirectory())throw Error('tmpDir must be directory');}
  async function bounded(file){
-  const absolute=path.resolve(root,file),rel=path.relative(root,absolute);
-  if(!rel||rel==='..'||rel.startsWith('../')||path.isAbsolute(rel))throw Error('outside workspace');
-  let at=root;for(const part of rel.split(path.sep)){at=path.join(at,part);if((await fs.lstat(at)).isSymbolicLink())throw Error('symlink refused');}return absolute;
+  if(typeof file!=='string'||file.split(path.sep).includes('..'))throw Error('unsafe path');const absolute=path.resolve(root,file);
+  if(![root,authorizedTemp].filter(Boolean).some(base=>absolute.startsWith(base+path.sep)))throw Error('outside authorized case roots');
+  return canonical(absolute);
  }
+ const display=file=>authorizedTemp&&file.startsWith(authorizedTemp+path.sep)?{rootIdentifier:'case-temp',path:path.relative(authorizedTemp,file)}:{rootIdentifier:'workspace',path:path.relative(root,file)};
  const eventRef=(index,selected)=>({kind:'event',index,selectedSha256:sha(JSON.stringify(selected))});
  for(const [index,row]of events.entries()){
   const p=row?.payload,q=p?.params??{},item=q.item??p?.item;
@@ -40,7 +44,7 @@ export async function collectCommunicationProof({events=[],workspace,sessionRoot
   for(const line of (item.aggregatedOutput??item.aggregated_output??'').split('\n')){
    let result;try{result=JSON.parse(line);}catch{continue;}
    if(result?.phase!=='captured'||!/^sha256:[0-9a-f]{64}$/.test(result.rawResponseSha256??''))continue;
-   const selected={threadId:q.threadId??null,turnId:q.turnId??null,itemId:item.id??null,toolResultFile:path.relative(root,toolResultFile),phase:result.phase,rawResponseSha256:result.rawResponseSha256,status:result.status??null,captureClass:result.captureClass??null};
+   const selected={threadId:q.threadId??null,turnId:q.turnId??null,itemId:item.id??null,toolResultFile,...display(toolResultFile),phase:result.phase,rawResponseSha256:result.rawResponseSha256,status:result.status??null,captureClass:result.captureClass??null};
    captures.push({...selected,source:eventRef(index,selected)});
   }
  }
@@ -88,12 +92,16 @@ export async function collectCommunicationProof({events=[],workspace,sessionRoot
    try{
     await bounded(file);if((await fs.stat(file)).size>2*1024*1024){gaps.push({code:'ENVELOPE_TOO_LARGE',path:path.relative(root,file)});continue;}
     const bytes=await fs.readFile(file),v=JSON.parse(bytes);
-    if(v&&Object.keys(v).every(k=>['agentId','status','finalResponse','preVerificationContinuation'].includes(k))&&nonempty(v.agentId)&&v.status==='completed'&&typeof v.finalResponse==='string')envelopes.push({agentId:v.agentId,text:v.finalResponse,file:path.relative(root,file),fileSha256:sha(bytes)});
+    if(v&&Object.keys(v).every(k=>['agentId','status','finalResponse','preVerificationContinuation'].includes(k))&&nonempty(v.agentId)&&v.status==='completed'&&typeof v.finalResponse==='string')envelopes.push({agentId:v.agentId,text:v.finalResponse,file,...display(file),fileSha256:sha(bytes)});
    }catch{gaps.push({code:'ENVELOPE_UNREADABLE',path:path.relative(root,file)});}
   }
  }
  await walk(path.join(root,'tmp/sentinel'));
  await walk(path.join(root,'.benchmark-temp'));
+ // Only explicitly captured temp envelopes, never a recursive scan of TMPDIR.
+ for(const file of new Set(captures.map(c=>c.toolResultFile).filter(file=>authorizedTemp&&file.startsWith(authorizedTemp+path.sep)))){
+  try{await bounded(file);if((await fs.stat(file)).size>2*1024*1024){gaps.push({code:'ENVELOPE_TOO_LARGE',...display(file)});continue;}const bytes=await fs.readFile(file),v=JSON.parse(bytes);if(v&&Object.keys(v).every(k=>['agentId','status','finalResponse','preVerificationContinuation'].includes(k))&&nonempty(v.agentId)&&v.status==='completed'&&typeof v.finalResponse==='string')envelopes.push({agentId:v.agentId,text:v.finalResponse,file,...display(file),fileSha256:sha(bytes)});else gaps.push({code:'CAPTURE_ENVELOPE_INVALID',...display(file)});}catch{gaps.push({code:'ENVELOPE_UNREADABLE',...display(file)});}
+ }
  const pairs=envelopes.map(envelope=>{
   const responseSha256=sha(envelope.text),sameAgent=native.filter(n=>n.agentPath===envelope.agentId),exact=sameAgent.filter(n=>n.text===envelope.text);
   const ids=new Set(exact.map(n=>JSON.stringify([n.parentThreadId,n.threadId,n.turnId])));
@@ -102,9 +110,9 @@ export async function collectCommunicationProof({events=[],workspace,sessionRoot
   if(!sameAgent.length)issues.push('NATIVE_TASK_COMPLETE_NOT_OBSERVED');else if(!exact.length)issues.push('NATIVE_LITERAL_MISMATCH');else if(ids.size!==1)issues.push('AMBIGUOUS_NATIVE_IDENTITY');
   if(!official.length)issues.push('OFFICIAL_CAPTURE_NOT_OBSERVED');else if(official.some(c=>c.rawResponseSha256!==responseSha256))issues.push('OFFICIAL_CAPTURE_HASH_MISMATCH');else if(!exact.length)issues.push('CONTROLLER_IDENTITY_UNOBSERVED');else if(matching.length!==official.length)issues.push('CONTROLLER_IDENTITY_MISMATCH');
   const matched=ids.size===1&&matching.length>0&&matching.length===official.length;
-  return {agentId:envelope.agentId,parentEnvelope:{path:envelope.file,sha256:envelope.fileSha256},responseSha256,bytes:Buffer.byteLength(envelope.text),nativeMatches:exact.map(({text,...rest})=>rest),officialCaptures:official,status:matched?'MATCH':issues.some(s=>s.includes('MISMATCH'))?'MISMATCH':'INCOMPLETE',gaps:issues};
+  return {agentId:envelope.agentId,parentEnvelope:{rootIdentifier:envelope.rootIdentifier,path:envelope.path,sha256:envelope.fileSha256},responseSha256,bytes:Buffer.byteLength(envelope.text),nativeMatches:exact.map(({text,...rest})=>rest),officialCaptures:official,status:matched?'MATCH':issues.some(s=>s.includes('MISMATCH'))?'MISMATCH':'INCOMPLETE',gaps:issues};
  });
  if(!native.length)gaps.push({code:'NO_NATIVE_TASK_COMPLETE_OBSERVATIONS'});
  if(!pairs.length)gaps.push({code:'NO_COMPLETED_DELIVERY_ENVELOPES'});
- return {schemaVersion:1,pairs,gaps,capability:{scope:'provided sanitized events, workspace tmp/sentinel or .benchmark-temp delivery envelopes, and explicitly supplied isolated selected session records',nativeSource:'task_complete.last_agent_message with explicit child identity',officialCaptureSource:'successful public capture-native command output bound to exact tool-result file',meaning:'Observed literal byte/hash consistency, not authentication of arbitrary forged input, not Sentinel PASS.',sessionsRead,sessionRoot:sessionRoot?path.resolve(sessionRoot):null,reasoningRead:false,authRead:false}};
+ return {schemaVersion:1,pairs,gaps,capability:{scope:'provided sanitized events, workspace tmp/sentinel or .benchmark-temp delivery envelopes, and explicitly supplied isolated selected session records',nativeSource:'task_complete.last_agent_message with explicit child identity',officialCaptureSource:'successful public capture-native command output bound to exact tool-result file',meaning:'Observed literal byte/hash consistency, not authentication of arbitrary forged input, not Sentinel PASS.',authorizedTempRoot:authorizedTemp,tempEnvelopePolicy:'explicit-capture-paths-only',sessionsRead,sessionRoot:sessionRoot?path.resolve(sessionRoot):null,reasoningRead:false,authRead:false}};
 }
