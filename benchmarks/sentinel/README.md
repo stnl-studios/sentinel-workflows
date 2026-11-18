@@ -2,6 +2,8 @@
 
 Nova bancada App Server: três tarefas independentes (`rename`, `query`, `import`), cada uma iniciada de uma cópia limpa do mesmo projeto Todo. A tarefa transversal contém suas próprias slices sequenciais. Nenhuma tarefa depende do resultado de outra.
 
+Veja [validação funcional das três tarefas e limites](VALIDATION.md).
+
 ## Um comando
 
 ```sh

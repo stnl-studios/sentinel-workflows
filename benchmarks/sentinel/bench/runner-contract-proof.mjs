@@ -18,6 +18,28 @@ function reads(command){
   return m?[{file:m[3],kind:'range',start:Number(m[1]),end:Number(m[2])}]:[];
  });
 }
+function framedCopyRead(item,manifest,source,bytes){
+ if(item.exitCode!==0||typeof item.aggregatedOutput!=='string')return null;
+ const output=Buffer.from(item.aggregatedOutput),first=output.indexOf(10),second=output.indexOf(10,first+1);if(first<1||second<0)return null;
+ const directory=output.subarray(0,first).toString(),copy=path.join(directory,'contract.toml'),hash=sha256(bytes);
+ if(output.subarray(first+1,second).toString()!==hash+'  '+copy||!output.subarray(second+1).equals(bytes))return null;
+ try{
+  if(typeof manifest.tmpDir!=='string'||!path.isAbsolute(manifest.tmpDir)||directory.split('/').includes('..')||manifest.tmpDir.split('/').includes('..'))return null;
+  if(typeof manifest.workspace!=='string'||manifest.tmpDir!==path.join(path.dirname(manifest.workspace),'temp'))return null;
+  const temp=canonicalFile(manifest.tmpDir);if(directory!==path.resolve(directory)||path.dirname(directory)!==temp)return null;
+  if(canonicalFile(copy)!==copy||!fs.readFileSync(copy).equals(bytes))return null;
+  if(fs.readFileSync(canonicalFile(path.join(directory,'contract.sha256')),'utf8')!==hash+'  '+copy+'\n')return null;
+ }catch{return null;}
+ let cmd=item.command;if(typeof cmd!=='string'||/[\r\n]/.test(cmd))return null;
+ const shell=/^\/bin\/(?:zsh|bash|sh) -lc (['"])(.*)\1$/.exec(cmd);if(shell)cmd=shell[2];
+ const parts=cmd.split(';').map(x=>x.trim()),firstPart=parts[0]?.match(/^p=\$\(mktemp -d "\$TMPDIR\/([A-Za-z0-9_-]+)\.XXXXXX"\)$/);
+ // Closed templates only. The second printf spelling is the observed transport
+ // rendering of the same directory-print step; no arbitrary shell is evaluated.
+ const printfForms=[`printf '%s\\n' "$p"`,"printf '\"'%s\\\\n' \\\"\"'$p\""];
+ const sourceLiteral=/^\/[^\s'"$`;|&<>\\]+$/.test(source)?source:null;
+ const commandProven=parts.length===5&&firstPart&&new RegExp('^'+firstPart[1]+'\\.[A-Za-z0-9]{6}$').test(path.basename(directory))&&sourceLiteral&&parts[1]==='cat '+source+' > "$p/contract.toml"'&&parts[2]==='shasum -a 256 "$p/contract.toml" > "$p/contract.sha256"'&&printfForms.includes(parts[3])&&parts[4]==='cat "$p/contract.sha256" "$p/contract.toml"';
+ return{commandProven:Boolean(commandProven),copyPath:copy,copySha256:hash,prefixBytes:second+1,outputBytes:output.length,byteProof:'framed-full-output-and-confined-copy',matchesSourceBytes:true,matchesSourcePath:Boolean(commandProven)};
+}
 function selectedRows(events){if(Array.isArray(events))return events;if(typeof events==='string')return fs.readFileSync(events,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);return[];}
 /** Public completed command evidence only. No reasoning/auth/session text is read. */
 export function collectRunnerContractProof({manifest,usage,events}={}){
@@ -39,6 +61,8 @@ export function collectRunnerContractProof({manifest,usage,events}={}){
    const row=rows[index],p=row.payload?.params,item=p?.item;
    if(row.payload?.method!=='item/completed'||p.threadId!==child.threadId||item?.type!=='commandExecution'||seen.has(item.id))continue;
    seen.add(item.id);
+   const framed=framedCopyRead(item,manifest,source,bytes);
+   if(framed){const proof={eventLine:index+1,itemId:item.id,threadId:p.threadId,turnId:p.turnId??null,path:source,exitCode:item.exitCode,outputSha256:sha256(item.aggregatedOutput),...framed};if(framed.commandProven){result.evidence.push(proof);if(result.status!=='MISMATCH')result.status='MATCH';continue;}result.gaps.push({code:'FRAMED_CONTENT_ONLY_ORIGIN_UNPROVEN',...proof});}
    const candidates=reads(item.command);if(!candidates.length)continue;
    for(const read of candidates){
     const evidence={eventLine:index+1,itemId:item.id,threadId:p.threadId,turnId:p.turnId??null,path:read.file,readKind:read.kind,exitCode:item.exitCode??null,outputSha256:sha256(String(item.aggregatedOutput??''))};
