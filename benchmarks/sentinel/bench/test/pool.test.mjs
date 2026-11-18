@@ -1,0 +1,3 @@
+import test from'node:test';import assert from'node:assert/strict';import{runPool}from'../pool.mjs';
+test('bounded concurrency isolates failures',async()=>{let active=0,max=0;const r=await runPool([1,2,3,4],2,async id=>{active++;max=Math.max(max,active);await new Promise(r=>setTimeout(r,5));active--;if(id===2)throw Error('broken');return{id,status:'PASS'};});assert.equal(max,2);assert.equal(r.results.length,4);assert.equal(r.results.filter(x=>x.status==='HARNESS_FAILED').length,1);});
+test('stop leaves planned cells visible',async()=>{let count=0;const r=await runPool([1,2,3],1,async id=>{count++;return{id};},{admit:()=>count<1});assert.equal(r.started,1);assert.equal(r.notStarted,2);assert.equal(r.stopped,true);});

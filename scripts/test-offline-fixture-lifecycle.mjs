@@ -6,14 +6,13 @@ import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { allocateOfflineFixture, finishOfflineFixture, offlineSourceFilter } from './fixtures/offline-checkout.mjs';
-import { copySnapshotDependencies } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 import { assertOfflineSdk, describeOfflineSdk } from '../agents/codex/runtime/offline-provider-context.mjs';
 import { persistAllocation } from '../skills/workflows/stnl-execution-planner/runtime/execution-publication.mjs';
 
 test('source copy excludes every node_modules subtree and measurements', () => {
   assert.equal(offlineSourceFilter('/project/agents/codex/node_modules'), false);
   assert.equal(offlineSourceFilter('/project/agents/codex/node_modules/sdk/file.mjs'), false);
-  assert.equal(offlineSourceFilter('/project/benchmarks/sentinel-todo/measurements/latest.json'), false);
+  assert.equal(offlineSourceFilter('/project/benchmarks/legacy/sentinel-todo/measurements/latest.json'), false);
   assert.equal(offlineSourceFilter('/project/agents/codex/runtime/native-provider.mjs'), true);
 });
 
@@ -24,10 +23,7 @@ test('offline snapshot uses the pinned real SDK read-only with identity and no d
   const snapshot = path.join(fixture.root, 'benchmark-temp/run-tiny/snapshot');
   const sdk = await describeOfflineSdk(source, fixture.root);
   const before = await Promise.all(sdk.files.map(file => fs.stat(path.join(source, file.path))));
-  await assert.rejects(copySnapshotDependencies(snapshot, { dependencySource: source }), /restricted to OFFLINE_TEST_ONLY/u);
-  await assert.rejects(copySnapshotDependencies(snapshot, { offlineSdk: sdk }), /restricted to OFFLINE_TEST_ONLY/u);
-  assert.deepEqual(await copySnapshotDependencies(snapshot, { offlineSdk: sdk, executionMode: 'OFFLINE_TEST_ONLY' }),
-    { sdkVersion: '0.163.0', cliVersion: '0.163.0', externalSdk: sdk });
+  await assertOfflineSdk(sdk, fixture.root);
   await assert.rejects(fs.lstat(snapshot), { code: 'ENOENT' });
   for (const mutate of [value => { value.sdkVersion = '0.0.0'; },
     value => { value.files[0].sha256 = 'sha256:' + '0'.repeat(64); },
@@ -40,31 +36,6 @@ test('offline snapshot uses the pinned real SDK read-only with identity and no d
   assert.deepEqual(await describeOfflineSdk(source, fixture.root), sdk);
   const after = await Promise.all(sdk.files.map(file => fs.stat(path.join(source, file.path))));
   assert.deepEqual(after.map(stat => [stat.ino, stat.mode, stat.mtimeMs]), before.map(stat => [stat.ino, stat.mode, stat.mtimeMs]));
-});
-
-test('normal dependency snapshot reaches the copy branch and rejects either obsolete package version before copying', async t => {
-  const fixture = await allocateOfflineFixture();
-  t.after(() => finishOfflineFixture(fixture));
-  const moduleFile = path.join(fixture.root, 'benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs');
-  await fs.mkdir(path.dirname(moduleFile), { recursive: true });
-  await fs.copyFile(path.resolve(import.meta.dirname, '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs'), moduleFile);
-  const dependencies = path.join(fixture.root, 'agents/codex/node_modules');
-  for (const name of ['codex-sdk', 'codex']) {
-    await fs.mkdir(path.join(dependencies, '@openai', name), { recursive: true });
-    await fs.writeFile(path.join(dependencies, '@openai', name, 'package.json'), JSON.stringify({ name: `@openai/${name}`, version: '0.163.0' }));
-  }
-  const { copySnapshotDependencies: copy } = await import(pathToFileURL(moduleFile));
-  const destination = path.join(fixture.root, 'copied-snapshot');
-  assert.deepEqual(await copy(destination), { sdkVersion: '0.163.0', cliVersion: '0.163.0' });
-  for (const name of ['codex-sdk', 'codex']) {
-    const source = path.join(dependencies, '@openai', name, 'package.json');
-    assert.deepEqual(await fs.readFile(path.join(destination, 'agents/codex/node_modules/@openai', name, 'package.json')), await fs.readFile(source));
-    await fs.writeFile(source, JSON.stringify({ name: `@openai/${name}`, version: '0.160.0' }));
-    const rejected = path.join(fixture.root, `rejected-${name}`);
-    await assert.rejects(copy(rejected), /version differs/u);
-    await assert.rejects(fs.lstat(rejected), { code: 'ENOENT' });
-    await fs.writeFile(source, JSON.stringify({ name: `@openai/${name}`, version: '0.163.0' }));
-  }
 });
 
 test('closed owned fixture preserves hashed evidence and drops dependencies and checkout after use', async t => {

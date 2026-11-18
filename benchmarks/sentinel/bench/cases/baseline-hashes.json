@@ -1,0 +1,5 @@
+{
+  "cli.test.mjs": "bfc61abc435d34404aa45d407ed9e608faa988171777218ef1d97d780ee6556e",
+  "todo-service.test.mjs": "e0f523649c452d31ed987d1de813cba7c8be7372a72ff9f7e9bcb09f04bcf12b",
+  "todo-store.test.mjs": "cbf697c5a44f461dad35f3596311b1bec393b4e64371109f62250a2079e9bc41"
+}

@@ -5,11 +5,15 @@
     "test": "node scripts/run-tests.mjs",
     "test:runtime-context-budget": "node scripts/test-runtime-context-budget.mjs",
     "sentinel:install": "node scripts/sentinel-install.mjs",
-    "benchmark": "node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs --functional",
-    "benchmark:campaign": "node benchmarks/sentinel-todo/runtime/benchmark-campaign.mjs",
-    "benchmark:verify": "node benchmarks/sentinel-todo/runtime/benchmark.mjs verify",
-    "benchmark:status": "node benchmarks/sentinel-todo/runtime/benchmark-manager.mjs status",
-    "verify:sqlserver-native": "node scripts/verify-native-sqlserver.mjs"
+    "verify:sqlserver-native": "node scripts/verify-native-sqlserver.mjs",
+    "benchmark": "node scripts/run-benchmark.mjs run",
+    "benchmark:test": "node scripts/run-benchmark.mjs test",
+    "benchmark:profile": "node scripts/run-benchmark.mjs validate-profile",
+    "benchmark:status": "node scripts/run-benchmark.mjs status",
+    "benchmark:report": "node scripts/run-benchmark.mjs report",
+    "benchmark:resume": "node scripts/run-benchmark.mjs resume",
+    "benchmark:compare": "node scripts/run-benchmark.mjs compare",
+    "benchmark:qualify": "node scripts/run-benchmark.mjs qualify"
   },
   "devDependencies": {
     "ajv": "https://registry.npmjs.org/ajv/-/ajv-8.17.1.tgz"

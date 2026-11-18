@@ -1,0 +1,37 @@
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';
+import {validateComparison,buildComparisonReport,resolveEffectiveComparisonConfig} from '../comparison.mjs';
+const profile=()=>JSON.parse(fs.readFileSync(new URL('../profiles/default.json',import.meta.url)));
+function campaign(){const p=profile();p.repetitions=1;return {profile:p,identity:{engine:'e',fixture:'f',scenarioOracle:'o',cliVersion:p.cliVersion,contextPolicy:'stage',adapterProtocol:'a',source:'s',sentinelRevision:p.sentinelRevision},caseIds:['rename','query','import'],repetitions:1,results:['rename','query','import'].map(caseId=>({caseId,repetition:1,status:'FAIL',measurement:'diagnostic',harnessValid:true,usage:{configuration:[{threadId:caseId,role:'coordinator',turns:[{turnId:'t',actual:{...p.roles.coordinator,sandbox:'workspace-write',approval:'never',network:false}}]}]}})),cycleReports:['rename','query','import'].map(caseId=>({caseId,repetition:1,report:{cycles:[{caseId,stage:'PLAN',role:'coordinator',threadId:caseId,turnId:'t',durationMs:5}]}}))};}
+const setup=()=>({contract:{kind:'sentinel-evolution'},baseline:campaign(),candidate:campaign()});
+const stage=()=>({kind:'stage-model-effort',target:{caseIds:['rename'],stage:'EXECUTE_SLICE',actor:'coordinator',vary:['effort']}});
+test('source evolution keeps valid failures comparable without promoting diagnostics',()=>{const a=setup();a.candidate.identity.source='new';a.candidate.identity.sentinelRevision='new';a.candidate.profile.sentinelRevision='new';const r=buildComparisonReport(a);assert.equal(r.status,'COMPARABLE');assert.equal(r.pairs[0].candidate.measurement,'diagnostic');assert.equal(r.pairs[0].metrics.tokens.totalTokens.delta,null);});
+test('aliases and profile IDs without effective effects do not matter',()=>{const a=setup();a.candidate.profile.id='alias';a.candidate.profile.roles.alias={...a.candidate.profile.roles.coordinator};a.candidate.profile.stageRoles={INIT:'alias'};assert.equal(validateComparison(a).status,'COMPARABLE');});
+test('selected case and stage override permitted',()=>{const a=setup();a.contract=stage();a.candidate.profile.caseOverrides={rename:{roles:{executor:{model:'gpt-6.1-sol',effort:'low'}},stageRoles:{EXECUTE_SLICE:'executor'}}};assert.equal(validateComparison(a).status,'COMPARABLE');a.candidate.profile.caseOverrides.rename.stageRoles.APPLY_FINDINGS='executor';assert.equal(validateComparison(a).status,'NOT_COMPARABLE');});
+test('child shared EXECUTE/APPLY change cannot claim one stage',()=>{const a=setup();a.contract={kind:'stage-model-effort',target:{caseIds:['rename'],stage:'EXECUTE_SLICE',actor:'native-child',role:'execute_check',vary:['effort']}};a.candidate.profile.caseOverrides={rename:{roles:{execute_check:{model:'gpt-6-luna',effort:'low'}}}};assert.equal(validateComparison(a).status,'NOT_COMPARABLE');});
+test('fixed controls, source and undeclared factors rejected',()=>{for(const change of [a=>a.candidate.identity.engine='x',a=>a.candidate.profile.limits.maxTurns++,a=>a.candidate.profile.concurrency++,a=>a.candidate.identity.source='x']){const a=setup();a.contract=stage();change(a);assert.equal(validateComparison(a).status,'NOT_COMPARABLE');}});
+test('missing pairs incomplete, duplicates and changed pairing invalid',()=>{const a=setup();a.candidate.results.pop();assert.equal(validateComparison(a).status,'INCOMPLETE');a.candidate.results.push(a.candidate.results[0]);assert.equal(validateComparison(a).status,'NOT_COMPARABLE');const b=setup();b.candidate.caseIds=['rename'];assert.equal(validateComparison(b).status,'NOT_COMPARABLE');});
+test('provider evidence binds exact IDs and actual fields, not MATCH label',()=>{const a=setup();a.candidate.results[0].usage.configuration[0].turns[0].turnId='wrong';assert.equal(validateComparison(a).status,'INCOMPLETE');const b=setup();b.candidate.results[0].usage.configuration[0].status='MATCH';b.candidate.results[0].usage.configuration[0].turns[0].actual.effort='low';assert.equal(validateComparison(b).status,'NOT_COMPARABLE');});
+test('missing cycle evidence is incomplete and unknown tokens never zero',()=>{const a=setup();delete a.candidate.cycleReports;const r=buildComparisonReport(a);assert.equal(r.status,'INCOMPLETE');assert.equal(r.pairs[0].metrics.tokens.totalTokens.delta,null);assert.equal(r.pairs[0].metrics.durationMs.delta,null);});
+test('observed partial values remain partial with descriptive difference only',()=>{const a=setup();a.baseline.results[0].tokenMetrics={totalTokens:{value:10,complete:false}};a.candidate.results[0].tokenMetrics={totalTokens:{value:15,complete:true}};const r=buildComparisonReport(a);assert.equal(r.pairs[0].metrics.tokens.totalTokens.delta,5);assert.equal(r.pairs[0].metrics.tokens.totalTokens.complete,false);assert.equal(r.cases.length,3);});
+test('resolver pure and heterogeneous cases allowed without comparison enforcement',()=>{const p=profile();p.caseOverrides={query:{roles:{coordinator:{model:'gpt-6-luna',effort:'medium'}}}};const before=structuredClone(p),r=resolveEffectiveComparisonConfig(p);assert.deepEqual(p,before);assert.equal(r.bindings.find(b=>b.caseId==='query'&&b.actor==='coordinator').model,'gpt-6-luna');});
+test('real APPROVE_PLAN shape binds independent approver by exact provider IDs',()=>{
+ const a=setup();a.contract={kind:'stage-model-effort',target:{caseIds:['rename'],stage:'APPROVE_PLAN',actor:'independent-approver',role:'plan_approver',vary:['effort']}};
+ a.candidate.profile.caseOverrides={rename:{roles:{plan_approver:{model:'gpt-6.1-sol',effort:'medium'}}}};
+ for(const [label,c] of [['baseline',a.baseline],['candidate',a.candidate]]){
+  c.cycleReports[0].report.cycles.push({caseId:'rename',stage:'APPROVE_PLAN',role:'plan_approver',threadId:'review-thread',turnId:'review-turn',status:'completed',durationMs:8});
+  c.results[0].usage.configuration.push({threadId:'review-thread',role:'plan_approver',status:'MATCH',turns:[{turnId:'review-turn',status:'MATCH',actual:{model:'gpt-6.1-sol',effort:label==='baseline'?'high':'medium',sandbox:'read-only',approval:'never',network:false}}]});
+ }
+ assert.equal(validateComparison(a).status,'COMPARABLE');
+ const bindings=resolveEffectiveComparisonConfig(a.candidate.profile).bindings;
+ assert.equal(bindings.some(b=>b.stage==='APPROVE_PLAN'&&b.actor==='coordinator'),false);
+ a.candidate.results[0].usage.configuration.at(-1).turns[0].turnId='unrelated';
+ assert.equal(validateComparison(a).status,'INCOMPLETE');
+ assert(validateComparison(a).gaps.some(g=>g.startsWith('PROVIDER_CONFIG_MISSING_OR_AMBIGUOUS')));
+});
+test('APPROVE_PLAN coordinator target cannot select nonexistent dispatch',()=>{
+ const a=setup();a.contract={kind:'stage-model-effort',target:{caseIds:['rename'],stage:'APPROVE_PLAN',actor:'coordinator',vary:['model']}};
+ assert.equal(validateComparison(a).status,'NOT_COMPARABLE');assert(validateComparison(a).reasons.includes('TARGET_BINDING_NOT_FOUND'));
+});
+test('unverified recovery is explicit incomplete and never overwrites original observations',()=>{
+ for(const cell of ['rename-1','rename/1']){const a=setup();a.candidate.recoveries=[{cell,result:{status:'PASS',closed:true,tokenMetrics:{totalTokens:{value:0,complete:true}}}}];const r=buildComparisonReport(a);assert.equal(r.status,'INCOMPLETE');assert(r.gaps.includes('UNVERIFIED_RECOVERIES_PRESENT:candidate'));assert.equal(r.pairs[0].candidate.status,'FAIL');assert.equal(r.pairs[0].metrics.tokens.totalTokens.candidate.value,null);}
+});

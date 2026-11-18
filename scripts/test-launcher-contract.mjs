@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { renderLauncher } from '../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs';
+
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const CANONICAL = path.join(ROOT, 'templates', 'prompts');
@@ -55,14 +55,3 @@ for (const [label, name, transform] of [
     assert.match(result.stderr, /CONTRACT_ERROR\[L004_INPUTS\]|CONTRACT_ERROR\[L018_PLATFORM_EQUIVALENCE\]/u);
   });
 }
-
-test('rendered benchmark input is byte-identical to the versioned template substitution', async () => {
-  const template = await fs.readFile(path.join(CANONICAL, 'slice-execute-codex.md'), 'utf8');
-  const spec = '/workspace/specs/feature';
-  const expected = `Use \`stnl-slice-executor\`.\nOPERATION=EXECUTE_SLICE\nSPEC_PATH=${spec}\nSLICE=2\n\nContexto adicional (opcional):\n`;
-  assert.equal(renderLauncher(template, { SPEC_PATH: spec, SLICE: '2' }), expected);
-  assert.throws(() => renderLauncher(template, { SPEC_PATH: spec }), /SLICE/);
-  assert.throws(() => renderLauncher(template, { SPEC_PATH: spec, SLICE: '2\nOPERATION=OTHER' }), /malformed/);
-  const literal = renderLauncher(template, { SPEC_PATH: '/tmp/$(echo harmless)', SLICE: '2' });
-  assert.ok(literal.includes('/tmp/$(echo harmless)'));
-});

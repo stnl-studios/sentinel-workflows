@@ -4,8 +4,8 @@ Este backlog resume acompanhamentos e direções futuras do produto. Cada item e
 
 ## Acompanhamentos
 
-- **Uso nativo no Claude Code:** verificar o pacote instalado em uma sessão real, registrar incompatibilidades observadas e corrigir apenas defeitos reproduzíveis. A distribuição e seus contratos já têm cobertura offline; isso não substitui a verificação no cliente.
-- **Medição do benchmark:** a campanha funcional A/B/C passou, mas os dados de consumo e a cobertura de alguns turnos e auxiliares estão incompletos. Completar a coleta antes de fazer comparações ou alegações de custo, tokens ou desempenho.
+- **Claude Code:** preservar paridade dos arquivos e contratos por verificações offline. O uso real no Claude corporativo é manual pelo usuário quando houver uma tarefa de trabalho; não iniciar piloto automático nem consumir tokens corporativos.
+- **Bancada App Server:** implementação nova em branch de trabalho, com diagnóstico completo e gates de qualificação ainda explícitos. Resultados A/B/C anteriores foram preservados como legado, não como baseline da bancada nova. Consultar `benchmarks/sentinel/bench/READINESS.md` antes de alegações de custo, desempenho ou prontidão.
 - **Revisão de utilidade da suíte:** avaliar redundância, custo e valor de detecção de regressões dos testes existentes antes de propor qualquer remoção ou ampliação.
 
 Esses acompanhamentos não bloqueiam o uso nem a entrega atual do Sentinel. A medição incompleta não deve ser tratada como zero ou como resultado qualificado.
@@ -18,4 +18,4 @@ Esses acompanhamentos não bloqueiam o uso nem a entrega atual do Sentinel. A me
 - Considerar uma orquestração mais ampla após validar a necessidade e os limites do produto.
 - Planejar uma plataforma somente depois de definir os requisitos de operação e escala.
 
-Não há outra entrega de produto ativa registrada neste backlog.
+A reescrita da bancada App Server está em validação na branch de trabalho, sem integração em main. O histórico A/B/C anterior é legado; não representa medições oficiais da bancada nova. Consulte `benchmarks/sentinel/bench/READINESS.md` para os gates ainda pendentes.

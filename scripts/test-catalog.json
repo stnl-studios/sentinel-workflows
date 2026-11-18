@@ -1,18 +1,9 @@
 {
   "format": "sentinel-test-catalog-v1",
   "files": [
-    "benchmarks/sentinel-todo/seed/test/cli.test.mjs",
-    "benchmarks/sentinel-todo/seed/test/todo-service.test.mjs",
-    "benchmarks/sentinel-todo/seed/test/todo-store.test.mjs",
+    "benchmarks/sentinel/launcher.test.mjs",
     "scripts/test-app-server-transport.mjs",
-    "scripts/test-benchmark-acceptance-results.mjs",
-    "scripts/test-benchmark-campaign.mjs",
-    "scripts/test-benchmark-contract.mjs",
-    "scripts/test-benchmark-environment.mjs",
-    "scripts/test-benchmark-manager.mjs",
-    "scripts/test-benchmark-measurement.mjs",
-    "scripts/test-benchmark-product-checks.mjs",
-    "scripts/test-benchmark-ui.mjs",
+    "scripts/test-benchmark-v2.mjs",
     "scripts/test-codex-runner-adapter.mjs",
     "scripts/test-command-environment.mjs",
     "scripts/test-current-check-representation.mjs",
@@ -85,7 +76,6 @@
     "scripts/test-lifecycle-terminal-retirement.mjs",
     "scripts/test-lifecycle-validator-adversarial.mjs",
     "scripts/test-native-auxiliary-policy.mjs",
-    "scripts/test-native-benchmark-integration.mjs",
     "scripts/test-native-plan-handoff.mjs",
     "scripts/test-native-terminal-evidence.mjs",
     "scripts/test-offline-fixture-lifecycle.mjs",
@@ -94,6 +84,7 @@
     "scripts/test-python-sql-native-replay.mjs",
     "scripts/test-repository-contract.mjs",
     "scripts/test-runbook-completed.mjs",
+    "scripts/test-runbook-presentation.mjs",
     "scripts/test-runner-command-events.mjs",
     "scripts/test-runner-protocol-rejection.mjs",
     "scripts/test-runtime-context-budget.mjs",
@@ -130,12 +121,7 @@
     "skills/workflows/stnl-spec-test-runbook/runtime/test/render.test.mjs",
     "skills/workflows/stnl-spec-test-runbook/runtime/test/security.test.mjs"
   ],
-  "excluded": [
-    {
-      "file": "scripts/fixtures/prepared-offline-case.test.mjs",
-      "reason": "Prepared benchmark fixture copied into a generated case checkout; its relative ../src import is intentionally unresolved in the source repository. It is not a runnable repository test entry point."
-    }
-  ],
+  "excluded": [],
   "delegations": [
     {
       "file": "scripts/test-launcher-contract.sh",

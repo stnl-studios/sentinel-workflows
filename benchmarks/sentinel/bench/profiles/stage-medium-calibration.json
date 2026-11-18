@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "id": "app-server-0163-stage-medium-calibration",
+  "cli": "/opt/homebrew/bin/codex",
+  "cliVersion": "0.163.0",
+  "sentinelRevision": "2cdc33d39b801bc3e90ba09175e6a262977d3d62",
+  "roles": {
+    "coordinator": {
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "plan_approver": {
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "plan_review": {
+      "model": "gpt-6.1-sol",
+      "effort": "high"
+    },
+    "execute_check": {
+      "model": "gpt-6-luna",
+      "effort": "medium"
+    },
+    "formal_validate": {
+      "model": "gpt-6-luna",
+      "effort": "medium"
+    },
+    "coordinator_routine": {
+      "model": "gpt-6.1-sol",
+      "effort": "medium"
+    }
+  },
+  "repetitions": 2,
+  "concurrency": 1,
+  "limits": {
+    "campaignMs": 14400000,
+    "caseMs": 2400000,
+    "turnMs": 900000,
+    "maxTurns": 20,
+    "maxNoProgress": 2,
+    "maxReportedTokens": 12000000,
+    "maxCampaignReportedTokens": 60000000
+  },
+  "contextPolicy": "stage",
+  "stageRoles": {
+    "EXECUTE_SLICE": "coordinator_routine",
+    "APPLY_FINDINGS": "coordinator_routine",
+    "VALIDATE_SLICE": "coordinator_routine",
+    "CLOSE": "coordinator_routine"
+  }
+}

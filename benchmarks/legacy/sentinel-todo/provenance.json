@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "2cdc33d39b801bc3e90ba09175e6a262977d3d62",
+  "oldBranchCommit": "0626cea0699a17613d09ac1552fff57684cc5554",
+  "purpose": "Historical results and context only; not current benchmark qualification",
+  "files": [
+    {
+      "originalPath": "benchmarks/sentinel-todo/measurements/run-20260930151848-f90e1696.json",
+      "path": "benchmarks/legacy/sentinel-todo/measurements/run-20260930151848-f90e1696.json",
+      "size": 13873,
+      "sha256": "8d5cace72cf148d0e6a2e3c1f387147cdd9a3fef832237a000bcf4a15861bc4b"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/measurements/run-20261006173440-90810075.json",
+      "path": "benchmarks/legacy/sentinel-todo/measurements/run-20261006173440-90810075.json",
+      "size": 14893,
+      "sha256": "8b1c4d5f3688aceac232dc57c287a9bf6d97df6c97cd5dec1911efeb18e39ac6"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/measurements/latest.json",
+      "path": "benchmarks/legacy/sentinel-todo/measurements/latest.json",
+      "size": 14893,
+      "sha256": "8b1c4d5f3688aceac232dc57c287a9bf6d97df6c97cd5dec1911efeb18e39ac6"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/measurements/latest.md",
+      "path": "benchmarks/legacy/sentinel-todo/measurements/latest.md",
+      "size": 3381,
+      "sha256": "0f8d77dfc041e56025da401e55bde2d6acf586eceaf64117ab7d60ceb62d8c8a"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/measurements/run-20260930130114-e85e1d4f.json",
+      "path": "benchmarks/legacy/sentinel-todo/measurements/run-20260930130114-e85e1d4f.json",
+      "size": 14849,
+      "sha256": "a77e7906189c453c16da92ae3aad1d6b6f1a54c7556c344ec88189796c10ff69"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/measurements/run-20260930173938-ca7e2ae2.json",
+      "path": "benchmarks/legacy/sentinel-todo/measurements/run-20260930173938-ca7e2ae2.json",
+      "size": 9323,
+      "sha256": "0044d217930fd42b79c32dc18f46e6b43f416441999f19bb8fa6fcc325d3c4bb"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/measurements/run-20260930004635-bc76d6a3.json",
+      "path": "benchmarks/legacy/sentinel-todo/measurements/run-20260930004635-bc76d6a3.json",
+      "size": 15996,
+      "sha256": "24d980661fc5d3bc89950b87b846a50d1cba1f5f0dd163b927a441ffdc11fdcc"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/measurements/run-20260930183513-d0009216.json",
+      "path": "benchmarks/legacy/sentinel-todo/measurements/run-20260930183513-d0009216.json",
+      "size": 16514,
+      "sha256": "fe8a95c9dae77ebab8e42de9c7914400fdbef33a052627bf79557aff4d88d148"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/measurements/run-20260930112331-0092c466.json",
+      "path": "benchmarks/legacy/sentinel-todo/measurements/run-20260930112331-0092c466.json",
+      "size": 9937,
+      "sha256": "1bed5c9f849b61faac729a07d9818c39056c604f1fe4b0bb74172a78541be32c"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/measurements/run-20260929183640-06ab8a3d.json",
+      "path": "benchmarks/legacy/sentinel-todo/measurements/run-20260929183640-06ab8a3d.json",
+      "size": 9086,
+      "sha256": "9aadbcb60c96f03be659b6c25e3de58a97480a58f3d1816011bd50d8dd75f44c"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/measurements/run-20261006173440-90810075-notes.md",
+      "path": "benchmarks/legacy/sentinel-todo/measurements/run-20261006173440-90810075-notes.md",
+      "size": 3857,
+      "sha256": "847b784e5f3b88ecf1ae978d782d219d9064c943c21d82c0f80bebdbc77643c5"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/baselines/baseline-v1.json",
+      "path": "benchmarks/legacy/sentinel-todo/baselines/baseline-v1.json",
+      "size": 14544,
+      "sha256": "4944cc4b20f7076d9305d63db2bf39f45485e31fb3d789bc47e257d7f880bb6e"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/qualification/sandbox-probe-v1.md",
+      "path": "benchmarks/legacy/sentinel-todo/qualification/sandbox-probe-v1.md",
+      "size": 1928,
+      "sha256": "39f762e7fbce171c22f435b968d2d7a40a91466ea6fb62833579d3a233a4a8e9"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/benchmark.json",
+      "path": "benchmarks/legacy/sentinel-todo/benchmark.json",
+      "size": 3922,
+      "sha256": "fa65055751983e2f4e78f68177643b95191fdbdc3ede1863152bde959a92ea9f"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/README.md",
+      "path": "benchmarks/legacy/sentinel-todo/README.md",
+      "size": 4407,
+      "sha256": "24652022e5dab645cc3521ea8630ac7fddf53fcec58249610ab469542cb4e009"
+    },
+    {
+      "originalPath": "benchmarks/sentinel-todo/INTERFACES.md",
+      "path": "benchmarks/legacy/sentinel-todo/INTERFACES.md",
+      "size": 4698,
+      "sha256": "a4694a98e2ee89363c3553d7b28c8a4d042b936e8669282ff4746ee7d4e2c517"
+    }
+  ]
+}
