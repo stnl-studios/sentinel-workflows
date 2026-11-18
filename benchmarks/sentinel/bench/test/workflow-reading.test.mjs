@@ -22,3 +22,8 @@ test('native identity operations preserve transport stdout and forbid evidentiar
  const p=stagePrompt({manifest,operation:'INIT',authority});
  for(const text of ['Para reserve-dispatch e bind-native','chamada canônica direta de Node','argumentos literais e stdout disponível no transporte','sem redirecionamento, encadeamento ou composição','não dispensa quoting seguro quando necessário','Não repita operações já concluídas só para coletar logs','se a saída oficial faltar, preserve o estado e pare bloqueado'])assert(p.includes(text),text);
 });
+
+test('begin retains original receipt and handle without replay or renewed budget',()=>{
+ const p=stagePrompt({manifest,operation:'INIT',authority});
+ for(const text of ['arquivo privado novo e exclusivo sob o TMPDIR autorizado','stdout original integral','sem sobrescrever outro recibo','readback/parse JSON','antes de qualquer próxima operação Sentinel','recibo original integral foi observado mas ainda não salvo','use somente o handle real com resume oficial','Nunca repita begin para recuperar handle','nem reconstrua recibo por inferência','Saída ausente, truncada, conflitante','não renovam prazo, orçamento ou tentativa','envelope {handle,...}','preserve esse stdout bruto integral','exatamente o campo handle extraído por parse','outro arquivo privado novo e exclusivo para --handle, não o envelope inteiro','sem inferir, acrescentar ou alterar campos','não autoriza redirecionar reserve-dispatch/bind-native','sem redirecionamento, encadeamento ou composição','Node como último comando da shell'])assert(p.includes(text),text);
+});
