@@ -35,3 +35,5 @@ test('APPROVE_PLAN coordinator target cannot select nonexistent dispatch',()=>{
 test('unverified recovery is explicit incomplete and never overwrites original observations',()=>{
  for(const cell of ['rename-1','rename/1']){const a=setup();a.candidate.recoveries=[{cell,result:{status:'PASS',closed:true,tokenMetrics:{totalTokens:{value:0,complete:true}}}}];const r=buildComparisonReport(a);assert.equal(r.status,'INCOMPLETE');assert(r.gaps.includes('UNVERIFIED_RECOVERIES_PRESENT:candidate'));assert.equal(r.pairs[0].candidate.status,'FAIL');assert.equal(r.pairs[0].metrics.tokens.totalTokens.candidate.value,null);}
 });
+
+test('complete observed fields with unreported usage possible yield only partial descriptive difference',()=>{const a=setup();a.baseline.results[0].tokenMetrics={totalTokens:{value:10,complete:true}};a.candidate.results[0].tokenMetrics={totalTokens:{value:15,complete:true}};a.candidate.results[0].unreportedUsagePossible=true;const r=buildComparisonReport(a);assert.equal(r.pairs[0].metrics.tokens.totalTokens.delta,5);assert.equal(r.pairs[0].metrics.tokens.totalTokens.complete,false);});
