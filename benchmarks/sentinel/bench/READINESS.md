@@ -59,3 +59,9 @@ This is an implemented and tested benchmark candidate with a completed diagnosti
 ## Repository packaging
 
 The candidate is now source-controlled under `benchmarks/sentinel` on a real Sentinel work branch. The launcher materializes a verified copy inside `benchmark-temp/benchmark-v2` before execution or testing. Legacy results were preserved byte-for-byte with provenance, while retired benchmark runtime and exclusive tests were removed; shared central Sentinel tests were retained separately. Packaging checks are offline and are not a new live matrix for this packaged engine.
+
+## Aggregate repository verification
+
+The repository-wide run covered 119 test files, two tested delegations and structural validation. Its original report remains failed: 13 files failed; structure passed. Rechecks fixed five files without changing runtime guards: the benchmark's installed-path fixtures, installer destination assertions, documentary completion expectations and two textual workflow/runner contracts. The packaged benchmark suite subsequently passed 354/354; its consolidation scanner passed 19/19 and the three installer/contract files passed 27/27.
+
+Eight files still cannot establish their non-Git cases with every temporary directory physically beneath this Git checkout. The runtime walks physical ancestors for `.git`; a Git ceiling environment variable does not change that boundary. These cases were also reproduced against the exact main snapshot in the same environment. They remain intact, not skipped or converted into Git cases. A genuinely non-Git filesystem environment is required to complete those checks; the current temporary-location constraint has not been relaxed. Therefore the aggregate suite is **not green** and this candidate is **not ready to integrate**. Original logs and main-snapshot comparison are private in `benchmark-temp`; a focused recheck does not overwrite a failed aggregate report.
