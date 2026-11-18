@@ -1,6 +1,25 @@
 # Validação da bancada App Server
 
-A bancada executou as três tarefas independentes até **PASS e CLOSE**, com auditoria independente de produto, autoridade, configuração, comunicação e tokens observados. Esta é validação funcional diagnóstica; não é certificado de qualificação oficial, ranking de modelos ou estimativa de cobrança.
+**A bancada ainda não está integralmente qualificada.** O comando padrão único executou as três tarefas com duas repetições, mas o perfil misto terminou com 2 PASS e 4 BLOCKED. As execuções anteriores de referência chegaram a PASS/CLOSE nas três tarefas, em campanhas separadas. Nenhum desses resultados é certificado oficial, ranking de modelos ou estimativa de cobrança.
+
+## Campanha padrão única: `mixed-full-01`
+
+Comando real: `npm run benchmark -- --id mixed-full-01`, engine do commit `f0cb309`, sem override de perfil, tarefas ou repetições. O perfil padrão misto permaneceu intacto. Todas as seis células foram executadas serialmente; a desconexão do Mac não reiniciou nem duplicou a campanha.
+
+| Célula | Resultado | Causa / evidência | Tokens observados |
+|---|---|---|---:|
+| rename-1 | BLOCKED | Revisão independente rejeitou carriers draft/pending; nenhuma ativação | 2.011.352 |
+| query-1 | BLOCKED | Notação CLI `<caminho>` rejeitada como placeholder em três seções; correções locais esgotaram limite | 1.440.276 |
+| import-1 | BLOCKED | Verificador invocou helper inexistente, diferente do helper oficial reservado; nenhuma receita formal | 6.438.251 |
+| rename-2 | BLOCKED | Coordenador despachou checks sem implementar; filho retornou status semântico inválido, corretamente recusado | 3.050.364 |
+| query-2 | PASS / CLOSE / oracle PASS | Dez configurações MATCH; duas cadeias de contrato/comunicação MATCH | 8.601.039 |
+| import-2 | PASS / CLOSE / oracle PASS | Duas slices sequenciais; 14 configurações MATCH; quatro cadeias de contrato/comunicação MATCH | 11.286.136 |
+
+Total observado: **32.827.418**, com 29.878.016 de cache, 2.635.664 de input novo e 313.738 de output. As seis células permanecem no denominador, incluindo falhas. Há lacuna explícita para uso não gravado/em voo; não são totais faturáveis. Import-2 levou 37m36s, próximo do limite de 40min; nenhuma célula teve orçamento reiniciado.
+
+Os dois PASS foram auditados independentemente e possuem `harnessValid:true`. Os quatro BLOCKED não são convertidos em falhas legítimas de produto, nem demonstram por si defeito Sentinel: incluem autoria inadequada e uso incorreto dos controles pelos modelos. A campanha prova execução única e observação do perfil misto, **não sua robustez nem aprovação integral**. O perfil de referência não foi promovido silenciosamente a padrão.
+
+Próximos gates: corrigir falhas gerais de orquestração comprovadas sem substituir decisões dos modelos, testar as correções prospectivas e demonstrar o fluxo completo escolhido. Não haverá promoção automática dos diagnósticos a resultados oficiais. Falhas de modelo continuarão visíveis, mesmo quando o harness estiver correto.
 
 ## Execuções reais de referência
 

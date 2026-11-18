@@ -103,3 +103,13 @@ Independent audit recovered both literal child delivery envelopes under the auth
 ## Consolidated functional validation
 
 All three reference tasks completed PASS/CLOSE with independent audits. The bounded framed-copy contract observer correction passed the complete 368-test suite; separately identified reanalysis proves all four import contract reads while preserving its original invalid admission. See [consolidated validation and explicit limits](../VALIDATION.md). No official certificate or automatic promotion was issued.
+
+## Single default mixed campaign and bounded follow-up
+
+`mixed-full-01` ran the unchanged default mixed profile, all three tasks with two repetitions, via one packaged command at `f0cb309`. It ended with two PASS/CLOSE cells (query-2 and import-2) and four BLOCKED cells, all preserved. The original process survived host disconnection; its dead launcher lease was archived only after the parent PID and process group returned ESRCH. Independent audit verified both PASS cells' configuration, contract, communication and source hashes. Total reported usage was 32,827,418 tokens including 29,878,016 cached input; usage gaps remain explicit. This is not a full mixed-profile qualification.
+
+The four failures separate authoring/contract-use errors from transport: draft readiness carriers rejected by technical review, CLI argument notation rejected as a placeholder at successive locations, an independent verifier invoking a nonexistent helper rather than the reserved path, and a coordinator skipping implementation followed by an invalid semantic runner response. None was changed into a valid product result. Original evidence and the private causal audit remain in the campaign directory.
+
+Prospective changes stay narrow: clarify structural PLAN readiness versus independent approval; after official invalid-image refusal, correct the error class across the same draft allocation rather than only its first occurrence, retaining two retries and existing recovery guards; pass the official reservation's helper/origin/request paths literally in native handoff. There is no parser replacement, automatic document rewriting, verification wrapper, inferred receipt, relaxed guard, model substitution or generic recovery from technical review rejection. A model can still fail to follow the contract. The full offline suite passes 371/371. These changes were not present in mixed-full-01 and require prospective live evidence.
+
+Only `.git` metadata for the two PASS workspaces was archived, extracted and compared before removal. Products and all evidence hashes were preserved; BLOCKED cells were untouched. Restore information is under `evidence/cleanup/mixed-full01-pass-git/` inside benchmark-temp.

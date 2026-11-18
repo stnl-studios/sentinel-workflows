@@ -40,3 +40,22 @@ test('SIMULATED failed proof or busy provider retains pending capture effect',as
 test('SIMULATED interrupted author never captures or clears pending turn',async()=>{const f=setup({incompleteAuthor:true}),r=await f.run();assert.equal(r.status,'BLOCKED');assert.equal(f.calls.filter(c=>c==='capture').length,0);assert.equal(f.calls.filter(c=>c.recover).length,0);assert.ok(f.checkpoint().pending);});
 test('SIMULATED external rejection revises and requires approval of new capture digest',async()=>{const f=setup({rejectFirst:true}),r=await f.run();assert.equal(r.status,'PASS',r.error);assert.equal(f.calls.filter(c=>c==='AUTHOR').length,2);assert.equal(f.calls.filter(c=>c.revise).length,1);assert.equal(f.captures.length,2);assert.notEqual(f.captures[0].captureSha256,f.captures[1].captureSha256);const approvals=f.calls.filter(c=>c.approve);assert.equal(approvals.length,1);assert.equal(approvals[0].approve,f.captures[1].captureSha256);assert.equal(f.checkpoint().planHistory[0].delegatedApproval.decision.decision,'REJECT');});
 test('SIMULATED stale approval cannot approve newly captured revised draft',async()=>{const f=setup({rejectFirst:true,staleApproval:true}),r=await f.run();assert.equal(r.status,'BLOCKED');assert.equal(r.error,'STALE_CAPTURE_APPROVAL');assert.equal(f.checkpoint().pendingEffect.name,'approve-plan');assert.ok(!f.calls.includes('REVIEW'));});
+
+// Feedback broadens the author inspection within the same draft, never the recovery authority.
+test('SIMULATED capture feedback asks class-wide correction only after typed quiet recovery',async()=>{
+ const f=setup({captureFailures:1}),r=await f.run();assert.equal(r.status,'PASS',r.error);
+ const request=JSON.parse(fs.readFileSync(path.join(f.m.evidence,'turn-2-request.json')));
+ const text=JSON.stringify(request);
+ assert.match(text,/todos os artefatos de Plan\/Tasks globais e detalhados/);
+ assert.match(text,/não somente a primeira ocorrência/);
+ assert.match(text,/mesma alocação existente/);
+ assert.match(text,/não amplie o escopo nem crie outra alocação/);
+ assert.match(text,/Não substitua a validação oficial por parser próprio/);
+ assert.match(text,/duas correções/);
+ assert.match(text,/invalid draft simulation/);
+ assert.equal(f.calls.filter(c=>c==='allocate').length,1);
+ assert.equal(f.calls.filter(c=>c==='capture').length,2);
+ const blocked=setup({captureFailures:1,missingCode:true});await blocked.run();
+ assert.equal(blocked.checkpoint().plan.feedback,undefined);
+ assert.equal(blocked.calls.filter(c=>c==='AUTHOR').length,1);
+});

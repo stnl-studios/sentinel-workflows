@@ -41,3 +41,14 @@ test('capture envelope keeps original final response string and requires real co
  const p=stagePrompt({manifest,operation:'INIT',authority});
  for(const text of ['somente após conclusão real comprovada do filho','{agentId,status:"completed",finalResponse:<STRING original>}','finalResponse é uma string','nunca um objeto JSON','Não faça JSON.parse/stringify do conteúdo da resposta','serialize apenas o envelope externo','não fabrique completion','não repita o trabalho do filho'])assert(p.includes(text),text);
 });
+
+test('PLAN finalizes structural readiness without granting approval or publication authority',()=>{
+ const p=stagePrompt({manifest,operation:'PLAN',authority,plan:{candidateExecutionRoot:'/isolated/draft'}});
+ for(const text of ['Antes de encerrar a autoria para captura','status: ready nos File Purpose Headers','Plan/Tasks globais e detalhados','Review state: approved nos Plans','metadados de prontidão documental','não aprovação do usuário, decisão do revisor independente, autorização de execução nem autoaprovação','Não escreva recibos de aprovação nem invoque approve/review/publish','vinculada aos bytes capturados','revisão nativa continuará obrigatória','NÃO aprove, revise, ative ou execute'])assert(p.includes(text),text);
+ const init=stagePrompt({manifest,operation:'INIT',authority});assert(!init.includes('status: ready nos File Purpose Headers'));
+});
+
+test('native handoff transmits official paths without reconstructing helper identity',()=>{
+ const p=stagePrompt({manifest,operation:'INIT',authority});
+ for(const text of ['transmita literalmente verificationHelper, originFile e requestFile','retornados pela reserva oficial','não reconstrua nomes ou caminhos','sem substituir helpers','bind-native oficial','Não repita operações já concluídas'])assert(p.includes(text),text);
+});
