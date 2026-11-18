@@ -14,14 +14,16 @@ import {allocateCurrentLocalReviewCandidate} from '../skills/workflows/stnl-slic
 
 const run=promisify(execFile),sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const selectors=['GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR','GIT_INDEX_FILE','GIT_CONFIG_COUNT','GIT_CONFIG_PARAMETERS'];
-async function fixture(t,{ignored=true,git=true}={}) {
+async function fixture(t,{ignored=true,explicit=false}={}) {
  const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'filesystem-producer-')));
  t.after(()=>fs.rm(root,{recursive:true,force:true}));
  const product=path.join(root,'product with spaces');await fs.mkdir(path.join(product,'specs'),{recursive:true});
- if(git){await run('git',['init','-q',product]);await fs.writeFile(path.join(product,'.gitignore'),ignored?'/tmp/sentinel/\n':'!/tmp/\n!/tmp/sentinel/\n');}
+ // Every fixture owns its Git boundary, even when TMPDIR is inside this repository.
+ await run('git',['init','-q',product]);await fs.writeFile(path.join(product,'.gitignore'),ignored?'/tmp/sentinel/\n':'!/tmp/\n!/tmp/sentinel/\n');
+ assert.equal((await run('git',['-C',product,'rev-parse','--show-toplevel'])).stdout.trim(),product);
  const specPath=path.join(product,'specs','requirements.md');await fs.writeFile(specPath,'# Requirements\n\nAC-001: normal preparation.\n');
- const temporaryRoot=path.join(root,'excluded operations'),extra=path.join(root,'other excluded');
- const filesystemContext=git?null:{productRoot:product,temporaryRoot,excludedRoots:[extra,temporaryRoot]};
+ const temporaryRoot=path.join(product,'tmp','sentinel'),extra=path.join(root,'other excluded');
+ const filesystemContext=explicit?{productRoot:product,temporaryRoot,excludedRoots:[extra,temporaryRoot]}:null;
  const resolved=await resolveCurrentExecutionContext(specPath,{filesystemContext});
  return {root,product,specPath,...resolved,filesystemContext};
 }
@@ -73,7 +75,7 @@ for(const [name,allocate] of Object.entries(actors)) {
 }
 
 test('equivalent explicit policy set reenters its registered physical allocation',async t=>{
- const f=await fixture(t,{git:false});
+ const f=await fixture(t,{explicit:true});
  const start=await actors.preparation(f);
  const reordered={...f.filesystemContext,excludedRoots:[...f.filesystemContext.excludedRoots].reverse()};
  await unchanged(f,async()=>{
