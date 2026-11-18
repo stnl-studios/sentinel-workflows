@@ -30,7 +30,7 @@ export function prepareLaunch({repo=repositoryRoot,argv=[]}={}){
   }
   if(sourceBefore&&digest(snapshot(source))!==digest(sourceBefore))throw Error('SOURCE_CHANGED');
   const mapped=[...args];for(let i=0;i<mapped.length;i++)if(['--profile','--input','--qualification'].includes(mapped[i])){if(!mapped[i+1])throw Error('MISSING_FILE_ARGUMENT');const input=safePath(mapped[i]==='--profile'?repo:base,mapped[i+1]);if(!fs.statSync(input).isFile())throw Error('FILE_REQUIRED');mapped[++i]=input;}
-  if(['run','validate-profile'].includes(command)&&!mapped.includes('--profile'))mapped.push('--profile',path.join(base,'bench/profiles/qualification-case-stage.json'));
+  if(['run','validate-profile'].includes(command)&&!mapped.includes('--profile'))mapped.push('--profile',path.join(base,'bench/profiles/reference-sol-high.json'));
   if(command==='run'&&!mapped.includes('--id')){const id='run-'+new Date().toISOString().replace(/[^0-9]/g,'')+'-'+randomUUID().slice(0,8);mapped.push('--id',id);console.log('Benchmark ID: '+id);}
   const cliArgs=command==='test'?['--test',...fs.readdirSync(path.join(base,'bench/test')).filter(n=>n.endsWith('.test.mjs')).sort().map(n=>path.join(base,'bench/test',n))]:[path.join(base,'bench/cli.mjs'),command,...mapped];
   if(allowed.has(command)){lease=path.join(base,'launcher-leases',randomUUID()+'.lease');jsonOnce(lease,{pid:process.pid,command,contentDigest:digest(desired)});}
