@@ -450,7 +450,9 @@ function blockedRevalidation(image,slice,operation,{successor=false,activeOwner=
   if(!current?.evidence||current.normalization!==null||facts?.formalStatus!=='BLOCKED'
     ||facts.auxiliaryStatus==='BLOCKED'||facts.observedValidation==='uncertain'
     ||image.inspection.deliveries.some(item=>item.slice!==slice&&(item.formalStatus==='BLOCKED'
-      ||item.auxiliaryStatus==='BLOCKED'||item.observedValidation==='uncertain'||item.diagnostics?.length)))
+      ||item.auxiliaryStatus==='BLOCKED'||item.observedValidation==='uncertain'
+      ||item.diagnostics?.some(diagnostic=>!image.milestoneDeliveryIds?.includes(item.deliveryId)
+        ||diagnostic.kind!=='observation'||diagnostic.field!=='observedWork'||diagnostic.reason!=='EVIDENCE_STALE'))))
     fail('BLOCKED_REVALIDATION_NOT_ELIGIBLE','only a recorded formal BLOCKED without other unresolved work can be revalidated');
   if(!usesCurrentChecks(image,{preparationRevision:image.activation.preparationRevision,deliveryId:current.deliveryId,operation}))
     fail('UNSUPPORTED_FORMAT','blocked revalidation requires current checks');

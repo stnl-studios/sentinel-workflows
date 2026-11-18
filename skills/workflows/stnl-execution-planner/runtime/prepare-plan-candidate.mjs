@@ -14,7 +14,8 @@ export function setPreparationMembers(source,ids,{terminalValidation=false,reval
   fail('INVALID_CURRENT_IMAGE','Completed selection differs from the captured source');
  const active=members.filter(item=>!ids.includes(item.deliveryId));
  if(revalidateCompletedIds!==null) {
-  const stale=source.inspection.completed.filter(item=>item.observedValidation!=='current');
+  const stale=source.inspection.completed.filter(item=>item.observedValidation!=='current'
+    &&!source.milestoneDeliveryIds?.includes(item.deliveryId));
   if(terminalValidation||continuity.deliveries.length||!Array.isArray(revalidateCompletedIds)||!revalidateCompletedIds.length
     ||active.length!==revalidateCompletedIds.length||stale.length!==active.length
     ||active.some(item=>item.normalization!==null||!revalidateCompletedIds.includes(item.deliveryId)||!stale.some(other=>other.deliveryId===item.deliveryId)))

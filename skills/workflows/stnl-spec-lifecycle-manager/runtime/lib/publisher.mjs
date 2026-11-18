@@ -4409,7 +4409,21 @@ async function publishCandidateLocked(mode, target, candidate, {
       let closeBinding=null;
       if(mode==='CLOSE'){
         const historicalNames=[],operationalInventory=await captureCloseOperationalInventory(targetPath,transactionId,{historicalNames});
-        const historicalArchive=historicalNames.length?await createLifecycleCloseArchive(roots,transactionId,historicalNames,operationalInventory):null;
+        let executionSnapshot=null;
+        if(closeDisposition.kind==='discard-current-complete'){
+          const image=await captureCurrentExecution(path.join(targetPath,'feature_spec.md'));
+          const activation=parseStrictJson(Buffer.from(image.activationBytes).toString('utf8'));
+          if(image.inspection.state!=='COMPLETE'||image.requirementsAuthority!==closeDisposition.requirementsAuthority
+            ||activation.activationId!==closeDisposition.activationId
+            ||'sha256:'+createHash('sha256').update(JSON.stringify(activation.artifacts)).digest('hex')!==closeDisposition.artifactManifestSha256)
+            fail('CLOSE historical execution changed',targetPath);
+          const files=new Map(image.files);files.set('activation.json',image.activationBytes);
+          executionSnapshot={requirementsAuthority:image.requirementsAuthority,activationId:activation.activationId,
+            files:[...files].sort(([a],[b])=>compareCodePoints(a,b)).map(([name,bytes])=>({path:name,
+              sha256:'sha256:'+createHash('sha256').update(Buffer.from(bytes)).digest('hex'),bytesBase64:Buffer.from(bytes).toString('base64')}))};
+        }
+        const historicalArchive=historicalNames.length||executionSnapshot!==null
+          ?await createLifecycleCloseArchive(roots,transactionId,historicalNames,operationalInventory,executionSnapshot):null;
         testOnlyCheckpoint('CLOSE_HISTORY_DURABLE');
         closeBinding=validateCloseBinding({format:'stnl-lifecycle-close-binding-v1',sourceIdentity:ownership.sourceIdentity,
           requirementsAuthority:await closeRequirementsAuthority(targetPath),sourceExecutionDisposition:closeDisposition,operationalInventory,

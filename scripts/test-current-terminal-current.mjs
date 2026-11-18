@@ -127,7 +127,7 @@ test('T01 terminal v2 preserves valid certification and rejects post-capture pro
   assert.deepEqual(after.files,image.files);assert.deepEqual(after.activationBytes,image.activationBytes);
 });
 
-test('T01 newer local revalidation preserves local PASS but invalidates the retained retired terminal judgment',async t=>{
+test('T01 newer local PASS completes coverage without renewing a retained retired terminal judgment',async t=>{
   const f=await completedNativeCase(t,{retire:false,independent:true});
   await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
   const before=await captureCurrentExecution(f.specPath);assert.equal(before.inspection.state,'COMPLETE');
@@ -147,8 +147,8 @@ test('T01 newer local revalidation preserves local PASS but invalidates the reta
   const after=await captureCurrentExecution(f.specPath);
   assert.ok([...after.inspection.deliveries,...after.inspection.completed]
     .every(item=>item.formalStatus==='PASS'&&item.observedValidation==='current'));
-  assert.equal(after.inspection.state,'VALIDATION_BLOCKED');assert.equal(after.inspection.normalHandoff,null);
-  assert.equal(after.inspection.diagnostics[0].reason,'EVIDENCE_STALE: terminal judgment precedes current local validation');
+  assert.equal(after.inspection.state,'COMPLETE');assert.equal(after.inspection.normalHandoff,null);
+  assert.deepEqual(after.inspection.diagnostics,[]);
   const terminalBundle=decode(after.files.get(terminal.evidence.path));
   const siblingBundle=decode(after.files.get(sibling.evidence.path));
   assert.ok(siblingBundle.validation.origin.preparationRevision>terminalBundle.validation.origin.preparationRevision);
@@ -156,9 +156,9 @@ test('T01 newer local revalidation preserves local PASS but invalidates the reta
   const origin=JSON.parse(capsule.originUtf8);
   const others=image=>[{deliveryId:sibling.deliveryId,slice:sibling.slice,initialObservation:true,
     observation:image.observedByDelivery.get(sibling.deliveryId)}];
-  // The retained terminal basis also differs, but the newer local generation
-  // takes diagnostic precedence. Same-generation basis rejection is covered
-  // separately by test-current-sibling-admission.mjs.
+  // Historical terminal bytes remain unchanged and their product basis is old;
+  // the newer authenticated local PASS, not that stale terminal basis, now
+  // proves the criterion. Tampered captures remain rejected separately.
   assert.equal(currentTerminalProductBasisMatches(origin.otherDeliveryWork,others(retired)),true);
   assert.equal(currentTerminalProductBasisMatches(origin.otherDeliveryWork,others(after)),false);
   assert.deepEqual(after.files.get('approved-preparation.json'),retired.files.get('approved-preparation.json'));
@@ -268,15 +268,14 @@ test('T04 an obsolete integral PASS remains historical while equivalent local pr
   assert.equal(bundle.validation.contract.terminal,null);
   assert.equal(after.inspection.deliveries[0].formalStatus,'PASS');assert.equal(after.inspection.deliveries[0].observedValidation,'current');
   assert.equal(after.inspection.completed[0].observedValidation,'current');
-  assert.equal(after.inspection.state,'IMPLEMENTED_AWAITING_VALIDATION');
-  // Historical integral support cannot certify the new local proof; its live
-  // owner may supply a fresh judgment without another preparation change.
-  assert.deepEqual(after.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:current.slice,deliveryId:current.deliveryId});
-  assert.deepEqual(after.inspection.diagnostics,[{kind:'evidence',artifact:'continuity.json',field:'terminal',
-    reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]);
+  assert.equal(after.inspection.state,'COMPLETE');
+  // New authenticated local coverage suffices; obsolete terminal support is
+  // preserved as history, not silently rewritten or requested again.
+  assert.equal(after.inspection.normalHandoff,null);
+  assert.deepEqual(after.inspection.diagnostics,[]);
 });
 
-test('T06 a current latest integral PASS loses only certification when another reviewed contribution changes',async t=>{
+test('T06 approved local revalidation preserves complete coverage without replacing old terminal proof',async t=>{
   const f=await completedNativeCase(t,{retire:false,independent:true});
   await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
   const before=await captureCurrentExecution(f.specPath);assert.equal(before.inspection.state,'COMPLETE');
@@ -288,8 +287,8 @@ test('T06 a current latest integral PASS loses only certification when another r
   const after=await captureCurrentExecution(f.specPath),b=decode(after.files.get('continuity.json')).deliveries[1];
   assert.deepEqual(decode(after.files.get(b.evidence.path)).validation,old.validation);
   assert.ok(after.inspection.deliveries.every(item=>item.formalStatus==='PASS'&&item.observedValidation==='current'));
-  assert.equal(after.inspection.state,'VALIDATION_BLOCKED');assert.equal(after.inspection.normalHandoff,null);
-  assert.match(after.inspection.diagnostics[0].reason,/terminal judgment target differs/u);
+  assert.equal(after.inspection.state,'COMPLETE');assert.equal(after.inspection.normalHandoff,null);
+  assert.deepEqual(after.inspection.diagnostics,[]);
 });
 
 test('T07 mechanical terminal/completed capture resumes a partial candidate in new processes without another recipe',async t=>{

@@ -42,7 +42,7 @@ test('Q18 controlled publication uses registered candidate, readback and termina
  const f=await fixture(t),product=await fs.readFile(path.join(f.image.f.root,f.productFile));
  const result=await f.publish();assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');assert.equal(result.preparationDisposition,'retired');
  const after=await captureCurrentExecution(f.specPath),continuity=decode(after.files.get('continuity.json'));
- assert.equal(continuity.deliveries.length,0);assert.equal(continuity.completed.length,2);assert.equal(after.inspection.state,'VALIDATION_BLOCKED');
+ assert.equal(continuity.deliveries.length,0);assert.equal(continuity.completed.length,2);assert.equal(after.inspection.state,'COMPLETE');
  assert.equal(after.inspection.preparationRevision,f.source.inspection.preparationRevision+1);
  assert.equal(decode(after.activationBytes).previousActivationId,f.source.inspection.activationId);
  await retired(f,result.allocation);assert.deepEqual(await fs.readFile(path.join(f.image.f.root,f.productFile)),product);
@@ -282,7 +282,7 @@ for(const reopening of [false,true])for(const boundary of ['before-backup','afte
   await absent((await executionLockIdentity(f.workspace)).lockPath);
  });
 
-test('explicit completed revalidation requires a fresh terminal after exact byte restoration',async t=>{
+test('explicit completed revalidation reuses fresh criterion proof without a second terminal ceremony',async t=>{
  const reviewFor=r=>({globalReview:approve(r.globalReview),deliveries:r.deliveries.map(x=>({deliveryId:x.deliveryId,review:approve(x.review)}))});
  const f=await completedNativeCase(t,{drift:true,independent:true,retire:false});
  await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
@@ -325,26 +325,19 @@ test('explicit completed revalidation requires a fresh terminal after exact byte
  const delivery=decode(reopened.files.get('continuity.json')).deliveries[0];
  await normalizedFormal({...f,delivery},{terminal:false});
  const final=await captureCurrentExecution(f.specPath);
- assert.notEqual(final.inspection.state,'COMPLETE','Fresh recovery must require a new terminal, even after restoring the old exact product bytes');
- assert.equal(final.inspection.state,'VALIDATION_BLOCKED');assert.equal(final.inspection.normalHandoff,null);
- assert.ok(final.inspection.diagnostics.some(item=>item.reason.includes('terminal judgment precedes current local validation')));
+ assert.equal(final.inspection.state,'COMPLETE','Fresh local validation proves the reviewed criteria');
+ assert.equal(final.inspection.normalHandoff,null);assert.deepEqual(final.inspection.diagnostics,[]);
  const active=decode(final.files.get('continuity.json')).deliveries,all=decode(final.files.get('continuity.json'));
  const retire=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:[...all.deliveries,...all.completed].map(x=>x.deliveryId)});
  const retireOptions={specPath:f.specPath,candidateExecutionRoot:retire.candidateExecutionRoot};
  for(const name of ['plan.md','tasks.md'])await fs.writeFile(path.join(retire.candidateExecutionRoot,name),Buffer.from(final.files.get(name)).toString().split('\n').filter(line=>!active.some(x=>line.includes('| '+x.slice.slice(6)+' - '))).join('\n'));
  const retireProposal=await publishPreparationCandidate(retireOptions);
  assert.equal((await publishPreparationCandidate({...retireOptions,reviewDecision:reviewFor(retireProposal.reviewRequest)})).publication,'confirmed');
- const quiet=await captureCurrentExecution(f.specPath);assert.equal(quiet.inspection.state,'VALIDATION_BLOCKED');assert.equal(quiet.inspection.deliveries.length,0);
+ const quiet=await captureCurrentExecution(f.specPath);assert.equal(quiet.inspection.state,'COMPLETE');assert.equal(quiet.inspection.deliveries.length,0);
  const q20=reopeningInput(quiet,b.deliveryId,{terminalValidation:true});
- const terminalDraft=await preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:q20.completedDeliveryIds,terminalValidation:true});
- const terminalOptions={specPath:f.specPath,candidateExecutionRoot:terminalDraft.candidateExecutionRoot};
- for(const [name,value]of q20.artifacts){const p=path.join(terminalDraft.candidateExecutionRoot,name);await fs.mkdir(path.dirname(p),{recursive:true});await fs.writeFile(p,value);}
- const terminalProposal=await publishPreparationCandidate(terminalOptions);
- assert.equal((await publishPreparationCandidate({...terminalOptions,reviewDecision:reviewFor(terminalProposal.reviewRequest)})).publication,'confirmed');
- const terminalOpened=await captureCurrentExecution(f.specPath);assert.equal(terminalOpened.inspection.normalHandoff.operation,'VALIDATE_SLICE');
- const terminalDelivery=decode(terminalOpened.files.get('continuity.json')).deliveries[0];assert.equal(terminalDelivery.deliveryId,b.deliveryId);
- await normalizedFormal({...f,delivery:terminalDelivery},{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
- const complete=await captureCurrentExecution(f.specPath);assert.equal(complete.inspection.state,'COMPLETE');
+ await assert.rejects(()=>preparePreparationCandidate({specPath:f.specPath,operation:'REPLAN',completedDeliveryIds:q20.completedDeliveryIds,terminalValidation:true}),{code:'REPLAN_REQUIRED'});
+ assert.deepEqual((await captureCurrentExecution(f.specPath)).activationBytes,quiet.activationBytes);
+
 });
 
 for(const boundary of ['after-install','before-activation','after-activation-intent','after-activation','cleanup','confirmed-recovery'])

@@ -3,51 +3,47 @@
 ```yaml
 purpose: Lossless CLOSE and externals.
 status: not_applicable
-read_when: CLOSE after structural/global semantic readiness.
-do_not_read_when: Not CLOSE or documentary blockers.
+read_when: CLOSE after readiness.
+do_not_read_when: Other modes.
 contains: Admission, publication, failures.
 owner: stnl-spec-lifecycle-manager
-update_policy: Only with CLOSE semantic changes.
+update_policy: CLOSE changes.
 ```
 
 # CLOSE Policy
 
-CLOSE is documentary SPEC_CLOSED, not delivery/implementation approval. Substantive RESUME requires REPLAN. Omit execution only if absent or independently current integral COMPLETE with retirement ownership; preserve other externals unchanged.
+CLOSE publishes SPEC_CLOSED, not implementation PASS. Substantive RESUME requires REPLAN. Retire only absent or authenticated COMPLETE execution with ownership; preserve externals.
+
+## Evidence and validation
+
+Reuse authenticated historical PASS criteria/evidence, including last-slice/runbook-linked proof; retain executed/validated/approved milestones. Checklists/PASS labels prove nothing. Coverage needs no extra final test/attestation. Validate authorized changes/impacts in the current slice; file changes alone never reopen prior approvals.
+
+For missing/contradicted proof in a current SPEC, resume saved pending handles first; never repeat uncertain effects. Otherwise automatically delegate the smallest `normalHandoff`: EXECUTE_SLICE/APPLY_FINDINGS to `stnl-slice-executor`, VALIDATE_SLICE to `stnl-slice-quality-manager`. Stay within approved Plan/Tasks, checks and budgets; use the controller, independent runner and formal publication. Preserve history; no invented authority, predecessor reopening, REPLAN or RECONCILE.
+
+Reinspect each step. Close only authenticated COMPLETE with all criteria proved and ownership settled. Corruption, uncertainty, blockers or no legal handoff stop CLOSE. Never retry an exhausted operation. No budget resets or legacy reconstruction. Absent execution permits documentary close, never implementation PASS.
 
 ## Publication
 
-Require explicit CLOSE and active ready; edit via RESUME.
+CLOSE requires active ready.
 
-1. Run `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" CLOSE <TARGET>` without candidate. Runtime derives disposition, locks common before lifecycle and renders in one owned stage/inode. renderClosedFeature preview cannot admit/publish.
-2. Before promotion, under common lease recheck source identity/digest, execution authority/activation/manifest and exact rendered bytes. Pending/uncertain producers or foreign material block discard.
-3. Keep source/backup through commit until ownership/dispensability are sealed. Remove only bound roles, then empty namespace/common lease. Retain recovery authority until settlement. Partial integration cannot authorize discard.
+Run `node "<SKILL_ROOT>/runtime/publish-spec-lifecycle.mjs" CLOSE <TARGET>` without candidate; runtime derives disposition and renders in its owned stage. Preview grants no authority. Common lease precedes lifecycle lease; recheck source identity/digest, execution authority/activation/manifest and rendered bytes before promotion. Pending/uncertain/foreign producers block discard. Retain source/backup and recovery authority until commit/settlement; remove only bound roles before empty namespace/lease. Partial integration cannot authorize discard. Never model-rebuild output.
 
-Renderer/validators consolidate; never model-copy/paraphrase/rebuild.
+## Consolidation and boundaries
 
-## Consolidation
+Copy Objective, Context, Scope→Final Scope, Out of Scope, Business Rules and Relevant Contracts→Important Contracts unchanged; derived requirements become canonical R bytes. Optional categories require materialized records. Preserve IDs/types/titles/status, metadata order, narrative/relations, tombstones/reasons, final Q, Unicode/gaps. No invented evidence, summaries, timestamps or nondeterminism. Reject missing/extra/changed records, duplicate authority, open questions, malformed output or changed externals. Repeated renders must match exactly.
 
-Fixed scaffolding/order. Copy unchanged Objective, Context, Scope→Final Scope, Out of Scope, Business Rules and Relevant Contracts→Important Contracts. Replace derived requirements with canonical R bytes. Optional AC/D/C/RK/Q sections require materialized categories.
+shared/ disappears only in the validated candidate; execution/ only after admission and retirement checks. Copy other externals without dereferencing links; OS packaging metadata grants no authority and is not copied. Failure preserves source; recovery owns cleanup. Never manually remove shared/, backups or foreign replacements.
 
-Match closed/source IDs. Preserve prefix/type, ID, title, status, metadata order, narrative, references, record identity, tombstones/reasons, final Q, gaps/Unicode; change only owning sections. Add no timestamps, locale/enumeration dependence, randomness, summaries, incorporated answers, session logs, commands, plans, tests, commits or implementation evidence.
-
-Reject missing/extra records, altered titles/types/text/metadata, duplicate authority, open questions, invalid form or changed externals. Repeated renders: identical bytes/final newline.
-
-## Boundaries
-
-shared/ is lifecycle input, absent only in the validated candidate. Remove execution/ only after admissibility/discard checks. Copy other externals unchanged without symlink dereferencing. Ignore OS packaging metadata: no authority/copy.
-
-Renderer failure preserves source; no partial promotion. Publication failure/crash requires publisher recovery/ownership checks; never manually remove live shared/, valid backup or foreign stage replacement.
-
-Darwin symlink hardlink groups share the candidate-copy/CLOSE helper: fixed `/bin/ln -P -h --`, 2-second timeout, 4-KiB output limits, no shell. Other links use native Node. Preserve literal targets, including dangling/absolute. Require absent destination and both names within sealed stage/filesystem; check identities, parents, payload and exact inode/link topology before/after. Failure blocks promotion without retry/alternate executable; preserve foreign material on ownership mismatch. Barriers cannot exclude hostile mutation during syscalls.
+Darwin symlink hardlink groups use fixed `/bin/ln -P -h --`, no shell, 2-second/4-KiB limits; other links use Node. Preserve literal targets, even dangling/absolute. Require names inside sealed stage/filesystem and absent destination; verify identity, parents, payload, inode/link topology before/after. Failure blocks retries/alternates; preserve foreign material. Syscall-time hostile mutation remains possible.
 
 ## History
 
-Runtime may archive superseded committed same-SPEC native owners byte-for-byte before retirement. Foreign/running/uncertain/aliased/incomplete sources block CLOSE. Archive failure/mutation preserves remaining sources. Archives grant no execution authority or PASS/COMPLETE: Execution still requires independent current integral COMPLETE.
+Archive the final execution snapshot and committed same-SPEC native sources byte-for-byte before retirement. Bound hash/identity guards recovery. Foreign/uncertain sources block. Archives grant no live PASS.
 
-Report historicalArchive; complete cleanup retains history. Never adopt/delete unbound partial archives. Fresh CLOSE may create another archive; committed recovery only reuses its bound archive, never reconstructs.
+Report historicalArchive; preserve history and unbound archives. Recovery uses only its bound archive.
 
 ## Results
 
-Report confirmed publication, cleanup complete|pending, transaction, authority, digest, disposition. Final unlink then failed parent fsync means FINAL_SETTLEMENT_DURABILITY_UNCONFIRMED/cleanup pending: never invent locks/rebuild names. Remaining authority recovers cleanup only; without controls, valid closed documentation yields false, never republish/model.
+Report publication, cleanup complete|pending, transaction, authority, digest and disposition. Failed parent fsync after final unlink means FINAL_SETTLEMENT_DURABILITY_UNCONFIRMED/cleanup pending: never recreate locks/names. Recovery controls authorize cleanup only; absent controls never authorize republishing.
 
-Without retired controls: execution returns SPEC_CLOSED/no handoff; lifecycle NOT_APPLICABLE. Roadmap dependencies without structured retained proof stay UNKNOWN. Runbook inspects closed SPEC; execution/slice/task selection without execution returns SPEC_CLOSED, never reconstructed history/approval.
+After retirement: SPEC_CLOSED/no execution handoff; lifecycle NOT_APPLICABLE. Unproved roadmap dependencies stay UNKNOWN. Runbook cannot reconstruct approval.

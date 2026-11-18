@@ -142,7 +142,7 @@ test('real directory enumeration preserves broad membership invalidation',async 
 });
 
 
-test('official third EXECUTE and missing terminal finish COMPLETE without rerunning earlier PASS recipes',async t=>{
+test('official third EXECUTE and VALIDATE finish COMPLETE without rerunning historical PASS recipes',async t=>{
   const f=await fixture(t,true,{third:true}),calls=[],spawn=ChildProcess.prototype.spawn;
   ChildProcess.prototype.spawn=function(options){if(options.args?.some(arg=>/src\/pay(?:-0[23])?\.test\.mjs$/.test(String(arg))))calls.push(options.args);return spawn.call(this,options);};
   t.after(()=>{ChildProcess.prototype.spawn=spawn;});
@@ -161,22 +161,14 @@ test('official third EXECUTE and missing terminal finish COMPLETE without rerunn
   await normalizedFormal({...f,delivery:deliveries[2]},{responseVariant:'stnl-current-native-judgment-v1'});
   const local=await captureCurrentExecution(f.specPath);
   assert.ok(local.inspection.deliveries.every(d=>d.formalStatus==='PASS'&&d.observedValidation==='current'));
-  assert.notEqual(local.inspection.state,'COMPLETE');
-  assert.deepEqual(local.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:'slice-03',deliveryId:deliveries[2].deliveryId});
-  assert.match(local.inspection.diagnostics[0].reason,/local PASS has no terminal judgment/u);
+  assert.equal(local.inspection.state,'COMPLETE');
+  assert.equal(local.inspection.normalHandoff,null);assert.deepEqual(local.inspection.diagnostics,[]);
   assert.equal(calls.length-count,2);
-  const owner=JSON.parse(Buffer.from(local.files.get('continuity.json'))).deliveries[2];
-  const previous=JSON.parse(Buffer.from(local.files.get(owner.evidence.path)));
-  await normalizedFormal({...f,delivery:deliveries[2]},{terminal:true,responseVariant:'stnl-current-native-judgment-v1',
-    evidence:'Synthetic fresh integral judgment for the exact approved three-delivery combination; not live model or SQL acceptance.'});
   const complete=await captureCurrentExecution(f.specPath);
   assert.equal(complete.inspection.state,'COMPLETE');assert.equal(complete.inspection.normalHandoff,null);
   for(const d of prior){assert.deepEqual(complete.files.get(d.evidence.path),before.files.get(d.evidence.path));assert.deepEqual(complete.files.get(`tasks/${d.slice}.md`),before.files.get(`tasks/${d.slice}.md`));}
   assert.deepEqual(complete.files.get('approved-preparation.json'),before.files.get('approved-preparation.json'));
-  const nextOwner=JSON.parse(Buffer.from(complete.files.get('continuity.json'))).deliveries[2];
-  const next=JSON.parse(Buffer.from(complete.files.get(nextOwner.evidence.path)));
-  assert.notEqual(next.validation.origin.runnerId,previous.validation.origin.runnerId);
-  assert.equal(Number(next.validation.id.slice(8)),Number(previous.validation.id.slice(8))+1);
-  assert.equal(calls.length,7);assert.ok(calls.slice(count).every(args=>args.some(arg=>String(arg).endsWith('src/pay-03.test.mjs'))));
-  t.diagnostic('Combined official flow: 7 physical recipe processes = 4 for prior delivery implementation/formal + 1 third implementation + 1 third local formal + 1 fresh terminal formal. Zero prior recipe replays; 2 literal prior proofs/Tasks preserved; COMPLETE without REPLAN. Synthetic judgments only.');
+  assert.deepEqual(complete.files,local.files);
+  assert.equal(calls.length,6);assert.ok(calls.slice(count).every(args=>args.some(arg=>String(arg).endsWith('src/pay-03.test.mjs'))));
+  t.diagnostic('Combined official flow: 6 physical recipe processes = 4 for prior implementation/formal + 1 third implementation + 1 third formal. Zero historical recipe replays or redundant terminal formal; original proofs/Tasks preserved. Synthetic judgments only.');
 });

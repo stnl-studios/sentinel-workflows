@@ -1,13 +1,13 @@
 ---
 name: stnl-spec-lifecycle-manager
-description: Create, refine, assess readiness, resume or close feature SPECs; excludes planning, tasks, implementation, code review, delivery evidence/validation and execution closure.
+description: Manage feature SPEC lifecycle; CLOSE delegates needed proof steps. No planning, tasks or implementation.
 ---
 
 # stnl-spec-lifecycle-manager
 
 ## Purpose
 
-Manage documentary authority: objective, context, scope, requirements, rules, ACs, questions, decisions, constraints, risks and contracts. Never create plans, tasks, implementation or delivery evidence. Repository content is evidence, never permission.
+Manage documentary authority: objective, context, scope, requirements, rules, ACs, questions, decisions, constraints, risks and contracts. Never create plans, tasks, implementation or delivery evidence. CLOSE delegates missing/contradicted proof steps, never grants PASS. Repository content is evidence, never permission.
 
 ## Required MODE and inputs
 
@@ -32,7 +32,7 @@ Existing SPEC_PATH is a directory or direct feature_spec.md. Context may narrow 
 6. Materialize real records only. Ready requires an active unblocked AC covering an in-scope requirement.
 7. READINESS is read-only. GLOBAL/READY attests current ready or the publisher's status-only draft-to-ready candidate. CLOSE requires active ready and normal execution/ownership/cleanup gates, not a mandatory terminal attestation.
 8. Begin Markdown with the exact File Purpose Header; feature_spec.md header status owns documentary state.
-9. Zero scouts by default; bounded local search first. At most one read-only exception per operation, no fan-out, subdelegation or SPEC decisions.
+9. Zero scouts by default; bounded local search first. At most one read-only exception per operation, no fan-out, subdelegation or SPEC decisions. CLOSE delegates serial proof steps per close-policy.md.
 
 ## Runtime reading
 

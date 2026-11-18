@@ -1,0 +1,75 @@
+// Frozen pre-timeline certification (base 0465970), test-only producer.
+// Reproduces real historical Q20 transport; never loaded by production runtime.
+function terminalCertification(snapshot,activation,items) {
+  const absent='EVIDENCE_INCOMPLETE: local PASS has no terminal judgment';
+  if(!items.length) return {complete:false,reason:absent};
+  if(items.some(({facts})=>facts.formalStatus!=='PASS' || facts.persistedValidation!=='current'
+    || facts.observedValidation!=='current' || !facts.observationMatches || facts.rejection
+    || facts.requiresFormalRevalidation || facts.auxiliaryStatus==='BLOCKED'
+    || facts.openFindings.some(item=>item.severity==='blocking')
+    || facts.openDivergences?.some(item=>item.severity==='blocking')))
+    return {complete:false,reason:'EVIDENCE_INCOMPLETE: terminal combination lacks current local proof'};
+  const target=currentTerminalProjection(snapshot);
+  let reason=absent,revalidation=null,revalidationReason=null;
+  for(const item of items) {
+    const record=item.facts.latest?.record;
+    if(!record?.contract.terminal || record!==item.facts.bundle.validation
+      && !isDeepStrictEqual(record,item.facts.bundle.validation))continue;
+    if(!isDeepStrictEqual(record.contract.terminal,target)) {
+      reason='EVIDENCE_STALE: terminal judgment target differs from current combination';continue;
+    }
+    if(!target.deliveries.find(leaf=>leaf.deliveryId===item.deliveryId)?.obligations
+      .some(obligation=>obligation.contribution==='complete' && obligation.fullOwner===item.deliveryId)) {
+      reason='EVIDENCE_INCOMPLETE: terminal judgment has no integral owner';continue;
+    }
+    const cap=restoreCaptureSources('current-validation',record,new Map(item.facts.bundle.objects
+      .map(object=>[object.id,Buffer.from(object.bytesBase64,'base64')])));
+    const origin=parseCurrentJson(Buffer.from(cap.origin).toString('utf8'));
+    const others=items.filter(other=>other.deliveryId!==item.deliveryId),basis=origin.otherDeliveryWork;
+    // A new local formal belongs to a new reviewed preparation generation.
+    // Restoring old product bytes cannot make an older terminal current again.
+    const staleRevision=items.some(other=>other.facts.bundle?.validation?.origin.preparationRevision>record.origin.preparationRevision);
+    if(staleRevision||!currentTerminalProductBasisMatches(basis,others)) {
+      reason=staleRevision?'EVIDENCE_STALE: terminal judgment precedes current local validation'
+        :'EVIDENCE_STALE: terminal judgment product basis differs from current combination';
+      // Old but authenticated product observations are not corrupt evidence.
+      // Offer a fresh terminal judgment only through its still-live integral
+      // owner, and only when the verified invocation binds these origin bytes.
+      // Legacy unbound captures and retired owners cannot use this recovery.
+      const observed=cap.verificationObservation===null?null:
+        parseCurrentJson(Buffer.from(cap.verificationObservation).toString('utf8'));
+      if(snapshot.deliveries.some(member=>member.deliveryId===item.deliveryId && member.slice===item.slice)
+        && observed?.executionContext?.format==='stnl-same-operation-context-v1' && revalidation===null) {
+        revalidation={operation:'VALIDATE_SLICE',slice:item.slice,deliveryId:item.deliveryId};
+        revalidationReason=reason;
+      }
+      continue;
+    }
+    return {complete:activation.activeAttempt===null,reason:activation.activeAttempt===null?null:absent};
+  }
+  // Missing integral proof is not a changed plan. Reuse the last approved
+  // live integral owner already granted by the approved projection, with an
+  // authenticated same-operation local proof. Never repair a mismatched or
+  // invalid terminal record by treating it as absent.
+  if(reason===absent && !items.some(item=>item.facts.latest?.record?.contract.terminal)) {
+    const candidates=items.filter(item=>snapshot.deliveries.some(member=>member.deliveryId===item.deliveryId
+      && member.slice===item.slice) && target.deliveries.find(leaf=>leaf.deliveryId===item.deliveryId)?.obligations
+      .some(obligation=>obligation.contribution==='complete' && obligation.fullOwner===item.deliveryId));
+    // The approved delivery order is serial. The last live integral owner
+    // reviews the complete combination even when earlier slices also own requirements.
+    if(candidates.length) {
+      const item=candidates.at(-1),record=item.facts.latest?.record;
+      if(record && isDeepStrictEqual(record,item.facts.bundle.validation)) {
+        const cap=restoreCaptureSources('current-validation',record,new Map(item.facts.bundle.objects
+          .map(object=>[object.id,Buffer.from(object.bytesBase64,'base64')])));
+        const observed=cap.verificationObservation===null?null:
+          parseCurrentJson(Buffer.from(cap.verificationObservation).toString('utf8'));
+        if(observed?.executionContext?.format==='stnl-same-operation-context-v1') {
+          revalidation={operation:'VALIDATE_SLICE',slice:item.slice,deliveryId:item.deliveryId};
+          revalidationReason=absent;
+        }
+      }
+    }
+  }
+  return {complete:false,reason:revalidation?revalidationReason:reason,revalidation};
+}

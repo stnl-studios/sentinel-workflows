@@ -9,7 +9,7 @@ import {completedBlockingCase,startCompletedApply,completedApplyRound,completedF
 import {completedPristineCase,execute,formal,reviewInput} from './fixtures/current-completed-pristine.mjs';
 import {completedNativeCase,reopeningInput} from './fixtures/current-completed-native.mjs';
 import {normalizedFormal} from './fixtures/current-native-normalization.mjs';
-import {captureCurrentExecution} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
+import {captureCurrentExecution,validateCurrentReviewCandidate} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-reader.mjs';
 import {prepareCurrentLocalReview,finalizeCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/execution-preparation-current.mjs';
 import {publishCurrentLocalReview} from '../skills/workflows/stnl-slice-executor/runtime/current-local-review.mjs';
 import {begin,reserveDispatch,publish,normalizeSuccessor,resume} from '../skills/workflows/stnl-slice-executor/runtime/execution-current-operation.mjs';
@@ -579,13 +579,11 @@ test('a coherently rebound source cannot claim a different predecessor closure',
   await assert.rejects(()=>captureCurrentExecution(f.specPath),/predecessor closure/);
 });
 
-// completedPristineCase deletes the native formal bundle and zeros consumed counters;
-// Q18 cannot create that state and public Q19 reopens an existing completed delivery
-// only for VALIDATE_SLICE. Keep all four mutation variants as fail-closed tests.
-// completedPristineCase deletes a formal bundle and resets consumption by fixture mutation;
-// it is not a public Q18/Q19 producer. Keep each former recovery variant fail-closed at
-// the first boundary that proves the missing authority or first formal anchor.
-for(const removalAt of ['refusal','successor','successor-after-FAIL','successor-review-exhausted'])test(`synthetic converted EXECUTE removal is rejected before APPLY recovery (${removalAt})`,async t=>{
+// Controlled pristine preparation is authored setup, not a public Q18 producer.
+// A real first formal is subsequently recorded. Its anchor must survive the
+// later NEEDS_FIX and APPLY; only genuinely missing/corrupt anchors are refused.
+// The former "successor-review-exhausted" label ran no review exhaustion.
+for(const removalAt of ['refusal','successor','successor-after-FAIL','successor-legacy-fixture'])test(removalAt==='refusal'?'converted EXECUTE refusal removal without valid successor authority remains rejected':`converted EXECUTE removal retains its authenticated first formal through APPLY (${removalAt})`,async t=>{
   const f=await completedPristineCase(t,{extraOutput:true});
   const first=await execute(f,{invalid:true,...(removalAt==='successor-after-FAIL'?{statuses:['TESTS_FAIL','TESTS_PASS'],invalidAt:2}:{}),
     ...(removalAt==='refusal'?{beforeReserve:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'))}:{})});
@@ -597,13 +595,49 @@ for(const removalAt of ['refusal','successor','successor-after-FAIL','successor-
   }
   const second=await execute(f,{successor:true,beforeReserve:async()=>fs.rm(path.join(f.root,'other/obsolete module.mjs'))});await publish(second.start.handle);
   await formal(f);
+  const read=async()=>{
+    const image=await captureCurrentExecution(f.specPath),book=JSON.parse(Buffer.from(image.files.get('continuity.json')));
+    const current=book.deliveries.find(item=>item.deliveryId===f.delivery.deliveryId);
+    return {image,current,bundle:JSON.parse(Buffer.from(image.files.get(current.evidence.path)))};
+  };
+  const firstPass=await read();assert.equal(firstPass.bundle.validation.id,'attempt-01');
   await fs.writeFile(path.join(f.root,'other/greeting.mjs'),'export const greeting="broken";\n');
   const finding={id:'finding-01',severity:'blocking',originAttempt:'attempt-02',problem:'The greeting export regressed.',
     evidence:'The prepared assertion observes broken instead of hello.',impact:'AC-001 is unmet.',relatedAuthority:'AC-001; obligation-01',expectedCorrection:'Restore hello.'};
   await completedFormal(f,{status:'NEEDS_FIX',findings:[finding],references:'finding-01',dispositions:'finding-01=active'});
+  const blocked=await read();
+  const anchor=blocked.bundle.support.find(item=>item.kind==='validation'&&item.id==='attempt-01');
+  assert.deepEqual(anchor,firstPass.bundle.validation);
   const start=await startCompletedApply(f);await completedApplyRound(f,start,{edit:'export const greeting="hello";\n'});
-  await assert.rejects(()=>publish(start.handle),error=>error.code==='RUNNER_RESULT_REJECTED'
-    &&/retained implementation lacks its first formal anchor/u.test(error.message));
+  assert.equal((await publish(start.handle)).publication,'confirmed');
+  const corrected=await read();
+  assert.deepEqual(corrected.bundle.support.find(item=>item.kind==='validation'&&item.id==='attempt-01'),anchor);
+  assert.deepEqual(corrected.bundle.implementation,firstPass.bundle.implementation);
+  assert.deepEqual(corrected.bundle.validation,blocked.bundle.validation);
+  assert.deepEqual(corrected.bundle.openFindings,blocked.bundle.openFindings);
+  assert.equal(corrected.image.inspection.state,'FINDINGS_CORRECTED');
+  assert.equal(corrected.image.inspection.deliveries[0].formalStatus,'NEEDS_FIX');
+  assert.equal(corrected.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  await assert.rejects(fs.stat(path.join(f.root,'other/obsolete module.mjs')),{code:'ENOENT'});
+  // Rehash the outer carriers so these negatives reach evidence authentication,
+  // rather than merely detecting a changed bundle file checksum.
+  await validateCurrentReviewCandidate({specPath:f.specPath,files:corrected.image.files});
+  for(const mutation of ['missing','corrupt']){
+    const files=new Map([...corrected.image.files].map(([name,bytes])=>[name,Buffer.from(bytes)]));
+    const bundle=structuredClone(corrected.bundle);
+    if(mutation==='missing')bundle.support=bundle.support.filter(item=>!(item.kind==='validation'&&item.id==='attempt-01'));
+    else bundle.support.find(item=>item.kind==='validation'&&item.id==='attempt-01').recordUtf8+='\n';
+    const bytes=Buffer.from(JSON.stringify(bundle)+'\n'),sha='sha256:'+createHash('sha256').update(bytes).digest('hex');
+    const book=JSON.parse(files.get('continuity.json')),current=book.deliveries.find(item=>item.deliveryId===f.delivery.deliveryId);
+    const previous=current.evidence.sha256;current.evidence.sha256=sha;
+    files.set(current.evidence.path,bytes);files.set('continuity.json',Buffer.from(JSON.stringify(book)+'\n'));
+    const task='tasks/'+current.slice+'.md';files.set(task,Buffer.from(files.get(task).toString().replaceAll(previous,sha)));
+    await assert.rejects(validateCurrentReviewCandidate({specPath:f.specPath,files}),
+      error=>['EVIDENCE_INCOMPLETE','EVIDENCE_STALE','OWNER_MISMATCH','INVALID_CURRENT_IMAGE'].includes(error.code),mutation);
+  }
+  assert.deepEqual((await captureCurrentExecution(f.specPath)).files,corrected.image.files);
+  await completedFormal(f,{references:'finding-01',dispositions:'finding-01=resolved'});
+  assert.equal((await captureCurrentExecution(f.specPath)).inspection.state,'COMPLETE');
 });
 
 for(const removalAt of ['successor','refusal'])for(const exhausted of removalAt==='successor'?[false,true]:[false])test(`normalized APPLY removal survives private review and fresh formal; removalAt=${removalAt}; exhausted=${exhausted}`,async t=>{

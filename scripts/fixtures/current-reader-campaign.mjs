@@ -254,7 +254,7 @@ export async function overlappingActiveImage({status='PASS'}={}) {
   await retireActive(f,['slice-01']);return f;
 }
 
-export async function overlappingPostImage(test,{status='PASS',operationOnly=false,sharedChange=true,sharedInput=false}={}) {
+export async function overlappingPostImage(test,{status='PASS',operationOnly=false,sharedChange=true,sharedInput=false,laterSharedChange=false}={}) {
   const {currentImage,installSuccessor}=await import('./current-operational-consumption.mjs');
   const {createCurrentNativeValidationCapture}=await import('../../skills/workflows/stnl-slice-executor/runtime/current-native-validation-capture.mjs');
   const {composePostConversionValidation}=await import('../../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs');
@@ -270,7 +270,7 @@ export async function overlappingPostImage(test,{status='PASS',operationOnly=fal
   for(const [index,delivery]of deliveries.entries()) {
     // C measures the shared change before B's legal serial validation. A private
     // output drifts only after both proofs have been captured and published.
-    if(index===1&&sharedChange)await fs.writeFile(path.join(root,'other/greeting.mjs'),'export const greeting="post";\n');
+    if(index===(laterSharedChange?2:1)&&sharedChange)await fs.writeFile(path.join(root,'other/greeting.mjs'),'export const greeting="post";\n');
     if(index===2&&operationOnly)return {image,root,head,specPath:image.f.specPath,delivery};
     if(index<2)await normalizedFormal({image,root,head,specPath:image.f.specPath,delivery});
     else {

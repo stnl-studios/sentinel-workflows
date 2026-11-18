@@ -1139,7 +1139,8 @@ for(const {priorPass,terminal,blockedTerminal,blockedLocal,retryScenario} of [
     }
   }
   if(blockedTerminal==='plain') {
-    if(!blockedLocal)await operation('VALIDATE_SLICE',{status:'PASS'});
+    // The first formal may request integral scope; do not manufacture a second
+    // validation after a complete local PASS merely to exercise BLOCKED.
     await terminalBlocked();return;
   }
   const finding={id:'finding-01',severity:'blocking',problem:'The pay export returns broken.',
@@ -1149,12 +1150,11 @@ for(const {priorPass,terminal,blockedTerminal,blockedLocal,retryScenario} of [
   assert.equal(formal.normalHandoff.operation,'APPLY_FINDINGS');
   const apply=await operation('APPLY_FINDINGS',{after:paid});
   assert.equal(apply.normalHandoff.operation,'VALIDATE_SLICE');
-  if(blockedLocal&&blockedTerminal==='after-findings'){await terminalBlocked();return;}
+  if(blockedTerminal==='after-findings'){await terminalBlocked();return;}
   const final=await operation('VALIDATE_SLICE',{status:'PASS'});
   assert.equal(final.deliveries[0].formalStatus,'PASS');
   assert.deepEqual(final.deliveries[0].counters,
     {implementationChecks:1,findingsChecks:1,validationAttempts:priorPass?3:2,findings:1});
-  if(blockedTerminal==='after-findings')await terminalBlocked();
 });
 
 test('Initial ingress installs reviewed bytes once and reads back pristine',async()=>{
@@ -1857,9 +1857,9 @@ test('lifecycle-family common barrier excludes controller with no orphan operati
 
 
 // These carriers are synthetic mechanical tool results, never native qualification.
-async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResume=false,resolved=false,successor=false,invalid=false,slice='slice-01',captureOnly=false,newFindings=[]}={}) {
+async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResume=false,resolved=false,successor=false,invalid=false,slice='slice-01',captureOnly=false,newFindings=[],retryBlocked=false}={}) {
   const image=await inspectCurrentExecution(f.specPath);
-  const start={specPath:f.specPath,slice,expectedActivationId:image.activationId,operation:kind};
+  const start={specPath:f.specPath,slice,expectedActivationId:image.activationId,operation:kind,retryBlocked};
   const started=successor?await normalizeSuccessor(start):await begin(start);
   const dispatch=await reserveDispatch(started.handle,{responseVariant:'stnl-current-native-judgment-v1',terminal});
   const requestBefore=await fs.readFile(dispatch.requestFile);
@@ -1871,7 +1871,7 @@ async function bConclude(f,kind,{edit=null,status='PASS',terminal=false,cliResum
   if(kind==='EXECUTE_SLICE') {const {head,...payload}=initialPayload(1);result={...payload,commands:measured.commands};}
   else if(kind==='APPLY_FINDINGS'){const {head,...payload}=applyPayload(JSON.parse(requestBefore).round,'TESTS_PASS',0);result={...payload,commands:measured.commands};if(invalid)result.coverage='none';}
   else result={status,commands:measured.commands,evidence:'The reviewed pay assertion executed.',findingReferences:resolved?'finding-01':newFindings.length?newFindings.map(item=>item.id).join(', '):'none',
-    findingDispositions:resolved?'finding-01=resolved':newFindings.length?newFindings.map(item=>item.id+'=active').join(', '):'none',blockers:'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
+    findingDispositions:resolved?'finding-01=resolved':newFindings.length?newFindings.map(item=>item.id+'=active').join(', '):'none',blockers:status==='BLOCKED'?'Controlled external prerequisite awaiting explicit retry.':'none',unexpectedWorkspaceEffects:'none',persistenceSummary:'No runner edits.'};
   const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result,...(kind==='VALIDATE_SLICE'?{newFindings}:{})});
   const file=path.join(f.root,agentId+'.json');await fs.writeFile(file,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
   const captured=await captureNative(started.handle,file);
@@ -2401,41 +2401,15 @@ const formalPass=observation=>({result:{status:'PASS',commands:observation.comma
   findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',
   persistenceSummary:'The runner made no product edits.'},newFindings:[]});
 test('Initial EXECUTE proof survives Q18 and the Q20 terminal formal after Q18 moved its normative hash',async t=>{
-  const f=await fixture();
-  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
-  await fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n');
-  await installCurrentInitial(f);
-  await officialNative(f,'slice-01','EXECUTE_SLICE','official-q18-a-execute',executeResult(1));
-  await officialNative(f,'slice-01','VALIDATE_SLICE','official-q18-a-formal',formalPass);
-  // B keeps a concluded semantic EXECUTE refusal in support before reopening the slice.
-  await officialNative(f,'slice-02','EXECUTE_SLICE','official-q18-b-refused',executeResult(1,result=>{result.coverage='none';}));
-  await officialNative(f,'slice-02','EXECUTE_SLICE','official-q18-b-execute',executeResult(2),{successor:true});
-  await officialNative(f,'slice-02','VALIDATE_SLICE','official-q18-b-formal',formalPass);
-  let image=await captureCurrentExecution(f.specPath);
-  const continuity=JSON.parse(Buffer.from(image.files.get('continuity.json')));
-  const b=continuity.deliveries.find(item=>item.slice==='slice-02');
-  const executed=JSON.parse(Buffer.from(image.files.get(b.evidence.path))),[implementation]=executed.implementation;
+  const {legacyInitialQ20Proof}=await import('./fixtures/legacy-q20-proof.mjs');
+  const {root,specPath,implementation}=await legacyInitialQ20Proof(t);
+  const f={root,specPath};
+  const {context}=await resolveCurrentExecutionContext(specPath);
   assert.equal(implementation.origin.preparationRevision,1);
-  assert.deepEqual(executed.support.map(item=>[item.kind,item.origin.operation]),[['rejection','EXECUTE_SLICE']]);
-
-  await publishReviewedReplan({specPath:f.specPath,completedDeliveryIds:continuity.deliveries.map(item=>item.deliveryId),
-    artifacts:new Map(['plan.md','tasks.md'].map(name=>[name,Buffer.from(Buffer.from(image.files.get(name)).toString('utf8')
-      .split('\n').filter(line=>!/\| 0[12] - /u.test(line)).join('\n'))]))});
-  image=await captureCurrentExecution(f.specPath);
-  const reopening=reopeningInput(image,b.deliveryId,{terminalValidation:true});
-  await publishReviewedReplan({specPath:f.specPath,completedDeliveryIds:reopening.completedDeliveryIds,
-    artifacts:reopening.artifacts,terminalValidation:true,rejectSourceMutations:true});
-  image=await captureCurrentExecution(f.specPath);
-  const reopened=JSON.parse(Buffer.from(image.files.get('continuity.json'))).deliveries[0];
-  assert.equal(reopened.deliveryId,b.deliveryId);
-  assert.notEqual(implementation.origin.normativeSha256,reopened.authoritySha256);
-
-  const {context}=await resolveCurrentExecutionContext(f.specPath);
-  await normalizedFormal({view:{execution:context.logicalExecutionRoot},specPath:f.specPath,
-    delivery:reopened,root:f.root,head:null},{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
   const final=await captureCurrentExecution(f.specPath);
   assert.equal(final.inspection.state,'COMPLETE');
   const current=JSON.parse(Buffer.from(final.files.get('continuity.json'))).deliveries[0];
+  assert.notEqual(implementation.origin.normativeSha256,current.authoritySha256);
   assert.deepEqual(JSON.parse(Buffer.from(final.files.get(current.evidence.path))).implementation,[implementation]);
   const {completedEvidenceContext}=await import('../skills/workflows/stnl-slice-executor/runtime/current-evidence-state.mjs');
   const snapshotBytes=Buffer.from(final.files.get('approved-preparation.json'));
@@ -2558,8 +2532,8 @@ test(`Initial composer publishes verified prior PASS overlap (${scenario})`,asyn
   assert.equal(current.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
   assert.deepEqual(await inspectQualityExecution(f.specPath),current.image.inspection);
   if(scenario==='v1-overlap') {
-    // Revalidate the earlier shared proof in the legal serial handoff order.
-    await bConclude(f,'VALIDATE_SLICE');
+    // The current slice owns this overlap; never reopen the historical PASS.
+    assert.equal(current.image.inspection.normalHandoff.slice,'slice-02');
     const blocked=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',status:'NEEDS_FIX',newFindings:[{
       id:'finding-01',severity:'blocking',originAttempt:'attempt-01',problem:'The controlled second-delivery review requests a correction.',
       evidence:'Mechanical formal finding for the overlapping current slice.',impact:'The controlled AC-001 review remains open.',relatedAuthority:'AC-001; obligation-01',
@@ -2569,7 +2543,8 @@ test(`Initial composer publishes verified prior PASS overlap (${scenario})`,asyn
     const task=Buffer.from(applied.image.files.get('tasks/slice-02.md')).toString('utf8');
     assert.match(task.split('## Prior Validation Overlap\n\n')[1].split('\n## ')[0],/Slice 01 overlap:.*src\/pay\.mjs/u);
     assert.equal(applied.image.inspection.deliveries[1].auxiliaryStatus,'TESTS_PASS');
-    await bConclude(f,'VALIDATE_SLICE');
+    assert.equal(applied.image.inspection.normalHandoff.slice,'slice-02');
+    assert.deepEqual(Buffer.from(applied.image.files.get(first.evidence.path)),priorEvidence);
     const resolved=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',resolved:true});
     assert.equal(JSON.parse(await fs.readFile(resolved.dispatch.requestFile)).format,'stnl-current-validation-request-v2');
     assert.equal(resolved.image.inspection.deliveries[1].formalStatus,'PASS');
@@ -2702,9 +2677,8 @@ test('planned distinct reports retain selected original absence after publicatio
   assert.ok(validatedContinuity.deliveries[1].baseline.entries.some(item=>item.path==='docs/missing/report-b.md'&&item.kind==='absent'));
   const second=await bConclude(f,'EXECUTE_SLICE',{slice:'slice-02',edit:()=>fs.writeFile(path.join(f.root,'docs/missing/report-b.md'),'Report B.\n')});
   assert.equal(second.image.inspection.normalHandoff?.operation,'VALIDATE_SLICE');
-  assert.equal(second.image.inspection.normalHandoff?.slice,'slice-01');
+  assert.equal(second.image.inspection.normalHandoff?.slice,'slice-02');
   assert.deepEqual(second.image.files.get(validatedContinuity.deliveries[0].evidence.path),validated.files.get(validatedContinuity.deliveries[0].evidence.path));
-  await bConclude(f,'VALIDATE_SLICE',{slice:'slice-01'});
   const completed=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',terminal:true});
   assert.equal(completed.image.inspection.state,'COMPLETE');
 });
@@ -2905,8 +2879,7 @@ test('explicit reviewed reentry revalidates every stale completed structural con
   }});
   await bConclude(f,'VALIDATE_SLICE');
   await bConclude(f,'EXECUTE_SLICE',{slice:'slice-02',edit:()=>fs.writeFile(path.join(f.root,'docs/missing/report-b.md'),'B\n')});
-  await bConclude(f,'VALIDATE_SLICE');
-  const final=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',terminal:true});assert.equal(final.image.inspection.state,'COMPLETE');
+  const final=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02'});assert.equal(final.image.inspection.state,'COMPLETE');
   const original=final.image,prior=JSON.parse(Buffer.from(original.files.get('continuity.json'))),ids=prior.deliveries.map(i=>i.deliveryId);
   const oldProofs=new Map(prior.deliveries.map(d=>[d.deliveryId,JSON.parse(Buffer.from(original.files.get(d.evidence.path)))]));
   const approve=r=>({...r,decision:'approved',summary:'Controlled exact stale completed revalidation, not independent semantic qualification.',
@@ -2986,7 +2959,7 @@ test('explicit reviewed reentry revalidates every stale completed structural con
   }
   assert.ok(opened.inspection.deliveries.every(d=>d.formalStatus===null&&d.observedValidation==='revalidation-required'));
   const a=await bConclude(f,'VALIDATE_SLICE');assert.notEqual(a.image.inspection.state,'COMPLETE');
-  const b=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',terminal:true});assert.equal(b.image.inspection.state,'COMPLETE');
+  const b=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02'});assert.equal(b.image.inspection.state,'COMPLETE');
   for(const d of JSON.parse(Buffer.from(b.image.files.get('continuity.json'))).deliveries)
     assert.equal(d.counters.validationAttempts,prior.deliveries.find(i=>i.deliveryId===d.deliveryId).counters.validationAttempts+1);
 });
@@ -3030,4 +3003,120 @@ for(const winner of ['install','revise'])test(`Initial generation and revise are
   }finally{releaseWrite();fs.open=open;if(pending)await pending.catch(()=>{});}
   assert.equal(paused,true);
   assert.equal((await inspectCurrentExecution(f.specPath)).state,'MATERIALIZED_PRISTINE');
+});
+
+
+test('explicit BLOCKED retry keeps authenticated predecessor overlap but rejects unowned drift',async t=>{
+  const f=await fixture();t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const source=path.join(f.root,'src/pay.mjs');
+  await bConclude(f,'EXECUTE_SLICE',{edit:()=>fs.writeFile(source,'export const pay=()=>"paid";\n')});
+  const first=await bConclude(f,'VALIDATE_SLICE');
+  const continuity=JSON.parse(Buffer.from(first.image.files.get('continuity.json')));
+  const predecessor=continuity.deliveries[0],predecessorBytes=Buffer.from(first.image.files.get(predecessor.evidence.path));
+  await bConclude(f,'EXECUTE_SLICE',{slice:'slice-02',edit:()=>fs.writeFile(source,'export const pay=()=>"paid"; // second slice\n')});
+  const blocked=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',status:'BLOCKED'});
+  assert.equal(blocked.image.inspection.deliveries[1].formalStatus,'BLOCKED');
+  assert.equal(blocked.image.inspection.deliveries[0].diagnostics[0].reason,'EVIDENCE_STALE');
+  assert.ok(blocked.image.milestoneDeliveryIds.includes(predecessor.deliveryId));
+  assert.equal(Object.hasOwn(blocked.image.inspection,'milestoneDeliveryIds'),false);
+  const selected={specPath:f.specPath,slice:'slice-02',operation:'VALIDATE_SLICE',
+    expectedActivationId:blocked.image.inspection.activationId,retryBlocked:true};
+  const bytes=await fs.readFile(source);await fs.appendFile(source,'// unauthorized later edit\n');
+  const foreign=await captureCurrentExecution(f.specPath);
+  assert.ok(!foreign.milestoneDeliveryIds.includes(predecessor.deliveryId));
+  await assert.rejects(begin(selected),error=>error.code==='BLOCKED_REVALIDATION_NOT_ELIGIBLE'
+    &&/other unresolved work/u.test(error.message));
+  await fs.writeFile(source,bytes);
+  const retried=await bConclude(f,'VALIDATE_SLICE',{slice:'slice-02',retryBlocked:true});
+  assert.equal(retried.image.inspection.state,'COMPLETE');
+  assert.equal(retried.image.inspection.deliveries[1].formalStatus,'PASS');
+  assert.deepEqual(Buffer.from(retried.image.files.get(predecessor.evidence.path)),predecessorBytes);
+  const final=JSON.parse(Buffer.from(retried.image.files.get('continuity.json'))).deliveries[1];
+  const bundle=JSON.parse(Buffer.from(retried.image.files.get(final.evidence.path)));
+  assert.ok(bundle.support.some(record=>record.kind==='validation'&&/Status: BLOCKED/u.test(record.recordUtf8)));
+});
+
+// Fresh approved SPECs only: exercise the approved controller handoff chain
+// before CLOSE. Mechanical results prove guards/resume/archive, not an LLM
+// orchestrator. No compatibility reset or manufactured historical approval.
+async function assertFreshCloseRefused(f) {
+  const before=await captureCurrentExecution(f.specPath),spec=await fs.readFile(f.specPath);
+  await assert.rejects(publishCandidate('CLOSE',path.dirname(f.specPath),null),/requires current integral COMPLETE/u);
+  const after=await captureCurrentExecution(f.specPath);
+  assert.deepEqual(after.activationBytes,before.activationBytes);
+  assert.deepEqual(after.files,before.files);
+  assert.deepEqual(await fs.readFile(f.specPath),spec);
+}
+async function closeFreshProofAndCheckArchive(f) {
+  const before=await captureCurrentExecution(f.specPath);
+  assert.equal(before.inspection.state,'COMPLETE');assert.equal(before.inspection.normalHandoff,null);
+  const result=await publishCandidate('CLOSE',path.dirname(f.specPath),null);
+  assert.equal(result.publication,'confirmed');assert.equal(result.cleanup,'complete');
+  const archive=JSON.parse(await fs.readFile(result.historicalArchive));
+  const retained=new Map(archive.executionSnapshot.files.map(item=>[item.path,Buffer.from(item.bytesBase64,'base64')]));
+  assert.deepEqual(retained.get('activation.json'),Buffer.from(before.activationBytes));
+  for(const [name,value]of before.files)assert.deepEqual(retained.get(name),Buffer.from(value),name);
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'SPEC_CLOSED');
+}
+
+test('fresh SPEC approved EXECUTE and VALIDATE handoff chain permits CLOSE without rerunning captured checks',async t=>{
+  const f=await fixture({kind:'lifecycle',single:true,productRefs:true,closeReady:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const counterRoot=await fs.mkdtemp('/tmp/sentinel-close-check-count-');
+  t.after(()=>fs.rm(counterRoot,{recursive:true,force:true}));
+  const counter=path.join(counterRoot,'checks');
+  await fs.appendFile(path.join(f.root,'src/pay.test.mjs'),
+    '\nimport {appendFileSync as countCloseCheck} from "node:fs";countCloseCheck('+JSON.stringify(counter)+',"check\\n");\n');
+  await installCurrentInitial(f);
+  const initial=await captureCurrentExecution(f.specPath);
+  assert.equal(initial.inspection.preparationRevision,1);
+  assert.equal(initial.inspection.normalHandoff.operation,'EXECUTE_SLICE');
+  await assertFreshCloseRefused(f);
+  const executed=await bConclude(f,initial.inspection.normalHandoff.operation,{captureOnly:true,
+    slice:initial.inspection.normalHandoff.slice,
+    edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  const checks=await fs.readFile(counter);
+  assert.equal(checks.toString(),'check\n');
+  const response=await fs.readFile(path.join(executed.root,'round-1.response.json'));
+  assert.equal((await resume(executed.started.handle)).nextAction,'publish');
+  assert.equal((await resume(executed.started.handle)).nextAction,'publish');
+  assert.deepEqual(await fs.readFile(counter),checks,'resume must not repeat the captured verification');
+  await publish(executed.started.handle);
+  assert.deepEqual(await fs.readFile(counter),checks,'publishing captured proof must not rerun the checks');
+  assert.deepEqual(await fs.readFile(path.join(executed.root,'round-1.response.json')),response);
+  const implemented=await captureCurrentExecution(f.specPath);
+  assert.equal(implemented.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  await assertFreshCloseRefused(f);
+  const validated=await bConclude(f,implemented.inspection.normalHandoff.operation,{slice:implemented.inspection.normalHandoff.slice});
+  assert.equal(validated.image.inspection.state,'COMPLETE');
+  assert.equal((await fs.readFile(counter,'utf8')),'check\ncheck\n');
+  await closeFreshProofAndCheckArchive(f);
+});
+
+test('fresh SPEC CLOSE refuses NEEDS_FIX until the approved APPLY and fresh validation chain passes',async t=>{
+  const f=await fixture({kind:'lifecycle',single:true,productRefs:true,closeReady:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  const needsFix=await sealedBlockingFormal(f);
+  assert.equal(needsFix.deliveries[0].formalStatus,'NEEDS_FIX');
+  assert.equal(needsFix.normalHandoff.operation,'APPLY_FINDINGS');
+  await assertFreshCloseRefused(f);
+  const applied=await bConclude(f,needsFix.normalHandoff.operation,{slice:needsFix.normalHandoff.slice,
+    edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  assert.equal(applied.image.inspection.normalHandoff.operation,'VALIDATE_SLICE');
+  assert.equal(applied.image.inspection.deliveries[0].formalStatus,'NEEDS_FIX','APPLY is not formal approval');
+  await assertFreshCloseRefused(f);
+  await bConclude(f,'VALIDATE_SLICE',{resolved:true});
+  await closeFreshProofAndCheckArchive(f);
+});
+
+test('fresh SPEC CLOSE preserves formal BLOCKED and offers no unrequested execution handoff',async t=>{
+  const f=await fixture({kind:'lifecycle',single:true,productRefs:true,closeReady:true});
+  t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  await bConclude(f,'EXECUTE_SLICE',{edit:()=>fs.writeFile(path.join(f.root,'src/pay.mjs'),'export const pay=()=>"paid";\n')});
+  const blocked=await bConclude(f,'VALIDATE_SLICE',{status:'BLOCKED'});
+  assert.equal(blocked.image.inspection.deliveries[0].formalStatus,'BLOCKED');
+  assert.equal(blocked.image.inspection.normalHandoff,null);
+  await assertFreshCloseRefused(f);
 });

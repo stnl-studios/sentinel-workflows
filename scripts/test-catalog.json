@@ -25,6 +25,8 @@
     "scripts/test-current-findings-evidence.mjs",
     "scripts/test-current-first-output-inventory.mjs",
     "scripts/test-current-future-output-preflight.mjs",
+    "scripts/test-current-historical-context.mjs",
+    "scripts/test-current-historical-milestones.mjs",
     "scripts/test-current-initial-evidence.mjs",
     "scripts/test-current-initial-native-operation.mjs",
     "scripts/test-current-initial-preparation.mjs",

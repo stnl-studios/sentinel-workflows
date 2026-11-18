@@ -1900,3 +1900,22 @@ test("template structure remains compact, canonical, and independently materiali
     "Selective Reading",
   ]);
 });
+
+test('CLOSE delegates only minimal admitted current-SPEC proof steps and preserves its publication gate',()=>{
+  const policy=readFileSync(path.join(SKILL_ROOT,'references/close-policy.md'),'utf8');
+  assert.match(policy,/resume saved pending handles first; never repeat uncertain effects/u);
+  assert.match(policy,/smallest `normalHandoff`: EXECUTE_SLICE\/APPLY_FINDINGS to `stnl-slice-executor`, VALIDATE_SLICE to `stnl-slice-quality-manager`/u);
+  assert.match(policy,/within approved Plan\/Tasks, checks and budgets/u);
+  assert.match(policy,/Reinspect each step\. Close only authenticated COMPLETE/u);
+  assert.match(policy,/no invented authority, predecessor reopening, REPLAN or RECONCILE/u);
+  assert.match(policy,/Corruption, uncertainty, blockers or no legal handoff stop CLOSE/u);
+  assert.match(policy,/Never retry an exhausted operation/u);
+  assert.match(policy,/No budget resets or legacy reconstruction/u);
+  assert.match(policy,/Archive the final execution snapshot.*byte-for-byte before retirement/u);
+  assert.doesNotMatch(policy,/recoverLegacyBlocked|recover-legacy-blocked|recoveryHandoff/u);
+  for(const skill of ['stnl-slice-executor','stnl-slice-quality-manager']){
+    const continuation=readFileSync(path.join(ROOT,'skills/workflows',skill,'references/workflow-continuation.md'),'utf8');
+    assert.match(continuation,/Do not run CLOSE until the user explicitly agrees/u);
+    assert.match(continuation,/minimal proof-completion orchestration through existing normalHandoff operations within approved Plan\/Tasks and budgets/u);
+  }
+});

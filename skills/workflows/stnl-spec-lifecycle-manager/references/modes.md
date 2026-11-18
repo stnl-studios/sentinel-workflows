@@ -47,7 +47,7 @@ After semantic GLOBAL/READY, an already-ready workspace may serve an explicitly 
 
 ## CLOSE
 
-Follow close-policy.md for admission/retirement and target-only publication; never supply a candidate or substitute attestation for authority.
+Follow close-policy.md: reuse historical coverage; resume pending work, delegate only the smallest normalHandoff and reinspect before publishing. No candidate or substitute attestation.
 
 ## Outcome contract
 

@@ -263,12 +263,11 @@ test('EC-1 PASS then approved product drift completes a second VALIDATE with its
   assert.deepEqual(cleanA.inspection,cleanB.inspection);
   const cleanDelivery=cleanA.inspection.deliveries.find(item=>item.deliveryId===fixture.delivery.deliveryId);
   assert.equal(cleanDelivery.formalStatus,'PASS');
-  // Local PASS now offers the missing integral judgment to its live owner.
-  assert.deepEqual(cleanA.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:fixture.delivery.slice,deliveryId:fixture.delivery.deliveryId});
-  assert.notEqual(cleanA.inspection.state,'COMPLETE');
-  assert.deepEqual(cleanA.inspection.diagnostics,[{kind:'evidence',artifact:'continuity.json',field:'terminal',
-    reason:'EVIDENCE_INCOMPLETE: local PASS has no terminal judgment'}]);
-  // Missing terminal proof does not authorize an unrelated findings operation.
+  // Complete authenticated criteria need no additional terminal ceremony.
+  assert.equal(cleanA.inspection.normalHandoff,null);
+  assert.equal(cleanA.inspection.state,'COMPLETE');
+  assert.deepEqual(cleanA.inspection.diagnostics,[]);
+  // Completion does not authorize an unrelated findings operation.
   await assert.rejects(()=>begin({specPath:fixture.specPath,slice:fixture.delivery.slice,operation:'APPLY_FINDINGS',
     expectedActivationId:cleanA.inspection.activationId}),blocked('UNSUPPORTED_FORMAT'));
   assert.deepEqual(await fs.readFile(path.join(fixture.image.f.execution,'activation.json')),Buffer.from(cleanA.activationBytes));
@@ -328,7 +327,7 @@ test('EC-1 PASS then approved product drift completes a second VALIDATE with its
   assert.deepEqual(finalA.inspection,finalB.inspection);
   assert.equal(finalA.inspection.deliveries[0].formalStatus,'PASS');
   assert.deepEqual(finalA.inspection.normalHandoff,cleanA.inspection.normalHandoff);
-  assert.notEqual(finalA.inspection.state,'COMPLETE');
+  assert.equal(finalA.inspection.state,'COMPLETE');
   assert.deepEqual(finalA.inspection.diagnostics,cleanA.inspection.diagnostics);
   assert.equal(finalA.inspection.deliveries[0].counters.validationAttempts,
     prior.counters.validationAttempts+1);

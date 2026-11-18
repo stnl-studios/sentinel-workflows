@@ -14,7 +14,7 @@ const decode=bytes=>JSON.parse(Buffer.from(bytes));
 const json=value=>Buffer.from(JSON.stringify(value)+'\n');
 const sha=bytes=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
 
-test('VALIDATE live sibling revalidation recovers stale terminal basis through a fresh official terminal judgment',async t=>{
+test('VALIDATE live sibling refreshes its criteria without revalidating an independent terminal owner',async t=>{
   const f=await completedNativeCase(t,{retire:false,independent:true});
   await normalizedFormal(f,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
   const before=await captureCurrentExecution(f.specPath);assert.equal(before.inspection.state,'COMPLETE');
@@ -24,35 +24,15 @@ test('VALIDATE live sibling revalidation recovers stale terminal basis through a
   await normalizedFormal({...f,delivery:sibling});
   const after=await captureCurrentExecution(f.specPath);
   assert.ok(after.inspection.deliveries.every(item=>item.formalStatus==='PASS'&&item.observedValidation==='current'));
-  assert.equal(after.inspection.state,'EVIDENCE_STALE');
-  assert.deepEqual(after.inspection.normalHandoff,{operation:'VALIDATE_SLICE',slice:terminal.slice,deliveryId:terminal.deliveryId});
-  assert.match(after.inspection.diagnostics[0].reason,/terminal judgment product basis differs/u);
-  await assert.rejects(()=>captureCurrentSetReplacementSource(f.specPath),{code:'REPLAN_REQUIRED'});
+  assert.equal(after.inspection.state,'COMPLETE');
+  assert.equal(after.inspection.normalHandoff,null);assert.deepEqual(after.inspection.diagnostics,[]);
+  assert.deepEqual((await captureCurrentSetReplacementSource(f.specPath)).activationBytes,after.activationBytes);
   assert.deepEqual(after.files.get('approved-preparation.json'),before.files.get('approved-preparation.json'));
   assert.deepEqual(after.files.get(terminal.evidence.path),before.files.get(terminal.evidence.path));
-  const proofBefore=decode(after.files.get(terminal.evidence.path));
-  const start=await begin({specPath:f.specPath,slice:terminal.slice,
-    expectedActivationId:after.inspection.activationId,operation:'VALIDATE_SLICE'});
-  await assert.rejects(()=>reserveDispatch(start.handle),error=>error.code==='EVIDENCE_INCOMPLETE'
-    && /explicit terminal dispatch/u.test(error.message));
-  const dispatch=await reserveDispatch(start.handle,{terminal:true,responseVariant:'stnl-current-native-judgment-v1'});
-  const agentId='mechanical-refreshed-terminal';await bindNative(start.handle,agentId);
-  const origin=decode(await fs.readFile(dispatch.originFile));
-  assert.notEqual((await captureCurrentActiveExecution(f.specPath,origin.admission.reservedActivation.activeAttempt)).inspection.state,'COMPLETE');
-  const measured=await verifyNative(dispatch.originFile);
-  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result:{
-    status:'PASS',commands:measured.commands,evidence:'Fresh independent mechanical review of the current integral combination.',
-    findingReferences:'none',findingDispositions:'none',blockers:'none',unexpectedWorkspaceEffects:'none',
-    persistenceSummary:'Retain the prior local evidence and publish a new terminal judgment.'},newFindings:[]});
-  const tool=path.join(f.root,'fresh-terminal-result.json');await fs.writeFile(tool,json({agentId,status:'completed',finalResponse}));
-  await captureNative(start.handle,tool);assert.equal((await publish(start.handle)).publication,'confirmed');
-  const repaired=await captureCurrentExecution(f.specPath);
-  assert.equal(repaired.inspection.state,'COMPLETE');assert.equal(repaired.inspection.normalHandoff,null);
-  assert.deepEqual(repaired.files.get(sibling.evidence.path),after.files.get(sibling.evidence.path));
-  assert.deepEqual(repaired.files.get('approved-preparation.json'),before.files.get('approved-preparation.json'));
-  const proofAfter=decode(repaired.files.get(terminal.evidence.path));
-  assert.notEqual(proofAfter.validation.origin.runnerId,proofBefore.validation.origin.runnerId);
-  assert.equal(Number(proofAfter.validation.id.slice(8)),Number(proofBefore.validation.id.slice(8))+1);
+  const repeated=await captureCurrentExecution(f.specPath);
+  assert.deepEqual(repeated.activationBytes,after.activationBytes);
+  assert.deepEqual(repeated.files,after.files);
+
 });
 
 async function completeApply(f) {

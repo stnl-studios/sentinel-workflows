@@ -2623,6 +2623,11 @@ function assertBlockedFormalTransition(previous,current,context) {
   if(previous.cap.transport==='native'&&current.cap.transport==='native') {
     const priorOrigin=jsonBytes(previous.cap.origin,'blocked predecessor origin').value;
     const nextOrigin=jsonBytes(current.cap.origin,'blocked revalidation origin').value;
+    // Older captures may omit sibling observations. Absence cannot establish
+    // an empty sibling set or authorize a BLOCKED retry; reject explicitly
+    // rather than letting canonical(undefined) obscure the missing evidence.
+    if(!Array.isArray(priorOrigin.otherDeliveryWork)||!Array.isArray(nextOrigin.otherDeliveryWork))
+      incomplete('blocked revalidation requires explicit otherDeliveryWork arrays in both captures');
     equal(nextOrigin.otherDeliveryWork,priorOrigin.otherDeliveryWork,'EVIDENCE_STALE',
       'blocked revalidation changed another active or completed delivery');
   }
