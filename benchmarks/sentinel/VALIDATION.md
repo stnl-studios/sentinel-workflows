@@ -121,3 +121,9 @@ Para qualificação reproduzível, a configuração escolhida precisará ser con
 Após consolidar os resultados, foi autorizada a configuração `reference-gpt-61-sol-high-v2`: import 14M tokens observados, rename/query 12M, mantendo 40min por célula, 60M/4h por campanha, modelos, esforço e todos os critérios. A superfície existente `caseOverrides` recebe somente `limits.maxReportedTokens`; não permite alterar os demais limites por tarefa. A prioridade é do valor explicitamente definido na tarefa, com fallback ao global.
 
 O próximo passo autorizado é **uma campanha de aceitação com o comando padrão**, não modo official, certificado ou publicação. Nenhum resultado anterior é reclassificado e não haverá novas tentativas ou aumentos automáticos se essa campanha falhar.
+
+## Próxima calibração prospectiva de watchdog (v3)
+
+Os 40min são proteção operacional contra execução indefinida, não SLA nem critério funcional. A referência v3 mantém Sol/high, fixture, critérios, etapas, 14M import/12M demais e passa apenas import para50min. Rename/query permanecem40min; os limites globais4h/60M continuam prevalentes, ainda que a soma dos máximos individuais seja260min/76M. Assim, o orçamento global pode censurar uma campanha antes de cada célula consumir todo seu teto, por design.
+
+Os40min permanecem referência diagnóstica no relato dos tempos, sem novo gate. Uma única campanha íntegra é autorizada após testes determinísticos e verificação de ausência de concorrência; se exceder orçamento, não haverá reinício nem aumento automático. Campanhas antigas permanecem intactas, e qualquer resultado novo pertence à nova identidade de perfil/engine.

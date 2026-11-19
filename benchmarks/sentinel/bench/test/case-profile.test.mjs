@@ -93,3 +93,30 @@ test('resolved case limits govern real budget decision and in-turn monitor witho
   monitor.observe({method:'thread/tokenUsage/updated',params:{threadId:'simulated',tokenUsage:{total:{totalTokens:limit}}}});assert.equal(monitor.triggered,true);
  }
 });
+
+test('case duration override is isolated, identity-bound, and global campaign deadline prevails',async()=>{
+ const {budgetDecision}=await import('../core.mjs');const p=base();
+ p.limits.caseMs=2400000;p.limits.campaignMs=14400000;p.limits.maxCampaignReportedTokens=60000000;
+ p.caseOverrides={import:{limits:{caseMs:3000000,maxReportedTokens:14000000}}};
+ const original=structuredClone(p),r=resolveCaseProfile(p,'import');validateProfile(p);validateProfile(r);
+ assert.deepEqual(r.limits,{...p.limits,caseMs:3000000,maxReportedTokens:14000000});
+ for(const id of ['rename','query'])assert.equal(resolveCaseProfile(p,id).limits.caseMs,2400000);
+ const identity=digest(r),sibling=digest(resolveCaseProfile(p,'rename'));
+ p.caseOverrides.import.limits.caseMs=3100000;assert.notEqual(digest(resolveCaseProfile(p,'import')),identity);assert.equal(digest(resolveCaseProfile(p,'rename')),sibling);
+ r.limits.caseMs=1;assert.equal(original.caseOverrides.import.limits.caseMs,3000000);assert.equal(p.caseOverrides.import.limits.caseMs,3100000);
+ const limits=resolveCaseProfile(original,'import').limits;
+ for(const remaining of [14400000,1000000]){
+  const start=100,deadline=Math.min(start+limits.caseMs,start+remaining);
+  const budget={campaignDeadline:start+remaining,caseDeadline:deadline,turns:0,unchanged:0,reportedTokens:0};
+  assert.equal(budgetDecision({...budget,now:deadline-1},limits),'ALLOW');
+  assert.equal(budgetDecision({...budget,now:deadline},limits),'DEADLINE');
+ }
+ delete original.caseOverrides.import.limits.maxReportedTokens;validateProfile(original);assert.equal(resolveCaseProfile(original,'import').limits.maxReportedTokens,original.limits.maxReportedTokens);
+});
+test('case duration cannot override campaign controls or violate positive integer/deadline bounds',()=>{
+ for(const limits of [{campaignMs:1},{maxCampaignReportedTokens:1},{turnMs:1},{caseMs:3000000,unexpected:1},...[-1,0,1.5,Infinity,NaN,'3000000',Number.MAX_SAFE_INTEGER+1,14400001,1].map(caseMs=>({caseMs}))]){
+  const p=base();p.limits.campaignMs=14400000;p.caseOverrides={import:{limits}};
+  assert.throws(()=>validateProfile(p));assert.throws(()=>resolveCaseProfile(p,'query'));
+ }
+ const p=base();p.caseOverrides={import:{limits:{caseMs:p.limits.campaignMs}}};validateProfile(p);
+});

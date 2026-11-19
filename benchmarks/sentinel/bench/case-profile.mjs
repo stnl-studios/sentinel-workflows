@@ -39,10 +39,14 @@ export function validateCaseOverrides(profile) {
   if (Object.hasOwn(override,'stageRoles') && !record(override.stageRoles)) throw Error('invalid override stageRoles');
   if (Object.hasOwn(override,'limits')) {
    const limits=override.limits;
-   if (!record(limits) || Object.keys(limits).length!==1 || !Object.hasOwn(limits,'maxReportedTokens')) throw Error('override limits requires only maxReportedTokens: '+id);
-   if (!Number.isSafeInteger(limits.maxReportedTokens) || limits.maxReportedTokens<=0) throw Error('invalid override maxReportedTokens: '+id);
-   const campaignLimit=profile.limits?.maxCampaignReportedTokens;
-   if (campaignLimit!==undefined && (!Number.isSafeInteger(campaignLimit) || campaignLimit<=0 || limits.maxReportedTokens>campaignLimit)) throw Error('override maxReportedTokens exceeds or has invalid campaign limit: '+id);
+   const caps={maxReportedTokens:'maxCampaignReportedTokens',caseMs:'campaignMs'};
+   if (!record(limits) || !Object.keys(limits).length || Object.keys(limits).some(k=>!Object.hasOwn(caps,k))) throw Error('override limits allows only maxReportedTokens/caseMs: '+id);
+   for (const [key,value] of Object.entries(limits)) {
+    if (!Number.isSafeInteger(value) || value<=0) throw Error('invalid override '+key+': '+id);
+    const campaignLimit=profile.limits?.[caps[key]];
+    if (campaignLimit!==undefined && (!Number.isSafeInteger(campaignLimit) || campaignLimit<=0 || value>campaignLimit)) throw Error('override '+key+' exceeds or has invalid campaign limit: '+id);
+   }
+   if (limits.caseMs!==undefined && profile.limits?.turnMs>limits.caseMs) throw Error('override caseMs shorter than turnMs: '+id);
   }
   validateRoleConfiguration(merged(profile,override));
  }
