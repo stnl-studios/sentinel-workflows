@@ -63,3 +63,10 @@ test('typed draft input cause is preserved without admitting generic stale evide
   assert.throws(()=>recoverUncapturedDraft(g.m,g.spec,g.root,rejected,quiet),e=>e.code==='RECOVERY_CLASS_BLOCKED');
  }
 });
+
+test('local contract bytes are referenced or directly copied, never model-transcribed as a reading receipt',()=>{
+ const prompt=stagePrompt({manifest,operation:'INIT',authority:ready({state:'NO_EXECUTION'})});
+ for(const expected of ['passe caminho canônico e hash ao filho, sem retranscrever','heredocs, literais de comandos ou novas configurações','O próprio filho deve ler integralmente','hash isolado não provam leitura independente','cat da fonte canônica para contract.toml','shasum para contract.sha256','tee arbitrário não comprova','não torna capture-native um recibo genérico','contexto novo, alteração, truncamento ou identidade incerta'])assert.ok(prompt.includes(expected),expected);
+ assert.ok(prompt.includes('finalResponse é uma string com o texto inteiro literal'));
+ assert.ok(prompt.includes('sem redirecionamento, encadeamento ou composição de comandos'));
+});
