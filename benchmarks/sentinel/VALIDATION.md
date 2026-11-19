@@ -76,3 +76,15 @@ Total: 56.019.593 tokens observados, incluindo 51.246.720 de cache, 4.333.375 de
 A auditoria não encontrou loop de slices nem soma indevida de snapshots. Houve saídas volumosas e algumas releituras de bundles, também presentes em PASS anteriores; não existe correção causal única demonstrada. Rename-1 levou 39m16s, deixando somente 44s da janela de 40min. Tempo e tokens são restrições independentes.
 
 Contraprova limitada aprovada: `diagnostic-import-margin.json`, somente import, uma repetição, 14M tokens observados, mantendo 40min, 20 turnos e proteção contra falta de progresso. Justificativa: consumo observado próximo de 12,1M, CLOSE histórico de aproximadamente 267k e margem limitada para variação/atraso. O perfil padrão e a campanha anterior não são alterados; a contraprova não qualifica retrospectivamente a campanha. Não haverá série automática de aumentos caso o tempo se esgote.
+
+## Contraprova import: observação e decisão pendente
+
+`import-margin-01` concluiu PASS/CLOSE/oracle e trajetória em 37m00,160s, nove turnos, com harness válido. As 14 configurações, quatro contratos e quatro cadeias de comunicação foram conferidos independentemente. Consumo observado: 11.475.654 tokens (10.385.408 cache, 997.596 input novo, 92.650 saída), com lacunas de uso preservadas.
+
+O total ficou **524.346 abaixo do antigo teto de 12M**. Portanto, este sucesso não demonstra que elevar o teto para 14M causou melhora. Ele confirma outra execução completa, sob configuração explicitamente distinta, mas não transforma o resultado 4/6 da campanha padrão em 6/6.
+
+Os dois imports bloqueados da campanha anterior não são retomáveis como se ainda tivessem orçamento: coordenadores foram interrompidos, prazos expiraram e o teto foi consumido. Aproveitar o PASS dos filhos não equivale a completar CLOSE e oracle sob a mesma tentativa. Os checkpoints e resultados originais permanecem intactos.
+
+Proposta operacional, ainda não aplicada aos padrões: permitir somente limites de célula por tarefa e fixar import em 14M tokens observados; manter rename/query em 12M, 40min por célula, 60M por campanha, 20 turnos e limite de falta de progresso. Trata-se de calibração de margem, não correção de teste nem preço calculado. Os volumes de cache/input novo/output continuam separados e o bruto permanece visível. A margem de tempo é independente e segue apertada; não aumentar automaticamente se houver timeout.
+
+Para qualificação reproduzível, a configuração escolhida precisará ser congelada e executar as seis células em uma campanha nova, com os mesmos gates de produto, formalização, CLOSE, oracle, configuração e integridade de evidência. Essa matriz não foi iniciada. Até lá, o estado correto é **bancada diagnóstica utilizável, qualificação integral pendente**.
