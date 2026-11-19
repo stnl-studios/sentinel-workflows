@@ -612,3 +612,15 @@ test('post-first EXECUTE history distinguishes author correction from the read-o
   const actorAmbiguous=payload(2);actorAmbiguous.correctionApplied='none; runner is read-only.';
   assert.equal(parseSemanticExecutionPayload(JSON.stringify(actorAmbiguous),'EXECUTE_SLICE').correctionApplied,actorAmbiguous.correctionApplied);
 });
+
+ test('both independent runner contracts expose scoped evidence navigation without weakening proof', async () => {
+  const paragraphs=[];
+  for (const relative of ['codex/.codex/agents/stnl_validation_runner.toml','claude-code/.claude/agents/stnl-validation-runner.md']) {
+    const source=await fs.readFile(path.join(canonical,relative),'utf8');
+    const paragraph=source.split('\n').find(line=>line.startsWith('Para navegar evidências da própria entrega,'));
+    assert.ok(paragraph);
+    for (const required of ['inspect-evidence --origin-file ORIGINAL_ORIGIN_FILE --delivery-id DELIVERY_ID','--spec-path SPEC_PATH','--record-id RECORD_ID','--object-id SHA256_ID','não substitui leitura normativa independente','ausência, corrupção ou recusa continuam bloqueantes','não concede autoridade para consultar sibling','não troque origin nem altere controles']) assert.ok(paragraph.includes(required),required);
+    paragraphs.push(paragraph);
+  }
+  assert.equal(paragraphs[0],paragraphs[1]);
+});
