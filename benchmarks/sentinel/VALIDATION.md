@@ -1,8 +1,35 @@
 # Validação da bancada App Server
 
-**A bancada ainda não está integralmente qualificada.** A aceitação mais recente (`acceptance-reference-v2-01`, engine do commit `0d6871b`) executou as três tarefas duas vezes pelo comando padrão: **5 PASS e 1 BLOCKED por prazo**. O padrão atual é referência Sol/high; o perfil misto anterior permanece disponível e não qualificado. Todas estas campanhas são experimentais, sem certificado oficial, ranking ou estimativa de cobrança.
+**A bancada ainda não está integralmente qualificada.** A aceitação mais recente (`acceptance-watchdog-v3-01`, engine do commit `5f32df0`) executou as três tarefas duas vezes pelo comando padrão: **5 PASS e 1 BLOCKED por tokens**. O transversal aprovado precisou de44m42, além dos40min diagnósticos e dentro do watchdog50min. O padrão é referência Sol/high; o misto anterior permanece disponível e não qualificado. Resultados experimentais, sem certificado oficial, ranking ou estimativa de cobrança.
 
-## Aceitação mais recente: seis células, sem promoção
+## Aceitação watchdog v3: resultado preservado
+
+Único comando: `npm run benchmark -- --id acceptance-watchdog-v3-01`, referência Sol/high v3. Todas as seis células foram executadas sem reinício ou alteração em andamento.
+
+| Célula | Resultado | Duração | Tokens observados |
+|---|---|---:|---:|
+| rename-1 | PASS / CLOSE / oracle | 24m33s | 7.287.037 |
+| query-1 | PASS / CLOSE / oracle | 32m47s | 9.475.879 |
+| import-1 | BLOCKED / OBSERVED_TOKEN_LIMIT | 47m20s | 14.103.631 |
+| rename-2 | PASS / CLOSE / oracle | 26m43s | 6.943.156 |
+| query-2 | PASS / CLOSE / oracle | 27m22s | 8.244.266 |
+| import-2 | PASS / CLOSE / oracle | 44m42s | 13.758.919 |
+
+Duração total3h23m31,768s;59.812.888 tokens observados, incluindo54.679.424 cacheados,4.645.837 input novo e487.627 saída. O teto global60M teve apenas187.112 tokens de margem; não foi elevado. A observação atrasada permitiu103.631 acima do teto14M da primeira importação antes do corte. Não é teto financeiro rígido nem total faturável; uso em voo/não descarregado continua desconhecido.
+
+Ambas importações ultrapassaram a referência diagnóstica40min. Import2 demonstra percurso legítimo concluído em44m42 sob o watchdog50min; import1 continuou bloqueado por volume antes de50min. Não há6/6 nem união com PASS de outras campanhas. Nenhuma nova execução ou recalibração foi iniciada após esta campanha.
+
+### Causa observada e limites de atribuição
+
+Import1 teve uma correção legítima de teste na EXECUTE2:115/116 passou, pois um teste novo esperava um espaço interno quando os argumentos de `add` produziam dois, preservados pelo comportamento existente. O controlador admitiu correção; ajustada a expectativa, um novo check independente passou116/116. A falha anterior está preservada. EXECUTE2 levou12m45, revisão8m41 e PLAN/correção8m09; chegou à validação final após~43m42 em turnos concluídos. Isso não foi revalidação de slice antiga. Saída agregada~3,79M caracteres, contra~3,93M na v2, sem explosão uniforme de dumps. Não foi identificado defeito Sentinel concreto com correção pequena demonstrada; não se exclui custo documental do fluxo.
+
+A auditoria da v2 anterior confirmou fonte2cdc33d e contrato instalado byte-exato, com PASS histórico preservado. Houve EXECUTE1→VALIDATE1→EXECUTE2→VALIDATE2, sem replay formal1. Somente9,476s(0,39%) do tempo decorreram fora dos turnos principais;11 esperas pelos filhos somaram8m18. O restante mistura processamento de contexto/inferência/rede e não permite atribuição causal completa. Comandos rápidos com saídas volumosas não provam baixo custo de processamento posterior.
+
+Próximo passo não é aumentar limites em série: consolidar a decisão de aceitação da bancada separadamente dos resultados censurados, ou investigar uma hipótese específica de eficiência do Sentinel com prova offline antes de nova campanha. O requisito previamente usado de seis percursos completos não foi satisfeito. Mantidos os controles e os dados para essa decisão, sem promoção automática. Testes determinísticos anteriores ao run:377/377 e launcher13/13 PASS.
+
+Evidências: `benchmark-temp/benchmark-v2/evidence/campaigns/acceptance-watchdog-v3-01/`. A main e instalação global permaneceram intocadas; nenhum push/site/Claude. Auditoria independente confirmou hashes/configurações/provas de todos os PASS; import2 tem14 configurações e4 cadeias contrato/comunicação MATCH. Apenas5 diretórios `.git` dos PASS foram arquivados, extraídos e comparados antes de remoção(820KiB), com ausência de processos/locks. Recibo: `benchmark-temp/benchmark-v2/evidence/cleanup/acceptance-watchdog-v3-01-pass-git/audit.json`. BLOCKED, produtos, controles e evidências preservados.
+
+## Aceitação anterior: seis células, sem promoção
 
 Comando único real: `npm run benchmark -- --id acceptance-reference-v2-01`. Perfil `reference-gpt-61-sol-high-v2`, GPT-6.1 Sol/high em todos os papéis; import com 14M tokens observados, rename/query com 12M. Mantidos 40min por célula, 4h/60M por campanha, modelos, critérios e demais limites. Engine `7cad5f41bb653add8dac0fb5d25981736907f2ccc90883f7c349f5329ec085c3`.
 

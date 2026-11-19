@@ -131,3 +131,7 @@ The existing case override surface now accepts only `limits.maxReportedTokens`, 
 ## Prospective watchdog calibration v3
 
 The same case override configuration now accepts caseMs as well as maxReportedTokens; unknown/global overrides and invalid integers are rejected, with turnMs <= caseMs <= campaignMs. Reference-v3 changes only import to50min, keeping rename/query40min, import14M/others12M and global4h/60M. Existing deadline min(case,campaign) and aggregate token guards remain authoritative; global censoring is intentional even though cell maxima sum to260min/76M. Forty minutes is a diagnostic duration reference, not a functional acceptance gate. Offline377/377 and launcher13/13 PASS before one authorized new full campaign; no automatic rerun/increase after failure.
+
+## Watchdog-v3 acceptance outcome
+
+Single standard-command `acceptance-watchdog-v3-01` completed six cells:5PASS/CLOSE/oracle and import1 blocked by14M observed-token guard at47m20. Import2 completed44m42, exceeding the diagnostic40min reference but within50min. Total59,812,888 observed tokens and3h23m31.768s stayed within unchanged60M/4h campaign caps, with narrow187,112-token margin. Import1 included a legitimate failed-test correction and second independent check, not historical formal replay. No subsequent run/increase; full six-cell success remains unproven. Original outcomes remain experimental and immutable.
