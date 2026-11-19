@@ -130,3 +130,14 @@ test('experimental import execution profile changes only coordinator EXECUTE_SLI
  }
  assert.equal(p.sentinelRevision,'b04e02da755929b72ffa2a8b1f74401829ed75ef');
 });
+
+test('tracked default v4 resolves three tasks twice with isolated import execution medium',()=>{
+ const p=JSON.parse(fs.readFileSync(new URL('../profiles/reference-sol-high.json',import.meta.url)));
+ const old=JSON.parse(fs.readFileSync(new URL('../profiles/reference-sol-high-v3.json',import.meta.url)));
+ assert.equal(p.id,'reference-sol-import-execute-medium-v4');assert.equal(p.repetitions,2);assert.equal(p.concurrency,1);
+ assert.equal(p.sentinelRevision,'43659631a24bdd6ed4bc1884351378fa43a87dc5');assert.equal(old.id,'reference-gpt-61-sol-high-v3');
+ for(const id of PROFILE_CASE_IDS){const c=resolveCaseProfile(p,id);assert.deepEqual(c.limits,resolveCaseProfile(old,id).limits);
+  for(const stage of ['INIT','READINESS','PLAN','REVIEW_PLAN','EXECUTE_SLICE','APPLY_FINDINGS','VALIDATE_SLICE','CLOSE'])assert.deepEqual(c.roles[c.stageRoles[stage]??'coordinator'],{model:'gpt-6.1-sol',effort:id==='import'&&stage==='EXECUTE_SLICE'?'medium':'high'});
+  for(const role of ['execute_check','formal_validate','plan_review','plan_approver'])assert.deepEqual(c.roles[role],{model:'gpt-6.1-sol',effort:'high'});
+ }
+});

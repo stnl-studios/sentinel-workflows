@@ -10,7 +10,7 @@ Veja [validação funcional das três tarefas e limites](VALIDATION.md).
 npm run benchmark
 ```
 
-Gera um ID único, executa duas repetições por tarefa e entrega relatório, resultados, configurações efetivas e evidências. O modo padrão é **diagnóstico**. O perfil padrão é explicitamente `bench/profiles/reference-sol-high.json` (GPT-6.1 Sol/high em todos os papéis), escolhido após falhas operacionais preservadas do perfil misto. Essa escolha visa qualificar o fluxo; não é ranking estatístico. O perfil misto `qualification-case-stage.json` continua disponível via `--profile`, com configuração independente por tarefa e etapa.
+Gera um ID único, executa duas repetições por tarefa e entrega relatório, resultados, configurações efetivas e evidências. O modo padrão é **diagnóstico**. O perfil padrão é explicitamente `bench/profiles/reference-sol-high.json` (referência candidata v4: GPT-6.1 Sol/high, exceto coordenador EXECUTE_SLICE da tarefa import em medium; Sentinel fixado em43659631). O nome do arquivo permanece por compatibilidade do launcher. A referência anterior está preservada em `reference-sol-high-v3.json`. O diagnóstico isolado passou, mas a campanha completa v4 ainda precisa de qualificação; isso não é ranking estatístico. O perfil misto `qualification-case-stage.json` continua disponível via `--profile`, com configuração independente por tarefa e etapa.
 
 **O comando inicia chamadas reais de modelos.** Antes de executar, ajuste CLI/versão, revisão Sentinel, modelos e limites no perfil. A revisão deve ser um commit local completo. Modelos/esforços indisponíveis ou configuração divergente não recebem fallback silencioso. Somente GPT está configurado; não usa Claude corporativo.
 

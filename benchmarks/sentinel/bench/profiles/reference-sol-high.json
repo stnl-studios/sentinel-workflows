@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "reference-gpt-61-sol-high-v3",
+  "id": "reference-sol-import-execute-medium-v4",
   "cli": "/opt/homebrew/bin/codex",
   "cliVersion": "0.163.0",
-  "sentinelRevision": "2cdc33d39b801bc3e90ba09175e6a262977d3d62",
+  "sentinelRevision": "43659631a24bdd6ed4bc1884351378fa43a87dc5",
   "roles": {
     "coordinator": {
       "model": "gpt-6.1-sol",
@@ -44,6 +44,15 @@
       "limits": {
         "maxReportedTokens": 14000000,
         "caseMs": 3000000
+      },
+      "roles": {
+        "execute_coordinator": {
+          "model": "gpt-6.1-sol",
+          "effort": "medium"
+        }
+      },
+      "stageRoles": {
+        "EXECUTE_SLICE": "execute_coordinator"
       }
     }
   }
