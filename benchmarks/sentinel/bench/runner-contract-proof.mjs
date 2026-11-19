@@ -4,7 +4,13 @@ import {confined,sha256} from './core.mjs';
 const NAME='stnl_validation_runner.toml';
 const ROLES=new Set(['execute_check','formal_validate']);
 function canonicalFile(file){if(!path.isAbsolute(file))throw Error('absolute path required');const normalized=path.normalize(file);let current=path.parse(normalized).root;for(const part of normalized.slice(current.length).split(path.sep)){current=path.join(current,part);if(fs.lstatSync(current).isSymbolicLink())throw Error('symlink path');}return normalized;}
-function reads(command){
+function reads(command,source){
+ // Observed two-line frame only: canonical literal source, no shell expansion,
+ // quoting variants, extra commands or arguments. All other multiline is refused.
+ if(typeof source==='string'&&/^\/[A-Za-z0-9_./-]+$/.test(source)){
+  const body='cat '+source+'\nshasum -a 256 '+source;
+  if(command===body||command==="/bin/zsh -lc '"+body+"'")return[{file:source,kind:'full-digest'}];
+ }
  // Only literal cat /path and sed -n 'N,Mp' /path. No inferred reads from comments,
  // hashes alone, variable expansion, redirects or dynamically constructed commands.
  if(typeof command!=='string'||/[\r\n]/.test(command))return[];
@@ -63,15 +69,15 @@ export function collectRunnerContractProof({manifest,usage,events}={}){
    seen.add(item.id);
    const framed=framedCopyRead(item,manifest,source,bytes);
    if(framed){const proof={eventLine:index+1,itemId:item.id,threadId:p.threadId,turnId:p.turnId??null,path:source,exitCode:item.exitCode,outputSha256:sha256(item.aggregatedOutput),...framed};if(framed.commandProven){result.evidence.push(proof);if(result.status!=='MISMATCH')result.status='MATCH';continue;}result.gaps.push({code:'FRAMED_CONTENT_ONLY_ORIGIN_UNPROVEN',...proof});}
-   const candidates=reads(item.command);if(!candidates.length)continue;
+   const candidates=reads(item.command,source);if(!candidates.length)continue;
    for(const read of candidates){
     const evidence={eventLine:index+1,itemId:item.id,threadId:p.threadId,turnId:p.turnId??null,path:read.file,readKind:read.kind,exitCode:item.exitCode??null,outputSha256:sha256(String(item.aggregatedOutput??''))};
     if(item.exitCode!==0||typeof item.aggregatedOutput!=='string'){result.gaps.push({code:'READ_NOT_SUCCESSFUL',...evidence});continue;}
     let actualFile,actual;try{actualFile=canonicalFile(read.file);actual=fs.readFileSync(actualFile);}catch{result.gaps.push({code:'READ_PATH_UNVERIFIABLE',...evidence});continue;}
     const output=item.aggregatedOutput,hash=sha256(actual),samePath=actualFile===source;
     evidence.observedFileSha256=hash;
-    if(read.kind==='full'&&output===actual.toString('utf8')){
-     evidence.byteProof='full-output-exact';
+    if((read.kind==='full'&&output===actual.toString('utf8'))||(read.kind==='full-digest'&&read.file===actualFile&&samePath&&Buffer.from(output).equals(Buffer.concat([actual,Buffer.from(hash+'  '+actualFile+'\n')])))){
+     evidence.byteProof=read.kind==='full-digest'?'full-output-exact-with-trailing-source-digest':'full-output-exact';
      evidence.matchesSourceBytes=hash===report.source.sha256;
      evidence.matchesSourcePath=samePath;
      result.evidence.push(evidence);

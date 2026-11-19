@@ -120,3 +120,13 @@ test('case duration cannot override campaign controls or violate positive intege
  }
  const p=base();p.caseOverrides={import:{limits:{caseMs:p.limits.campaignMs}}};validateProfile(p);
 });
+test('experimental import execution profile changes only coordinator EXECUTE_SLICE effort',()=>{
+ const p=JSON.parse(fs.readFileSync(new URL('../profiles/experimental-import-execute-medium.json',import.meta.url)));
+ const reference=JSON.parse(fs.readFileSync(new URL('../profiles/reference-sol-high.json',import.meta.url)));
+ for(const id of PROFILE_CASE_IDS){const c=resolveCaseProfile(p,id),r=resolveCaseProfile(reference,id);
+  assert.deepEqual(c.limits,r.limits);
+  for(const stage of ['INIT','READINESS','PLAN','REVIEW_PLAN','EXECUTE_SLICE','APPLY_FINDINGS','VALIDATE_SLICE','CLOSE'])assert.deepEqual(c.roles[c.stageRoles[stage]??'coordinator'],{model:'gpt-6.1-sol',effort:id==='import'&&stage==='EXECUTE_SLICE'?'medium':'high'});
+  for(const role of ['plan_approver','plan_review','execute_check','formal_validate'])assert.deepEqual(c.roles[role],r.roles[role]);
+ }
+ assert.equal(p.sentinelRevision,'b04e02da755929b72ffa2a8b1f74401829ed75ef');
+});
