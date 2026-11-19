@@ -87,6 +87,7 @@
     "scripts/test-runbook-presentation.mjs",
     "scripts/test-runner-command-events.mjs",
     "scripts/test-runner-protocol-rejection.mjs",
+    "scripts/test-runner-reading-examples.mjs",
     "scripts/test-runtime-context-budget.mjs",
     "scripts/test-same-operation-replay.mjs",
     "scripts/test-semantic-recovery.mjs",

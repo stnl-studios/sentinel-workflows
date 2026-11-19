@@ -16,6 +16,47 @@ Use `fork_turns:"none"` and load the complete selected candidate-distribution ru
 
 The current controller procedure is reserve-dispatch, bind-native, verify-native and capture-native, then publish/readback and own cleanup. Bind the exact official identity returned by the one fresh spawn before waiting. Pass the nonempty absolute verificationHelper and originFile returned by reserve-dispatch as resolved separate arguments to node: helper, verify-native, --origin-file, origin. If the tool accepts shell text, quote the literal paths correctly; never rely on inherited shell variables or prefix assignments expanded by that same invocation. Exit zero without the saved observation is not verification. Preserve the producer receipt and reviewed verification observation. Never replay a pending or uncertain dispatch. Preserve the complete first concluded finalResponse byte-for-byte; persistence recovery never reruns this procedure.
 
+### Evidence consumption without lossy authority summaries
+
+The runner must still independently consume the complete activated Plan/Tasks and reviewed snapshot, normative obligations and necessary evidence. Compact `inspect`/`verify-native` output is a state/receipt view, not a replacement for these inputs. In `approved-preparation.json`, use the real `reviewedArtifacts[].utf8` and `normativeProjection` fields. Select positive metadata/references first; do not blacklist guessed fields such as `artifacts` and accidentally dump the whole snapshot again. Evidence `objects` is an array of `{id, bytesBase64}`, not a keyed object. Read the selected referenced objects in full, authenticate them, and preserve the originals. An index is only navigation; it never authorizes skipping required content or accepting missing/corrupt evidence.
+
+The following presentation-only example consumes already parsed documents. It does not replace the official validators or authenticate the complete snapshot by itself. `sha256(bytes)` must return lowercase hex; `Buffer` is Node's standard byte decoder. Keep the original documents/files unchanged. After navigation, independently read every required reviewed text, normative projection and referenced proof in full; do not replace literal responses with reserialization.
+
+<!-- evidence-navigation-example:start -->
+```javascript
+function evidenceNavigation(snapshot, bundle, sha256) {
+  const fail = () => { throw new Error('EVIDENCE_NAVIGATION_INVALID'); };
+  const digest = value => typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value);
+  if (!snapshot || !Array.isArray(snapshot.reviewedArtifacts) || !snapshot.reviewedArtifacts.length ||
+      !snapshot.normativeProjection || typeof snapshot.normativeProjection !== 'object' ||
+      Array.isArray(snapshot.normativeProjection) || !bundle || !Array.isArray(bundle.objects)) fail();
+  const paths = new Set(), ids = new Set();
+  const reviewedArtifacts = snapshot.reviewedArtifacts.map(item => {
+    if (!item || typeof item.path !== 'string' || !item.path || paths.has(item.path) ||
+        typeof item.utf8 !== 'string' || !digest(item.sha256) ||
+        'sha256:' + sha256(Buffer.from(item.utf8, 'utf8')) !== item.sha256) fail();
+    paths.add(item.path);
+    return {path: item.path, sha256: item.sha256};
+  });
+  const objects = bundle.objects.map(item => {
+    if (!item || !digest(item.id) || ids.has(item.id) || typeof item.bytesBase64 !== 'string') fail();
+    ids.add(item.id);
+    return {id: item.id};
+  });
+  function readObject(id) {
+    const item = bundle.objects.find(item => item.id === id);
+    if (!item) fail();
+    const bytes = Buffer.from(item.bytesBase64, 'base64');
+    if (bytes.toString('base64') !== item.bytesBase64 || 'sha256:' + sha256(bytes) !== id) fail();
+    return bytes;
+  }
+  return {reviewedArtifacts, objects, readObject};
+}
+```
+<!-- evidence-navigation-example:end -->
+
+The returned index intentionally omits payload bytes, not obligations. The unchanged `snapshot.normativeProjection` and every `reviewedArtifacts[].utf8` remain mandatory inputs; obtain selected evidence bytes with `readObject(id)`. Missing IDs and invalid selected bytes throw rather than silently returning null or an empty record. Unselected objects are not claimed to have been content-verified by this example.
+
 ### Dispatch and response checklist
 
 Pass the operation, exact request/origin, verificationHelper, selected responseVariant and complete runner contract. The runner uses the official bound identity and returns only the selected JSON response shape; do not request an invented BOUND acknowledgement, prose wrapper or a different schema. The principal's successful bind-native call establishes the binding, not an agent's claim. Save the first response literally even when invalid. For a concluded format-only rejection with intact authenticated observation, use the controller's bounded normalization/successor path; its verify-native can reuse the existing authenticated receipt when eligible. Do not abort and rerun checks merely to repair response packaging. Product/input drift, missing receipts, failed checks and uncertain outcomes never qualify as a formatting-only reuse.
