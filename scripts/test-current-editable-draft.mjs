@@ -55,6 +55,17 @@ test('editable Plan and Tasks beside SPEC stay non-authoritative through approva
  // A separate reviewer closure consumes the same fixed snapshot, not a paraphrase.
  const reviewer=await import('../skills/workflows/stnl-plan-reviewer/runtime/preparation-draft.mjs');
  assert.deepEqual(await reviewer.assertPreparationDraftApproval(f,{required:true}),reviewed);
+ // The public review command is repeatable read-only verification, not activation.
+ const controlBefore=await Promise.all(Object.values(controls).map(async file=>[file,await fs.readFile(file)]));
+ const cli=path.resolve('skills/workflows/stnl-plan-reviewer/runtime/preparation-draft.mjs');
+ for(let attempt=0;attempt<2;attempt++){
+  const {stdout}=await run(process.execPath,[cli,'review','--spec-path',f.specPath,'--candidate-execution-root',f.candidateExecutionRoot],{maxBuffer:4*1024*1024});
+  const saved=path.join(f.root,`review-stdout-${attempt}.json`);await fs.writeFile(saved,stdout,{flag:'wx',mode:0o600});
+  assert.deepEqual(JSON.parse(await fs.readFile(saved,'utf8')),reviewed);
+  for(const [file,bytes] of controlBefore)assert.deepEqual(await fs.readFile(file),bytes);
+  assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
+ }
+
  const result=await publishPreparationCandidate({...f,reviewDecision:reviewFor(authority)});
  assert.equal(result.publication,'confirmed');
  assert.equal((await inspectCurrentExecution(f.specPath)).state,'MATERIALIZED_PRISTINE');
@@ -293,5 +304,15 @@ for(const changed of [false,true])test(`interrupted draft create cannot authoriz
   assert.equal(JSON.parse(await fs.readFile(controls.binding)).initializing,undefined);
   for(const [name,bytes] of source)assert.deepEqual(await fs.readFile(path.join(resumed.draftRoot,name)),bytes);
   assert.equal((await capturePreparationDraft(f)).status,'AWAITING_USER_APPROVAL');
+ }
+});
+
+test('editable draft protocol consistently bounds repeatable review query',async()=>{
+ let expected;
+ for(const skill of ['stnl-execution-planner','stnl-plan-reviewer'])for(const name of ['SKILL.md','references/editable-draft.md']){
+  const text=await fs.readFile(path.resolve('skills/workflows',skill,name),'utf8');
+  const paragraph=text.split('\n').find(line=>line.startsWith('`preparation-draft.mjs review` is a read-only verification'));
+  assert.ok(paragraph);expected??=paragraph;assert.equal(paragraph,expected);
+  for(const required of ['new exclusive private file','read every returned artifact in full','Changed/missing approval','never repeat capture, approve or publication','independent semantic review','official recovery/readback route'])assert.ok(paragraph.includes(required),required);
  }
 });
