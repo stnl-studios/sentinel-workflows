@@ -1,6 +1,33 @@
 # Validação da bancada App Server
 
-**A bancada ainda não está integralmente qualificada.** O comando padrão único executou as três tarefas com duas repetições, mas o perfil misto terminou com 2 PASS e 4 BLOCKED. As execuções anteriores de referência chegaram a PASS/CLOSE nas três tarefas, em campanhas separadas. Nenhum desses resultados é certificado oficial, ranking de modelos ou estimativa de cobrança.
+**A bancada ainda não está integralmente qualificada.** A aceitação mais recente (`acceptance-reference-v2-01`, engine do commit `0d6871b`) executou as três tarefas duas vezes pelo comando padrão: **5 PASS e 1 BLOCKED por prazo**. O padrão atual é referência Sol/high; o perfil misto anterior permanece disponível e não qualificado. Todas estas campanhas são experimentais, sem certificado oficial, ranking ou estimativa de cobrança.
+
+## Aceitação mais recente: seis células, sem promoção
+
+Comando único real: `npm run benchmark -- --id acceptance-reference-v2-01`. Perfil `reference-gpt-61-sol-high-v2`, GPT-6.1 Sol/high em todos os papéis; import com 14M tokens observados, rename/query com 12M. Mantidos 40min por célula, 4h/60M por campanha, modelos, critérios e demais limites. Engine `7cad5f41bb653add8dac0fb5d25981736907f2ccc90883f7c349f5329ec085c3`.
+
+| Célula | Resultado | Duração | Tokens observados |
+|---|---|---:|---:|
+| rename-1 | PASS / CLOSE / oracle | 27m51s | 8.769.742 |
+| query-1 | PASS / CLOSE / oracle | 27m27s | 7.432.879 |
+| import-1 | BLOCKED / CASE_DEADLINE | 40m00s | 11.744.470 |
+| rename-2 | PASS / CLOSE / oracle | 27m42s | 7.652.428 |
+| query-2 | PASS / CLOSE / oracle | 28m16s | 7.771.935 |
+| import-2 | PASS / CLOSE / oracle | 37m11s | 12.028.066 |
+
+As seis células foram executadas serialmente na mesma campanha, em 3h08m30,809s. Total **55.399.520** observado: input 54.943.735, incluindo cache 50.857.088; input novo 4.086.647 e saída 455.785. A soma não duplica cache nem reasoning. Campos completos das respostas observadas não excluem uso não descarregado/em voo e não demonstram cobrança. `harnessValid:true` nas seis células valida a admissão da medição, não transforma a tarefa bloqueada em PASS.
+
+### Diagnóstico e decisão pendente
+
+Import-1 alcançou a validação formal da segunda slice, mas não CLOSE. Suas duas execuções passaram na primeira rodada; não houve loop de findings/reexecução. O tempo acumulado dos turnos anteriores à última validação foi ~35m36, contra ~30m12 na contraprova `import-margin-01` (PASS em 37m00). A diferença concentrou-se na revisão (+1m55) e na segunda execução (+2m35), além de variações menores e uma correção legítima de placeholders no plano. Leituras duplicadas e erros exploratórios foram observados, mas não há causa única cuja correção comprovadamente faça o percurso caber em 40min.
+
+Import-2 passou em 37m11, com 12.028.066 tokens: a calibração prospectiva de 14M ofereceu margem de tokens, mas não corrigiu variabilidade de tempo. A contraprova PASS usou somente 11.475.654 tokens, abaixo do antigo teto. Esses fatos não autorizam unir campanhas ou excluir o import-1 do denominador. A campanha atual permanece **5/6, não 6/6**.
+
+Próximo passo recomendado: decidir explicitamente se 40min é um requisito de latência do produto ou um watchdog operacional. Se for requisito, conservar esta reprovação e investigar redução demonstrável de latência sem remover etapas legítimas. Se for watchdog, uma futura calibração prospectiva por tarefa pode ser avaliada com os tempos observados e custo de espera, sem promessa de sucesso nem aumentos em série. Não foi implementado novo teto de tempo nem iniciada outra rodada. Reduzir o cenário ou trocar modelos também mudaria a identidade de comparação e não é correção retroativa.
+
+Fluxo futuro preservado: validar a feature localmente; integrar somente com autorização explícita; depois executar benchmark oficial no commit exato da main e preparar PR separada somente com resultados curados para histórico/site. Esta aceitação e a contraprova continuam experimentais. Nenhuma integração, publicação, instalação global ou execução Claude foi feita.
+
+Evidências originais: `benchmark-temp/benchmark-v2/evidence/campaigns/acceptance-reference-v2-01/`. Falha e checkpoint da primeira importação permanecem intactos. A campanha não foi retomada com prazo renovado. Auditoria independente confirmou 10 configurações e duas cadeias de contrato/comunicação em cada rename/query PASS; import-2 confirmou 14 configurações e quatro cadeias completas. Import-1 conserva três comunicações completas, não quatro. Somente os cinco diretórios `.git` dos PASS foram arquivados, extraídos e comparados antes da remoção (820KiB), após confirmar ausência de processos/lock. Recibo e restauração: `benchmark-temp/benchmark-v2/evidence/cleanup/acceptance-reference-v2-01-pass-git/audit.json`. Produtos e controles foram preservados.
 
 ## Campanha padrão única: `mixed-full-01`
 
