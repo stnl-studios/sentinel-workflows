@@ -170,7 +170,7 @@ export async function executeCase({manifest:m,campaignDeadline,requirements,camp
      const authored=await turn('PLAN',stagePrompt({manifest:m,operation,authority,plan:state.plan})+(state.plan.feedback?'\nCorreção limitada do draft: '+state.plan.feedback:''));
      try{await effect('capture-plan',{specPath:authority.specPath,root:state.plan.candidateExecutionRoot},async()=>{const captured=await api.capturePlan(m,authority.specPath,state.plan.candidateExecutionRoot);state.plan={...state.plan,...captured,phase:'CAPTURED'};return captured;});}
      catch(error){
-      ledger.append('capture-refused',{pendingEffect:state.pendingEffect,code:error.code??null,operation:error.operation??null,message:error.message});
+      ledger.append('capture-refused',{pendingEffect:state.pendingEffect,code:error.code??null,operation:error.operation??null,reasonCode:error.reasonCode??null,message:error.message});
       if(error.code!=='INVALID_CURRENT_IMAGE'||error.operation!=='capturePreparationDraft'||(state.plan.corrections??0)>=2)throw error;
       const rejected=structuredClone(state.pendingEffect);ledger.append('draft-recovery-intent',{rejected,turnId:authored.turnId,threadId:authored.threadId});
       const recovered=api.recoverUncapturedDraft(m,authority.specPath,state.plan.candidateExecutionRoot,error,{providerTurnCompleted:authored.status==='completed',transportIdle:server.active==null});

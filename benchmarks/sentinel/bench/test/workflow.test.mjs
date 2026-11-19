@@ -13,13 +13,13 @@ test('capture uses official sha256 prefix, complete artifacts and binding',async
 test('approval fails on stale digest before invoking official writer',async t=>{const f=await mock(t);const c=capturePlan(f.m,f.spec,f.root),decision={decision:'APPROVE',captureSha256:c.captureSha256,reasons:['All covered'],missingCriteria:[]};assert.equal(approvePlan(f.m,f.spec,f.root,c,decision).status,'AWAITING_INDEPENDENT_REVIEW');fs.appendFileSync(f.file,' ');assert.throws(()=>approvePlan(f.m,f.spec,f.root,c,decision),/changed/) });
 test('strict external approval shape and truthful rejection',()=>{const d={decision:'APPROVE',captureSha256:'sha256:'+'a'.repeat(64),reasons:['complete'],missingCriteria:[]};assert.equal(parseApproval(JSON.stringify(d)).decision,'APPROVE');assert.throws(()=>parseApproval(JSON.stringify({...d,missingCriteria:['AC']})));assert.throws(()=>parseApproval(JSON.stringify({...d,extra:'authority'})));assert.throws(()=>parseApproval(JSON.stringify({...d,captureSha256:'a'.repeat(64)})));assert.equal(parseApproval(JSON.stringify({...d,decision:'REJECT',missingCriteria:['AC']})).decision,'REJECT')});
 test('inspect nonexistent spec stays INIT with confined manifest path',async t=>{const f=await mock(t);const a=inspectAuthority(f.m);assert.equal(nextOperation(a),'INIT');assert.throws(()=>inspectAuthority({...f.m,specPath:'../../outside'}),/escapes/) });
-async function recoveryMock(t,{code='INVALID_CURRENT_IMAGE',state='NO_EXECUTION',revisionCode=null}={}){
+async function recoveryMock(t,{code='INVALID_CURRENT_IMAGE',state='NO_EXECUTION',revisionCode=null,reasonCode=null}={}){
  const f=await mock(t),paths={binding:path.join(f.root,'draft.owner.json'),capture:path.join(f.root,'draft.capture.json'),approval:path.join(f.root,'draft.approval.json')};
  fs.writeFileSync(path.join(f.spec,'feature_spec.md'),'# spec');
  const writeRuntime=(skill,file,code)=>{const p=path.join(f.m.codexHome,'skills',skill,'runtime',file);fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,code);};
  writeRuntime('stnl-spec-lifecycle-manager','validate-spec-lifecycle.mjs',`console.log(JSON.stringify({lifecycle_status:'ready',execution_state:'EMPTY',legal_execution_operations:['PLAN']}));`);
  writeRuntime('stnl-slice-executor','execution-current-reader.mjs',`console.log(JSON.stringify({state:${JSON.stringify(state)}}));`);
- writeRuntime('stnl-execution-planner','preparation-draft.mjs',`export async function capturePreparationDraft(){throw Object.assign(Error('Expected Tests: placeholder'),{code:${JSON.stringify(code)}})};export async function preparationDraftPaths(){return ${JSON.stringify(paths)}};export async function revisePreparationDraft(){${revisionCode?`throw Object.assign(Error('official owner or publication refusal'),{code:${JSON.stringify(revisionCode)}});`:`return {status:'EDITABLE_DRAFT',draftRoot:${JSON.stringify(f.root)},executionAuthority:false};`}}`);
+ writeRuntime('stnl-execution-planner','preparation-draft.mjs',`export async function capturePreparationDraft(){throw Object.assign(Error('Expected Tests: placeholder'),{code:${JSON.stringify(code)},reasonCode:${JSON.stringify(reasonCode)}})};export async function preparationDraftPaths(){return ${JSON.stringify(paths)}};export async function revisePreparationDraft(){${revisionCode?`throw Object.assign(Error('official owner or publication refusal'),{code:${JSON.stringify(revisionCode)}});`:`return {status:'EDITABLE_DRAFT',draftRoot:${JSON.stringify(f.root)},executionAuthority:false};`}}`);
  return {...f,paths};
 }
 const quiet={providerTurnCompleted:true,transportIdle:true};
@@ -51,3 +51,15 @@ test('preparation helper comes from selected engine snapshot, not current engine
 test('runner source binding is explicit and missing binding cannot dispatch',()=>{const a=ready({state:'MATERIALIZED_PRISTINE',normalHandoff:{operation:'EXECUTE_SLICE',slice:'slice-01'}});const p=stagePrompt({manifest,operation:'EXECUTE_SLICE',authority:a});assert.ok(p.includes('/frozen/source/runner.toml'));assert.ok(p.includes('a'.repeat(64)));assert.match(p,/checkout externo/);assert.throws(()=>stagePrompt({manifest:{...manifest,runnerContract:null},operation:'EXECUTE_SLICE',authority:a}),/RUNNER_CONTRACT_BINDING_MISSING/);});
 
 test('official verification calls preserve shell launch shape without rewriting environment',()=>{const prompt=stagePrompt({manifest,operation:'INIT',authority:ready({state:'NO_EXECUTION'})});assert.match(prompt,/Node como último comando/);assert.match(prompt,/sem cat\/echo\/exit após Node/);assert.match(prompt,/Não normalize nem reescreva variáveis/);assert.match(prompt,/preserve e pare sem repetir receita/);});
+
+test('typed draft input cause is preserved without admitting generic stale evidence',async t=>{
+ const reasonCode='DRAFT_EXISTING_INPUT_UNAVAILABLE';
+ const f=await recoveryMock(t,{reasonCode}),error=failedCapture(f);
+ assert.equal(error.code,'INVALID_CURRENT_IMAGE'); assert.equal(error.reasonCode,reasonCode);
+ assert.equal(recoverUncapturedDraft(f.m,f.spec,f.root,error,quiet).status,'EDITABLE_DRAFT');
+ for(const code of ['EVIDENCE_STALE','EVIDENCE_INCOMPLETE']) {
+  const g=await recoveryMock(t,{code,reasonCode}),rejected=failedCapture(g);
+  assert.equal(rejected.code,code);assert.equal(rejected.reasonCode,reasonCode);
+  assert.throws(()=>recoverUncapturedDraft(g.m,g.spec,g.root,rejected,quiet),e=>e.code==='RECOVERY_CLASS_BLOCKED');
+ }
+});

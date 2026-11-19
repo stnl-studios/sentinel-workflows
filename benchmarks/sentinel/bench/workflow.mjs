@@ -11,7 +11,7 @@ export function callPreparationExport(m,operation,specPath,root,guard=null){
  const r=spawnSync(process.execPath,[helper,m.home,operation,JSON.stringify(options),...(guard===null?[]:[JSON.stringify(guard)])],{cwd:m.workspace,env:{...process.env,CODEX_HOME:m.codexHome,TMPDIR:m.tmpDir},encoding:'utf8',timeout:Math.min(60000,remaining),maxBuffer:16*1024*1024});
  if(r.error)throw r.error;
  let envelope;try{envelope=JSON.parse(r.stdout);}catch{throw Object.assign(Error('public export returned invalid envelope'),{code:'RUNTIME_ENVELOPE_INVALID'});}
- if(r.status!==0||envelope.ok!==true)throw Object.assign(Error(envelope.error?.message??'official public export failed'),{code:envelope.error?.code??'RUNTIME_EXPORT_ERROR',operation});
+ if(r.status!==0||envelope.ok!==true)throw Object.assign(Error(envelope.error?.message??'official public export failed'),{code:envelope.error?.code??'RUNTIME_EXPORT_ERROR',operation,...(typeof envelope.error?.reasonCode==='string'?{reasonCode:envelope.error.reasonCode}:{})});
  return envelope.result;
 }
 export function recoverUncapturedDraft(m,specPath,root,captureError,observation){

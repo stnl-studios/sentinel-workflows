@@ -5,6 +5,7 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import {assertPreparationCandidate,preparePlanCandidate} from './prepare-plan-candidate.mjs';
+import {inspectCurrentExecution} from './execution-current-reader.mjs';
 import {serializePlanPathClaims} from './serialize-plan-paths.mjs';
 import {resolveCurrentExecutionContext} from './execution-workspace.mjs';
 import {captureExecutionTree,readOwnedFile,writeNew,parseStrictJson,withExecutionPublicationLock,assertNoPendingExecutionPublication,syncLockParent} from './execution-publication.mjs';
@@ -123,11 +124,26 @@ export async function capturePreparationDraft(options){
  const owned=await assertPreparationCandidate(options.candidateExecutionRoot,options.specPath,options);
  return withExecutionPublicationLock(owned.workspace,()=>capturePreparationDraftLocked(options));
 }
+async function assertUncapturedInitialDraft(owned,options){
+ await assertNoPendingExecutionPublication(owned.workspace);
+ const paths=await preparationDraftPaths(options);
+ for(const file of [paths.capture,paths.approval]){
+  const present=await fs.lstat(file).then(()=>true,error=>{if(error.code==='ENOENT')return false;throw error;});
+  if(present)fail('Initial draft already captured or approved; preserve its existing authority');
+ }
+ for(const name of ['approved-preparation.json','continuity.json']){
+  const present=await fs.lstat(path.join(owned.root,name)).then(()=>true,error=>{if(error.code==='ENOENT')return false;throw error;});
+  if(present)throw Object.assign(new Error('Initial installation has started; preserve its original controls'),{code:'PREPARATION_INSTALL_PENDING'});
+ }
+ if((await inspectCurrentExecution(owned.marker.specPath)).state!=='NO_EXECUTION')
+  throw Object.assign(new Error('Initial preparation target is occupied'),{code:'REPLAN_REQUIRED'});
+}
 async function capturePreparationDraftLocked(options){
  const owned=await assertPreparationCandidate(options.candidateExecutionRoot,options.specPath,options),binding=await draftBinding(owned);
  if(binding.candidateExecutionRoot!==owned.root||binding.specPath!==owned.marker.specPath)fail('Draft allocation differs');
  // Captures are write-once. A stale capture cannot silently inherit approval.
  try{await fs.lstat(await capturePath(options));fail('Draft already captured; use revise for changes or resume its review/publication');}catch(error){if(error.code!=='ENOENT')throw error;}
+ if(owned.marker.operation==='PLAN')await assertUncapturedInitialDraft(owned,options);
  const source=await artifactsAt(binding.draftRoot);
  // The editable set is authoritative for this unapproved capture, including removals.
  // Only disposable plan/task copies may be pruned; evidence and foreign paths are untouched.
@@ -135,7 +151,14 @@ async function capturePreparationDraftLocked(options){
  for(const name of previous.keys())if(!source.has(name)){await readOwnedFile(path.join(owned.root,name));await fs.unlink(path.join(owned.root,name));}
  await copy(source,owned.root);
  await preparePlanCandidate({...options,candidateExecutionRoot:owned.root});
- const prepared=await serializePlanPathClaims({...options,candidateExecutionRoot:owned.root});
+ let prepared;
+ try{prepared=await serializePlanPathClaims({...options,candidateExecutionRoot:owned.root});}
+ catch(error){
+  if(owned.marker.operation!=='PLAN'||error.code!=='EVIDENCE_STALE'||!['EXISTING_INPUT_ABSENT','EXISTING_INPUT_NOT_FILE'].includes(error.reasonCode))throw error;
+  // Recheck this narrow, still-unapproved authoring boundary. Never relabel live/replan drift.
+  await assertUncapturedInitialDraft(await assertPreparationCandidate(owned.root,options.specPath,options),options);
+  error.inputReasonCode=error.reasonCode;error.reasonCode='DRAFT_EXISTING_INPUT_UNAVAILABLE';error.code='INVALID_CURRENT_IMAGE';throw error;
+ }
  if(prepared.proposal)await copy(prepared.proposal.files,owned.root);
  const final=await artifactsAt(owned.root,{technical:true});
  if(JSON.stringify(manifest(source))!==JSON.stringify(manifest(await artifactsAt(binding.draftRoot))))fail('Draft changed during capture');
