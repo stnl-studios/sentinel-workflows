@@ -11,7 +11,7 @@ import {promisify,isDeepStrictEqual} from 'node:util';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {computeRequirementsAuthority,resolveCurrentExecutionContext,executionWorkspaceFromContext} from './execution-workspace.mjs';
 import {captureCurrentExecution,captureCurrentActiveExecution,observeCurrentDeliveryWork,preflightCurrentPreparationPaths} from './execution-current-reader.mjs';
-import {parseCurrentJson,validateCurrentCandidate,validateCurrentActivation,validateCurrentImage,validateDocumentaryRequest,currentOperationBindingSha256,currentTerminalProjection,validateCurrentAbortDisposition} from './execution-current.mjs';
+import {parseCurrentJson,validateCurrentEvidence,validateCurrentCandidate,validateCurrentActivation,validateCurrentImage,validateDocumentaryRequest,currentOperationBindingSha256,currentTerminalProjection,validateCurrentAbortDisposition} from './execution-current.mjs';
 import {verifyWorkObservation,findingsRoundCaptureSha256,NATIVE_JUDGMENT_VARIANT,restoreCaptureSources,
   projectNativeJudgment,currentOutputPaths,validateNativeContinuation,nativeContinuationSha256,validateRemovalPreimage} from './execution-evidence-proof.mjs';
 import {composePostConversionValidation,composePostConversionFindings,
@@ -2297,6 +2297,56 @@ export async function resume(handle) {
 
 export async function inspect(specPath) {return captureCurrentExecution(specPath).then(value=>value.inspection);}
 
+/** Read an authenticated current evidence carrier, never arbitrary filesystem input. */
+export async function inspectEvidence({specPath=null,originFile=null,deliveryId,recordId=null,objectId=null}={}) {
+  if(Boolean(specPath)===Boolean(originFile) || typeof deliveryId!=='string' || !deliveryId
+    || recordId!==null && (typeof recordId!=='string'||!recordId)
+    || objectId!==null && (typeof objectId!=='string'||!objectId)
+    || recordId!==null && objectId!==null)
+    fail('INVALID_ARGUMENTS','select spec or native origin, delivery, and at most one record or object');
+  let image;
+  if(originFile) {
+    const {op,origin}=await opFromOrigin(path.resolve(originFile));
+    if(deliveryId!==op.owner.deliveryId)fail('OWNER_MISMATCH','active evidence selection differs from reserved delivery');
+    image=await requireA1(op);
+    if(!same(image.activation,origin.admission.reservedActivation))
+      fail('STALE_BASE','native evidence reservation changed');
+  } else image=await quiet(specPath);
+  const continuity=parseCurrentJson(Buffer.from(image.files.get('continuity.json')).toString('utf8'));
+  const delivery=[...continuity.deliveries,...continuity.completed].find(item=>item.deliveryId===deliveryId);
+  if(!delivery)fail('EVIDENCE_SELECTION_NOT_FOUND','delivery is absent from authenticated continuity');
+  const evidencePath=delivery.evidence?.path,bytes=image.files.get(evidencePath);
+  if(!bytes)fail('EVIDENCE_SELECTION_NOT_FOUND','selected delivery has no current evidence');
+  const evidenceBytes=Buffer.from(bytes),bundle=parseCurrentJson(evidenceBytes.toString('utf8'));
+  validateCurrentEvidence(bundle);
+  if(bundle.deliveryId!==deliveryId || bundle.slice!==delivery.slice)
+    fail('EVIDENCE_STALE','evidence selection differs from continuity');
+  const records=[...bundle.implementation,...bundle.findingsChecks,...(bundle.validation?[bundle.validation]:[]),...bundle.support];
+  const inspected=[...(image.inspection.deliveries??[]),...(image.inspection.completed??[])].find(item=>item.deliveryId===deliveryId);
+  const deliveryInspection=Object.fromEntries(['formalStatus','auxiliaryStatus','persistedValidation'].filter(key=>inspected && Object.hasOwn(inspected,key)).map(key=>[key,inspected[key]]));
+  const header={format:'stnl-evidence-inspection-v1',activationId:image.activation.activationId,
+    deliveryId,slice:delivery.slice,evidencePath,evidenceSha256:sha(evidenceBytes),
+    inspectionState:image.inspection.state,deliveryInspection};
+  if(recordId!==null) {
+    const selected=records.filter(item=>item.id===recordId);
+    if(selected.length!==1)fail('EVIDENCE_SELECTION_NOT_FOUND','record ID absent or ambiguous; rejection support has no record ID');
+    const item=selected[0];
+    if(typeof item.recordUtf8!=='string')fail('RECORD_TEXT_UNAVAILABLE','selected record has no literal text');
+    return {...header,selection:'record',recordId,kind:item.kind,origin:item.origin,
+      recordSha256:sha(Buffer.from(item.recordUtf8,'utf8')),recordUtf8:item.recordUtf8};
+  }
+  if(objectId!==null) {
+    const item=bundle.objects.find(item=>item.id===objectId);
+    if(!item)fail('EVIDENCE_SELECTION_NOT_FOUND','object ID absent from selected evidence');
+    return {...header,selection:'object',objectId:item.id,size:Buffer.from(item.bytesBase64,'base64').length,bytesBase64:item.bytesBase64};
+  }
+  return {...header,selection:'index',records:records.map(item=>({id:item.id??null,kind:item.kind,
+    origin:item.origin,...(item.kind==='rejection'?{operationAttemptId:item.operationAttemptId,round:item.round,recordTextAvailable:false}
+      :{recordTextAvailable:true,recordSha256:sha(Buffer.from(item.recordUtf8,'utf8')),size:Buffer.byteLength(item.recordUtf8,'utf8')}),
+    sources:item.sources})),objects:bundle.objects.map(item=>({id:item.id,size:Buffer.from(item.bytesBase64,'base64').length}))};
+}
+
+
 // A requested operation can recover its *current scope* without treating the
 // three control files, Markdown status, or old proof as an approval oracle.
 const resumeControls=['activation.json','approved-preparation.json','continuity.json'];
@@ -2562,7 +2612,8 @@ export async function recoverDocumentaryResumption({handle,allocation,checkpoint
 }
 
 function commandArguments(argv) {
-  const rules={'inspect-request':[['--spec-path','--slice','--operation'],['--request-id','--terminal']],
+  const rules={'inspect-evidence':[['--delivery-id'],['--spec-path','--origin-file','--record-id','--object-id']],
+    'inspect-request':[['--spec-path','--slice','--operation'],['--request-id','--terminal']],
     'prepare-documentary-resumption':[['--spec-path','--slice','--operation','--expected-decision-sha256'],[]],
     'install-documentary-resumption':[['--handle','--review-file'],[]],
     'recover-documentary-resumption':[['--handle','--allocation'],[]],inspect:[['--spec-path'],[]],begin:[['--spec-path','--slice','--expected-activation-id','--operation'],['--documentary-request-file','--retry-blocked']],
@@ -2584,6 +2635,7 @@ function commandArguments(argv) {
     options[key]=value;
   }
   if(required.some(key=>!Object.hasOwn(options,key)))reject('Missing required current-operation arguments');
+  if(argv[0]==='inspect-evidence' && (Boolean(options['--spec-path'])===Boolean(options['--origin-file']) || options['--record-id'] && options['--object-id'])) reject('inspect-evidence requires one spec/origin and at most one record/object selector');
   if(argv[0]==='normalize') {
     const keys=Object.keys(options);
     if(options['--handle']?keys.length!==1:!['--spec-path','--slice','--expected-activation-id'].every(key=>options[key]))
@@ -2599,7 +2651,8 @@ export async function main(argv=process.argv.slice(2)) {
     const handleFile=flag('--handle');
     const handle=handleFile?await readJson(handleFile):null;
     let result;
-    if(command==='inspect-request') result=await inspectRequestedOperation({specPath:flag('--spec-path'),slice:flag('--slice'),operation:flag('--operation'),requestId:flag('--request-id'),terminal:options['--terminal']??false});
+    if(command==='inspect-evidence') result=await inspectEvidence({specPath:flag('--spec-path'),originFile:flag('--origin-file'),deliveryId:flag('--delivery-id'),recordId:flag('--record-id'),objectId:flag('--object-id')});
+    else if(command==='inspect-request') result=await inspectRequestedOperation({specPath:flag('--spec-path'),slice:flag('--slice'),operation:flag('--operation'),requestId:flag('--request-id'),terminal:options['--terminal']??false});
     else if(command==='prepare-documentary-resumption') result=await prepareDocumentaryResumption({specPath:flag('--spec-path'),slice:flag('--slice'),operation:flag('--operation'),expectedDecisionSha256:flag('--expected-decision-sha256')});
     else if(command==='recover-documentary-resumption') result=await recoverDocumentaryResumption({handle,allocation:flag('--allocation')});
     else if(command==='install-documentary-resumption') result=await installDocumentaryResumption({handle,review:await readJson(flag('--review-file'))});

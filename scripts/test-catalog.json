@@ -12,6 +12,7 @@
     "scripts/test-current-completed-native.mjs",
     "scripts/test-current-completed-pristine.mjs",
     "scripts/test-current-editable-draft.mjs",
+    "scripts/test-current-evidence-inspection.mjs",
     "scripts/test-current-execution-format.mjs",
     "scripts/test-current-findings-evidence.mjs",
     "scripts/test-current-first-output-inventory.mjs",
