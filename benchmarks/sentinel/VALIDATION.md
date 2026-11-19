@@ -66,3 +66,13 @@ O segundo comando inicia chamadas reais e usa duas repetições por tarefa por p
 Logs, checkpoints, relatórios e auditorias derivadas ficam em `benchmark-temp/benchmark-v2/evidence/`, ignorados pelo Git. Resultados antigos estão separados em `benchmarks/legacy/sentinel-todo`. Não houve integração na main, push, instalação global ou uso do Claude corporativo.
 
 Limpeza conservadora: os metadados `.git` dos três workspaces de referência concluídos foram arquivados com inventário, hashes, modos e extração verificada antes da remoção. Produtos e evidências continuam preservados. Para reproduzir comandos dependentes de Git nesses workspaces históricos, restaure primeiro os destinos descritos em `benchmark-temp/benchmark-v2/evidence/cleanup/pass-workspace-git-archive-v1/manifest.json`; não inicialize outro repositório sobre eles. Campanhas bloqueadas/incertas não foram limpas.
+
+## Campanha de referência completa: resultado preservado
+
+`reference-full-01` executou o novo padrão explícito em uma campanha: **4 PASS e 2 BLOCKED**. Rename e query passaram nas duas repetições. Os dois imports atingiram o limite operacional de 12M tokens reportados durante a última validação; não houve CLOSE. Os registros incluem PASS dos filhos, captura e publicação da validação, mas isso não autoriza transformar as células interrompidas em PASS final.
+
+Total: 56.019.593 tokens observados, incluindo 51.246.720 de cache, 4.333.375 de input novo e 439.498 de saída. Os imports tiveram 12.084.329/12.065.302 tokens, dos quais 11.080.192/11.057.280 eram cache. Esse limite controla volume bruto observado, **não custo faturável**. A observação atrasada permite pequeno excesso; lacunas de consumo continuam explícitas.
+
+A auditoria não encontrou loop de slices nem soma indevida de snapshots. Houve saídas volumosas e algumas releituras de bundles, também presentes em PASS anteriores; não existe correção causal única demonstrada. Rename-1 levou 39m16s, deixando somente 44s da janela de 40min. Tempo e tokens são restrições independentes.
+
+Contraprova limitada aprovada: `diagnostic-import-margin.json`, somente import, uma repetição, 14M tokens observados, mantendo 40min, 20 turnos e proteção contra falta de progresso. Justificativa: consumo observado próximo de 12,1M, CLOSE histórico de aproximadamente 267k e margem limitada para variação/atraso. O perfil padrão e a campanha anterior não são alterados; a contraprova não qualifica retrospectivamente a campanha. Não haverá série automática de aumentos caso o tempo se esgote.
