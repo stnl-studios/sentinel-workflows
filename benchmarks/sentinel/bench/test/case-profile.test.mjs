@@ -26,7 +26,7 @@ test('stage overrides merge and role replacement does not affect children',()=>{
  assert.deepEqual(resolveCaseProfile(p,'query').stageRoles,p.stageRoles);
 });
 test('reject unknown cases, override keys and changed global controls',()=>{
- for(const key of ['limits','source','sentinelRevision','contextPolicy','concurrency','cli','sandbox','unknown']){const p=base();p.caseOverrides={rename:{[key]:{}}};assert.throws(()=>validateProfile(p),/only roles/);}
+ for(const key of ['source','sentinelRevision','contextPolicy','concurrency','cli','sandbox','unknown']){const p=base();p.caseOverrides={rename:{[key]:{}}};assert.throws(()=>validateProfile(p),/only roles/);}
  const p=base();p.caseOverrides={other:{}};assert.throws(()=>validateCaseOverrides(p),/unknown case/);assert.throws(()=>resolveCaseProfile(base(),'other'),/unknown case/);
 });
 test('override roles require complete exact pairs and valid shapes',()=>{
@@ -51,4 +51,45 @@ test('effective bindings preserve global shape or qualify selected case roles',a
  const rows=effectiveRoleBindings(p);assert.equal(rows.length,6);assert(rows.every(r=>r.caseId==='rename'&&r.role==='rename__'+r.logicalRole));
  assert.equal(rows.find(r=>r.logicalRole==='coordinator').effort,'medium');assert.equal(rows.some(r=>r.role==='coordinator'),false);
  for(const suite of [[],['rename','rename'],['other'],null,'rename']){p.suiteCases=suite;if(suite===null)continue;assert.throws(()=>effectiveRoleBindings(p),/suiteCases/);}
+});
+
+test('case token limit overrides only selected case, preserves controls and deep-copy isolation',()=>{
+ const p=base();p.limits.maxReportedTokens=12000000;p.limits.maxCampaignReportedTokens=60000000;
+ p.caseOverrides={import:{limits:{maxReportedTokens:14000000}}};const before=structuredClone(p);
+ validateProfile(p);const r=resolveCaseProfile(p,'import');validateProfile(r);
+ assert.equal(r.limits.maxReportedTokens,14000000);
+ for(const id of ['rename','query'])assert.equal(resolveCaseProfile(p,id).limits.maxReportedTokens,12000000);
+ assert.deepEqual(r.limits,{...p.limits,maxReportedTokens:14000000});assert.deepEqual(r.roles,p.roles);
+ r.limits.caseMs=1;r.limits.maxReportedTokens=1;assert.deepEqual(p,before);
+ assert.equal(resolveCaseProfile(p,'import').limits.maxReportedTokens,14000000);
+});
+test('case limit rejects unknown controls, malformed values and values above campaign cap',()=>{
+ for(const limits of [{},null,[],{maxTurns:1},{maxReportedTokens:1,caseMs:1},...[-1,0,1.5,Infinity,NaN,'14000000',Number.MAX_SAFE_INTEGER+1,60000001].map(maxReportedTokens=>({maxReportedTokens}))]){
+  const p=base();p.limits.maxCampaignReportedTokens=60000000;p.caseOverrides={import:{limits}};
+  assert.throws(()=>validateProfile(p));assert.throws(()=>resolveCaseProfile(p,'rename'));
+ }
+ const p=base();p.limits.maxCampaignReportedTokens=60000000;p.caseOverrides={import:{limits:{maxReportedTokens:60000000}}};validateProfile(p);
+ delete p.limits.maxCampaignReportedTokens;validateProfile(p);
+});
+test('case limit participates in effective identity without changing siblings or models',()=>{
+ const p=base();p.caseOverrides={import:{limits:{maxReportedTokens:12000000}}};
+ const original=digest(resolveCaseProfile(p,'import')),sibling=digest(resolveCaseProfile(p,'rename'));
+ p.caseOverrides.import.limits.maxReportedTokens=14000000;
+ assert.notEqual(digest(resolveCaseProfile(p,'import')),original);assert.equal(digest(resolveCaseProfile(p,'rename')),sibling);
+ assert.deepEqual(resolveCaseProfile(p,'import').roles,p.roles);
+});
+test('resolved case limits govern real budget decision and in-turn monitor without extending deadline',async()=>{
+ const {budgetDecision}=await import('../core.mjs');const {UsageBudgetMonitor}=await import('../budget-monitor.mjs');
+ const p=base();p.limits.maxReportedTokens=12000000;p.limits.maxCampaignReportedTokens=60000000;p.caseOverrides={import:{limits:{maxReportedTokens:14000000}}};
+ for(const id of PROFILE_CASE_IDS){
+  const profile=resolveCaseProfile(p,id),limit=id==='import'?14000000:12000000;
+  const budget={now:1,campaignDeadline:14400000,caseDeadline:2400000,turns:1,unchanged:0,reportedTokens:12000000};
+  assert.equal(budgetDecision(budget,profile.limits),id==='import'?'ALLOW':'OBSERVED_TOKEN_LIMIT');
+  assert.equal(budgetDecision({...budget,reportedTokens:limit},profile.limits),'OBSERVED_TOKEN_LIMIT');
+  assert.equal(budgetDecision({...budget,now:2400000,reportedTokens:0},profile.limits),'DEADLINE');
+  const monitor=new UsageBudgetMonitor({limit:profile.limits.maxReportedTokens});
+  monitor.observe({method:'thread/tokenUsage/updated',params:{threadId:'simulated',tokenUsage:{total:{totalTokens:12000000}}}});
+  assert.equal(monitor.triggered,id!=='import');
+  monitor.observe({method:'thread/tokenUsage/updated',params:{threadId:'simulated',tokenUsage:{total:{totalTokens:limit}}}});assert.equal(monitor.triggered,true);
+ }
 });

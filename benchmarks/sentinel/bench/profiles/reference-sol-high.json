@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "id": "reference-gpt-61-sol-high-v1",
+  "id": "reference-gpt-61-sol-high-v2",
   "cli": "/opt/homebrew/bin/codex",
   "cliVersion": "0.163.0",
   "sentinelRevision": "2cdc33d39b801bc3e90ba09175e6a262977d3d62",
@@ -39,5 +39,11 @@
   },
   "contextPolicy": "stage",
   "stageRoles": {},
-  "caseOverrides": {}
+  "caseOverrides": {
+    "import": {
+      "limits": {
+        "maxReportedTokens": 14000000
+      }
+    }
+  }
 }

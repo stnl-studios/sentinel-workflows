@@ -88,3 +88,9 @@ Os dois imports bloqueados da campanha anterior não são retomáveis como se ai
 Proposta operacional, ainda não aplicada aos padrões: permitir somente limites de célula por tarefa e fixar import em 14M tokens observados; manter rename/query em 12M, 40min por célula, 60M por campanha, 20 turnos e limite de falta de progresso. Trata-se de calibração de margem, não correção de teste nem preço calculado. Os volumes de cache/input novo/output continuam separados e o bruto permanece visível. A margem de tempo é independente e segue apertada; não aumentar automaticamente se houver timeout.
 
 Para qualificação reproduzível, a configuração escolhida precisará ser congelada e executar as seis células em uma campanha nova, com os mesmos gates de produto, formalização, CLOSE, oracle, configuração e integridade de evidência. Essa matriz não foi iniciada. Até lá, o estado correto é **bancada diagnóstica utilizável, qualificação integral pendente**.
+
+## Calibração prospectiva autorizada
+
+Após consolidar os resultados, foi autorizada a configuração `reference-gpt-61-sol-high-v2`: import 14M tokens observados, rename/query 12M, mantendo 40min por célula, 60M/4h por campanha, modelos, esforço e todos os critérios. A superfície existente `caseOverrides` recebe somente `limits.maxReportedTokens`; não permite alterar os demais limites por tarefa. A prioridade é do valor explicitamente definido na tarefa, com fallback ao global.
+
+O próximo passo autorizado é **uma campanha de aceitação com o comando padrão**, não modo official, certificado ou publicação. Nenhum resultado anterior é reclassificado e não haverá novas tentativas ou aumentos automáticos se essa campanha falhar.

@@ -27,7 +27,7 @@ npm run benchmark:report -- --id meu-diagnostico
 
 ## Perfis por tarefa e etapa
 
-`roles` contém modelo e esforço. `stageRoles` seleciona o coordenador por etapa. `caseOverrides.rename`, `.query` e `.import` substituem roles e/ou stageRoles daquela tarefa. Os atores independentes `plan_approver`, `plan_review`, `execute_check` e `formal_validate` têm sua própria configuração; mudar o coordenador não muda silenciosamente seus filhos.
+`roles` contém modelo e esforço. `stageRoles` seleciona o coordenador por etapa. `caseOverrides.rename`, `.query` e `.import` substituem roles e/ou stageRoles daquela tarefa. `caseOverrides.<tarefa>.limits.maxReportedTokens` pode ajustar somente o teto de tokens observados da célula; não altera tempo, tentativas ou orçamento global. O padrão de referência usa 14M para import e 12M para rename/query, mantendo 40min por célula e 60M/4h por campanha. Esse volume inclui cache e não representa custo faturável. Os atores independentes `plan_approver`, `plan_review`, `execute_check` e `formal_validate` têm sua própria configuração; mudar o coordenador não muda silenciosamente seus filhos.
 
 Um perfil de referência fixo permite observar evolução do Sentinel. Comparações controladas de modelo/esforço são opcionais e adicionais: fixe source, fixture e demais atores. O relatório diferencia configuração solicitada de configuração realmente observada, e dados faltantes de zero.
 
