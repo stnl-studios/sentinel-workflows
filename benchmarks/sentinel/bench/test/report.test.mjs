@@ -22,3 +22,18 @@ test('linked child capacity appears separately without changing the campaign sum
  assert.match(report,/nem autoriza retomada/);
  assert.doesNotMatch(report,/private-id-not-rendered/);
 });
+
+test('original capacity report never renders raw failure metadata and excludes recoveries',()=>{
+ const sentinel='SECRET-capacity-test /private/source input=hidden';
+ const childAvailabilityObservations=[{threadId:sentinel}];
+ const original={caseId:'import',repetition:1,status:'BLOCKED',stopReason:sentinel,error:sentinel,failure:{domain:'unclassified',code:sentinel,childAvailabilityObservations}};
+ const recovered={caseId:'import',repetition:1,status:'BLOCKED',failure:{domain:'budget',code:'TURN_DEADLINE',childAvailabilityObservations}};
+ const options={id:'redaction',mode:'diagnostic',planned:1,repetitions:1,caseIds:['import'],results:[original],recoveries:[{cell:'import-1',result:recovered}]};
+ const text=renderReport(options);
+ assert.ok(!text.includes(sentinel));
+ assert.match(text,/import-1 \| BLOCKED \| 1/);
+ assert.match(text,/não inclui sessões de retomada/);
+ assert.doesNotMatch(text,/TURN_DEADLINE/);
+ const generic=renderReport({...options,results:[{...original,status:sentinel}],recoveries:[]});
+ assert.ok(!generic.includes(sentinel));assert.match(generic,/import-1 \| não informado \| 1/);
+});

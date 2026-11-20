@@ -1,5 +1,7 @@
 /** Every planned cell remains visible. Classification strata are never pooled. */
 const FIELDS=['inputTokens','cachedInputTokens','newInputTokens','outputTokens','reasoningOutputTokens','totalTokens'];
+const PUBLIC_TERMINATIONS=new Set(['TURN_DEADLINE','CASE_DEADLINE','CAMPAIGN_DEADLINE','TURN_LIMIT','NO_PROGRESS','OBSERVED_TOKEN_LIMIT','CAMPAIGN_OBSERVED_TOKEN_LIMIT']);
+const PUBLIC_STATUSES=new Set(['PASS','FAIL','BLOCKED','TIMEOUT','INTERRUPTED','PREPARATION_FAILED','HARNESS_FAILED']);
 const DIFFICULTY={rename:'pequena',query:'média',import:'transversal'};
 const known=value=>Number.isSafeInteger(value)&&value>=0;
 function observation(row,field){
@@ -53,10 +55,14 @@ export function renderReport(campaign){
  const missing=Object.values(report.cases).reduce((sum,c)=>sum+c.classificationMissingRuns,0),conflicts=Object.values(report.cases).reduce((sum,c)=>sum+c.classificationConflicts,0);
  lines.push('',`Retomadas: ${report.recoveries}; paradas originais preservadas: ${report.originalStops}. Usa-se o último resultado cumulativo de cada célula, sem somar snapshots.`,missing?`${missing} observação(ões) sem classificação explícita ficam diagnósticas.`:'',conflicts?`${conflicts} declaração(ões) official com harness inválido foram separadas como diagnósticas.`:'','Não há seleção da melhor repetição nem média misturando official e diagnostic. Falhas oficiais válidas continuam observações oficiais; sucessos diagnósticos não viram oficiais. Latência cobre sucessos; tokens incluem também tentativas malsucedidas.',`Sentinel: ${label(campaign.profile?.sentinelRevision??'desconhecido')}; CLI: ${label(campaign.profile?.cliVersion??'desconhecido')}.`,'','Cache é subconjunto de input, reasoning é subconjunto de output: não somar novamente. Input novo é input reportado menos cache, não estimativa de cobrança. “+ lacunas” indica observação parcial ou completude não comprovada; uso em voo pode faltar. Tarefas de dificuldades diferentes não são agrupadas. Amostra pequena não sustenta ranking estatístico.','');
  const config=requestedConfigurationRows(campaign);if(config.length){lines.push('','### Configuração solicitada por tarefa, etapa e ator','','Esta tabela não afirma execução. ACKs e uso por ciclo comprovam a configuração efetivamente observada.','', '| Tarefa | Etapa | Ator | Papel | Modelo | Esforço |','|---|---|---|---|---|---|');for(const row of config)lines.push(`| ${[row.caseId,row.stage,row.actor,row.role,row.model,row.effort].map(label).join(' | ')} |`);}
- const affected=(campaign.results??[]).filter(row=>row.failure?.childAvailabilityObservations?.length);
+ const affected=(campaign.results??[]).filter(row=>Array.isArray(row.failure?.childAvailabilityObservations)&&row.failure.childAvailabilityObservations.length);
  if(affected.length){
-  lines.push('','### Capacidade do provedor observada em agentes delegados','', 'Observação vinculada ao turno original, separada da causa de término. Não comprova causa exclusiva nem autoriza retomada.','', '| Caso | Término original | Turnos delegados com aviso |','|---|---|---:|');
-  for(const row of affected)lines.push(`| ${label(row.caseId+'-'+row.repetition)} | ${label(row.failure.code??row.error??row.status)} | ${row.failure.childAvailabilityObservations.length} |`);
+  lines.push('','### Capacidade do provedor nas tentativas originais','', 'Somente tentativas originais da campanha; não inclui sessões de retomada. A observação é separada do motivo da parada: não comprova causa exclusiva nem autoriza retomada.','', '| Caso | Término original | Turnos delegados com aviso |','|---|---|---:|');
+  for(const row of affected){
+   const id=typeof row.caseId==='string'&&Object.hasOwn(DIFFICULTY,row.caseId)&&Number.isSafeInteger(row.repetition)&&row.repetition>0?row.caseId+'-'+row.repetition:'não identificado';
+   const termination=[row.stopReason,row.failure.code].find(code=>PUBLIC_TERMINATIONS.has(code))??(PUBLIC_STATUSES.has(row.status)?row.status:'não informado');
+   lines.push(`| ${id} | ${termination} | ${row.failure.childAvailabilityObservations.length} |`);
+  }
  }
  return lines.join('\n');
 }
