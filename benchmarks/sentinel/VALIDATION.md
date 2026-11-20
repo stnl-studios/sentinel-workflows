@@ -247,3 +247,24 @@ O arquivo rastreado já consumido por `npm run benchmark`, profiles/reference-so
 Hashes operacionais conferidos idênticos ao PASS: engine52255f9a4c9f0b28e80bce81ac6bd346e80b32441f444cb00967675790fb6c4d, fixture0214744b5442a4df52f71b3392b2ab6531cd34fa25b93b5a4b58cb1504c731fe, oracleb48cc865c84f048c497ec1ee88d35d4b3f69c4f8aa2da3d1e01d1465c9d0f929. implementationHashes exclui profiles/test/cases/README, portanto engine não mudou; contentDigest da instalação muda para93133213e6cbc7d6da996417522045c3fa20d178023d21b463b081dd73caa472. Configuração import equivalente ao PASS exceto nome do perfil e seleção/repetições da campanha; perfil padrão digest313dc4acdb03db0ab7921bb90bc82ae4250a2d61c70cbb5ec8307ac63801f1a6. Histórico não reclassificado.
 
 Comando de aceitação completo proposto, NÃO EXECUTADO: `npm run benchmark -- --id acceptance-reference-v4-01`. Usa o padrão rastreado, modo diagnóstico, três tarefas×duas. Depende de go explícito, preflight e resolução conservadora do lease residual morto da rodada concluída. Nenhuma matriz automática, mudança de teto, main/push ou publicação.
+
+### Aceitação v4 encerrada: 3/6, não qualificada
+
+`acceptance-reference-v4-01`: execução única do comando padrão, modo diagnóstico, 6 iniciados/6 terminais, **3 PASS/3 BLOCKED** em **3h11m31,430s**. Revisão de lançamento c3f5929, Sentinel pin43659631, engine52255f9a, fixture0214744b, oracleb48cc865, perfil efetivo da campanha11136dfa, Codex CLI0.163.0. Relatório original em `benchmark-temp/benchmark-v2/evidence/campaigns/acceptance-reference-v4-01/`; SHA256 do summary bruto `0f198c79d4006c285794181db10b3515bb269f58e00269acd314dc84098525b9`. Todos harnessValid=true; isso significa observação admissível, não PASS.
+
+| Caso | Veredito bruto | Duração | Tokens reportados | CLOSE / oráculo / contrato |
+|---|---|---:|---:|---|
+| rename-1 | PASS | 31m34,118s | 8.139.134 | Sim / PASS / MATCH |
+| query-1 | PASS | 35m36,519s | 8.791.406 | Sim / PASS / MATCH |
+| import-1 | BLOCKED, TURN_DEADLINE em EXECUTE_SLICE 01 | 27m10,979s | 4.711.218 | Não / não rodou / MATCH |
+| rename-2 | PASS | 27m02,094s | 8.625.570 | Sim / PASS / MATCH |
+| query-2 | BLOCKED, TURN_DEADLINE em REVIEW_PLAN | 29m46,812s | 1.734.280 | Não / não rodou / não aplicável |
+| import-2 | BLOCKED, OBSERVED_TOKEN_LIMIT em VALIDATE_SLICE 02 | 40m17,528s | 14.077.596 | Não / não rodou / MATCH |
+
+Total observado **46.079.204** = 42.309.120 cache + 3.429.890 input novo + 340.194 output. Cache é subconjunto do input, não cobrança; todas as células sinalizam possível uso não reportado. A coleta tem atraso, portanto import-2 passou 77.596 acima do teto observado de 14M antes da parada; não atingiu 50min nem o teto global. Ambos EXECUTE de import-2 foram Sol/medium, validações Sol/high; import-1 teve apenas o primeiro EXECUTE. Os turnos de import-1/query-2 expiraram no cap de 15min, não no global ou de caso. Não houve retomada, mudança de perfil ou certificado.
+
+**Auditoria posterior, sem reclassificar:** eventos públicos 2282→2491 (import-1) e 1142→1399 (query-2) vinculam capacidade indisponível ao turno exato do filho via `rootTurnId`. O primeiro caso implementou e vinculou a checagem, sem teste concluído observado; o segundo consultou a captura aprovada, sem decisão/publicação independente. Nenhum filho teve conclusão observada, logo não há prova para reaproveitar seus turnos ou repetir efeitos. Import-2 também teve avisos no VALIDATE_SLICE 01, **não no turno terminal**; isso não explica o bloqueio de tokens na slice02. Os três PASS não registraram notificações de erro. As condições observadas do provedor não provam causa exclusiva nem autorizam retomada.
+
+**Contrafactual em memória, somente leitura:** o novo relatório identifica um turno filho com aviso em cada bloqueio de prazo (import-1 e query-2) e nenhum nos outros resultados terminais. Domínio/código originais de todos os seis resultados conferidos idênticos. Nenhum JSON, log ou resultado histórico foi regravado; a coluna nova é meramente informativa e não muda gates, retentativas, orçamento, modelos ou perfil.
+
+Verificação offline desta mudança de relatório: **388/388 testes da bancada PASS** e `git diff --check` limpo. Suite rodada em cópia descartável dentro de benchmark-temp; logs preservados. Nenhuma tentativa com modelo foi iniciada.

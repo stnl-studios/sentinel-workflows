@@ -10,3 +10,15 @@ test('markdown includes separated classification and nonbilling warnings',async(
 test('requested per-task stage and child configurations are displayed without claiming execution',()=>{const p={roles:{coordinator:{model:'gpt-6.1-sol',effort:'high'},routine:{model:'gpt-6-luna',effort:'medium'},formal_validate:{model:'gpt-6.1-sol',effort:'high'}},stageRoles:{EXECUTE_SLICE:'routine'}};const campaign={id:'profiles',mode:'diagnostic',caseIds:['rename'],caseProfiles:{rename:{profile:p}},results:[]};const rows=requestedConfigurationRows(campaign);assert.equal(rows.find(r=>r.stage==='EXECUTE_SLICE'&&r.actor==='coordinator').model,'gpt-6-luna');assert.equal(rows.find(r=>r.stage==='VALIDATE_SLICE'&&r.actor==='native-child').model,'gpt-6.1-sol');assert.match(renderReport(campaign),/não afirma execução/);assert.equal(requestedConfigurationRows({}).length,0);});
 
 test('unreported usage warning prevents total completeness while preserving known field values',()=>{const r=summarizeCampaign({id:'x',planned:1,repetitions:1,caseIds:['rename'],results:[{caseId:'rename',repetition:1,status:'BLOCKED',unreportedUsagePossible:true,tokenMetrics:{inputTokens:{value:10,complete:true},cachedInputTokens:{value:3,complete:true},totalTokens:{value:12,complete:true}}}]});assert.equal(r.cases.rename.tokens.totalTokens.value,12);assert.equal(r.cases.rename.tokens.totalTokens.complete,false);assert.equal(r.cases.rename.tokens.totalTokens.partialRuns,1);assert.equal(r.cases.rename.tokens.newInputTokens.value,7);assert.equal(r.cases.rename.tokens.newInputTokens.complete,false);});
+
+test('linked child capacity appears separately without changing the campaign summary',()=>{
+ const r={caseId:'import',repetition:1,status:'BLOCKED',error:'TURN_DEADLINE',failure:{domain:'budget',code:'TURN_DEADLINE'}};
+ const c={id:'child-capacity',mode:'diagnostic',planned:1,repetitions:1,caseIds:['import'],results:[r]};
+ const annotated={...c,results:[{...r,failure:{...r.failure,childAvailabilityObservations:[{threadId:'private-id-not-rendered'}]}}]};
+ assert.deepEqual(summarizeCampaign(c),summarizeCampaign(annotated));
+ assert.doesNotMatch(renderReport(c),/Capacidade do provedor/);
+ const report=renderReport(annotated);
+ assert.match(report,/import-1 \| TURN_DEADLINE \| 1/);
+ assert.match(report,/nem autoriza retomada/);
+ assert.doesNotMatch(report,/private-id-not-rendered/);
+});

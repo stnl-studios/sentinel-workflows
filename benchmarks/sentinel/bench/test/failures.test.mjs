@@ -42,3 +42,32 @@ test('failure collector contains no arbitrary error text, reasoning, auth or com
  const command=failureObservation({method:'item/completed',params:{...attempt,item:{type:'commandExecution',exitCode:1,aggregatedOutput:'secret'}}});assert.ok(!JSON.stringify(command).includes('secret'));
  assert.deepEqual(failureObservation(r),r);
 });
+
+const turnStart=(threadId,turnId,rootTurnId)=>({method:'turn/started',params:{threadId,turn:{id:turnId,rootTurnId}}});
+const rootStart=turnStart('thread','turn','turn');
+const linkedStart=turnStart('child','child-turn','turn');
+const childCapacity={...capacity,params:{...capacity.params,threadId:'child',turnId:'child-turn'}};
+test('linked child capacity is report-only and independent of direct capacity',()=>{
+ const children=[rootStart,linkedStart,childCapacity].map(failureObservation);
+ for(const direct of [[],[capacity]]){
+  const baseline=classify(direct),actual=classify([...children,...direct]);
+  const {childAvailabilityObservations,...primary}=actual;
+  assert.deepEqual(primary,baseline);
+  assert.deepEqual(childAvailabilityObservations,[{code:'MODEL_CAPACITY_OBSERVED',threadId:'child',turnId:'child-turn',rootTurnId:'turn',willRetry:true}]);
+  assert.deepEqual(assessHarnessObservation({result:{status:'BLOCKED',failure:actual},configuration:[{status:'MATCH'}],runnerContractProof:{status:'MATCH'}}),assessHarnessObservation({result:{status:'BLOCKED',failure:baseline},configuration:[{status:'MATCH'}],runnerContractProof:{status:'MATCH'}}));
+ }
+ assert.deepEqual(classify(children,{status:'PASS'}),{domain:null,code:null});
+});
+test('child capacity requires a unique exact current root and child start',()=>{
+ const end=(threadId,turnId)=>({method:'turn/completed',params:{threadId,turn:{id:turnId,status:'completed'}}});
+ for(const events of [[linkedStart,childCapacity],[rootStart,childCapacity],[rootStart,turnStart('child','child-turn','old'),childCapacity],[rootStart,turnStart('other','child-turn','turn'),childCapacity],[rootStart,linkedStart,turnStart('child','child-turn','old'),childCapacity],[rootStart,turnStart('other','turn','turn'),linkedStart,childCapacity],[linkedStart,rootStart,childCapacity],[rootStart,childCapacity,linkedStart],[rootStart,linkedStart,end('child','child-turn'),childCapacity],[rootStart,linkedStart,end('thread','turn'),childCapacity]]){
+  assert.deepEqual(classify(events),classify([]));
+ }
+ assert.equal(classify([rootStart,linkedStart,linkedStart,childCapacity]).childAvailabilityObservations.length,1);
+});
+test('a later child progress or completion cannot transform capacity into recovery authority',()=>{
+ for(const event of [{method:'item/agentMessage/delta',params:{threadId:'child',turnId:'child-turn',delta:'progress'}},{method:'turn/completed',params:{threadId:'child',turn:{id:'child-turn',status:'completed'}}}]){
+  const result=classify([rootStart,linkedStart,childCapacity,event]);assert.deepEqual({domain:result.domain,code:result.code},{domain:'budget',code:'TURN_DEADLINE'});
+  assert.equal(result.childAvailabilityObservations[0].status,undefined);
+ }
+});
