@@ -36,12 +36,8 @@ while IFS= read -r -d '' module; do
 done < <(find scripts skills templates benchmarks agents/codex/runtime -type f -name '*.mjs' -print0)
 
 if [[ "$STRUCTURE_ONLY" == "0" ]]; then
-  node --test benchmarks/sentinel-todo/seed/test/*.test.mjs
-  node --test scripts/test-execution-contract.mjs
-  node scripts/test-benchmark-contract.mjs
-  node scripts/test-benchmark-measurement.mjs
-  node --test scripts/test-benchmark-campaign.mjs
-  node --test scripts/test-benchmark-manager.mjs scripts/test-benchmark-ui.mjs scripts/test-codex-runner-adapter.mjs
+  node scripts/test-benchmark-v2.mjs
+  node --test scripts/test-execution-contract.mjs scripts/test-codex-runner-adapter.mjs
   node --test scripts/test-app-server-transport.mjs scripts/test-command-environment.mjs scripts/test-current-runtime-boundaries.mjs
 fi
 

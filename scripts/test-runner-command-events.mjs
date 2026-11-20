@@ -27,18 +27,17 @@ test("native contracts bind checks to isolated verification while preserving pro
   assert.match(codex, /NATIVE_VERIFICATION_HELPER[\s\S]{0,260}NATIVE_ORIGIN_FILE[\s\S]{0,260}verify-native/u);
   assert.match(codex, /A captura consome a observação salva e recusa divergência/u);
   const requiredInstructions = [
-    "shell invocation isolada",
-    "Execute discovery e inspection primeiro, em chamadas separadas",
-    "nunca misture discovery ou inspection com verification na mesma invocation",
-    "nunca anexe comandos antes do marker",
-    "depois do marker, execute somente o verification command pertinente",
-    "`STNL_VERIFICATION_COMMAND=1 npm test`",
-    "`git diff ...; STNL_VERIFICATION_COMMAND=1 npm test`",
-    "`git diff ... && STNL_VERIFICATION_COMMAND=1 npm test`",
+    'NATIVE_ORIGIN_FILE e NATIVE_VERIFICATION_HELPER',
+    'paths absolutos não vazios de verificationHelper e originFile da reserva oficial',
+    'argumentos separados: helper, verify-native, --origin-file, origin',
+    'Execute uma vez antes do julgamento',
+    'Não execute os checks novamente',
+    'A captura consome a observação salva e recusa divergência',
+    'Discovery e inspection podem ocorrer separadamente',
+    'nunca declare PASS com observação ausente, stale, não concluída ou nonzero',
+    'reporte seus comandos/exits exatos',
   ];
   for (const instruction of requiredInstructions) assert.ok(claude.includes(instruction), `missing Claude contract instruction: ${instruction}`);
-  assert.match(claude, /`verificationHelper` e `originFile` absolutos retornados pela admissão oficial/u);
-  assert.match(claude, /`commands` somente os comandos e exits da observation concluída pelo helper/u);
   assert.doesNotMatch(claude, /command_execution|App Server|benchmark|\bSDK\b/iu);
 });
 

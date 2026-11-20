@@ -80,8 +80,10 @@ test("clean install includes all workflow and domain skills plus native platform
   assert.equal(plan.operations.some((item) => item.destination.endsWith("stnl_validation_runner.toml")), true);
   assert.equal(plan.operations.some((item) => item.destination.endsWith("stnl-validation-runner.md")), true);
   for (const operation of plan.operations) {
-    assert.doesNotMatch(operation.destination, /(?:package-lock\.json|package\.json|validation-runner\.mjs|runner-broker\.mjs)/u);
-    assert.doesNotMatch(operation.destination, /(?:benchmarks?|sdk|app-server)/iu);
+    const installedRelative = path.relative(home, operation.destination);
+    assert.ok(installedRelative && !path.isAbsolute(installedRelative) && installedRelative !== ".." && !installedRelative.startsWith(".." + path.sep), "installation destination must stay within isolated home");
+    assert.doesNotMatch(installedRelative, /(?:package-lock\.json|package\.json|validation-runner\.mjs|runner-broker\.mjs)/u);
+    assert.doesNotMatch(installedRelative, /(?:benchmarks?|sdk|app-server)/iu);
     for (const relative of operation.sourceFiles?.keys() ?? []) {
       assert.doesNotMatch(operation.sourceFiles.get(relative).toString("utf8"), /\bcommand_execution\b|App Server|benchmark/iu);
       assert.doesNotMatch(relative, /(?:^|\/)(?:benchmarks?|node_modules|maintenance|evals|sdk|app-server)(?:\/|$)|(?:^|\/)runtime\/test(?:\/|$)/iu);

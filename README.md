@@ -130,7 +130,7 @@ Os pacotes dos clientes contêm somente as skills e os agents administrados pelo
 
 ## Checks para mantenedores
 
-`npm test` executa o catálogo auditado em `scripts/test-catalog.json`: scripts de teste em `scripts/`, testes `.test.mjs` das skills de workflow e os testes do seed offline do benchmark. O runner compara os arquivos descobertos com as entradas incluídas e as exclusões justificadas, e falha se surgir um arquivo novo ou se uma decisão do catálogo ficar obsoleta. A única exclusão é `scripts/fixtures/prepared-offline-case.test.mjs`, um fixture de benchmark que é copiado para um checkout gerado e cuja importação relativa não existe no repositório-fonte. Os dois wrappers shell de contratos são classificados em `delegations`, com destino, teste de delegação e justificativa explícitos: cada suite Node roda uma única vez, e `scripts/test-shell-delegation.mjs` verifica os argumentos exatos, a resolução do root com espaços a partir de outro diretório, a propagação de exit não zero e o erro quando Node está ausente. Isso evita repetir as suites completas sem dispensar os contratos dos wrappers. Destino ou teste de delegação ausentes, classificações duplicadas e entradas obsoletas falham antes da execução. Os testes do benchmark usam fixtures controladas; o comando não inicia campanha real, instalação global nem chamada de modelo.
+`npm test` executa o catálogo auditado em `scripts/test-catalog.json`: testes centrais do Sentinel, contratos dos clientes e o launcher da bancada nova. A suíte offline da bancada é delegada uma única vez a `scripts/test-benchmark-v2.mjs`, que materializa código e fixture em `benchmark-temp/benchmark-v2` antes de testar. Nenhum teste da bancada escreve rodadas na árvore-fonte, chama modelos ou instala globalmente. O catálogo rejeita arquivos descobertos sem classificação, duplicatas e entradas obsoletas. Wrappers shell de contratos permanecem como delegações testadas, sem repetir as suites completas.
 
 O catálogo offline também executa fixtures sintéticas Python/SQLite e contratos simulados da ponte SQL Server. Para os testes do repositório, é necessário Python 3.9 ou mais recente com SQLite da biblioteca padrão; isso não acrescenta Python aos requisitos das skills instaladas. O gate SQL Server real é separado e explícito (`npm run verify:sqlserver-native`), exige ambiente autorizado e falha se os pré-requisitos estiverem ausentes. `npm test` não inicia Docker, SQL Server, CI ou chamadas de modelo.
 
@@ -138,7 +138,7 @@ Ao terminar os testes, `npm test` roda `scripts/validate.sh --structure-only`, q
 
 O runner permanece sequencial para limitar memória e preservar o isolamento das fixtures. Cada arquivo produz uma linha `[test-result]` em JSON com status, código de saída e duração em segundos; delegações e fixtures excluídas são identificadas explicitamente, com duração zero porque não repetem a execução. Para salvar o relatório consolidado, use `SENTINEL_TEST_REPORT=/caminho/fora/do/repo/test-results.json npm test` (o diretório pai deve existir). O relatório inclui a validação estrutural, preserva falhas anteriores e só informa sucesso se todas as suites, contratos de delegação e validação estrutural passarem. Não compare tempos de máquinas ou cargas diferentes como se fossem uma medição controlada.
 
-Como referência local, uma execução bem-sucedida do catálogo completo levou cerca de 74 minutos; o tempo varia com a máquina e os casos do benchmark offline, portanto esse número não é uma garantia de duração.
+O catálogo é sequencial para limitar consumo de memória. Tempos de execuções da bancada aposentada não são referência de desempenho para este catálogo.
 
 Para rodar checks específicos durante uma alteração, use os comandos pertinentes à área. Exemplos:
 
@@ -150,3 +150,10 @@ node scripts/check-distributable-skills.mjs skills/workflows/stnl-execution-plan
 ```
 
 Esses comandos cobrem contratos diferentes; passar um deles não significa que toda a suíte do repositório ou o comportamento nativo dos clientes foi testado.
+
+
+## Bancada de benchmark
+
+`npm run benchmark` inicia a bancada App Server com três tarefas independentes e duas repetições por tarefa, usando um perfil GPT configurável por tarefa e etapa. O comando faz chamadas reais de modelos; `npm run benchmark:profile` e `npm run benchmark:test` não fazem. Todas as rodadas e evidências permanecem em `benchmark-temp`, ignorado pelo Git.
+
+Consulte [comandos, perfis e recuperação](benchmarks/sentinel/README.md) e [estado verificado e limites de qualificação](benchmarks/sentinel/bench/READINESS.md). Dados diagnósticos não são promovidos a oficiais. Resultados da bancada anterior estão preservados com proveniência em `benchmarks/legacy/sentinel-todo`; não são a linha de base da bancada nova.

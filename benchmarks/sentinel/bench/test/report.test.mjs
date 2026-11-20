@@ -1,0 +1,40 @@
+import{requestedConfigurationRows,renderReport}from'../report.mjs';
+import test from'node:test';import assert from'node:assert/strict';import{summarizeCampaign}from'../report.mjs';
+test('report preserves failures and missing cells, separates difficulties',()=>{const r=summarizeCampaign({id:'x',mode:'diagnostic',planned:6,repetitions:2,caseIds:['rename','query','import'],results:[{caseId:'rename',status:'PASS',durationMs:20,observedTokens:100},{caseId:'rename',status:'FAIL',durationMs:3,observedTokens:50},{caseId:'query',status:'BLOCKED',durationMs:90}]});assert.equal(r.notStarted,3);assert.equal(r.cases.rename.allObservedTokens,150);assert.equal(r.cases.rename.successLatencyMs.median,20);assert.equal(r.cases.query.successLatencyMs,null);assert.equal(r.cases.import.started,0);});
+test('recovery replaces cell cumulative result without double counting or losing prior stop',()=>{const r=summarizeCampaign({id:'x',mode:'diagnostic',planned:1,repetitions:1,caseIds:['rename'],results:[{caseId:'rename',repetition:1,status:'BLOCKED',observedTokens:20}],recoveries:[{cell:'rename-1',result:{caseId:'rename',repetition:1,status:'PASS',closed:true,durationMs:50,observedTokens:35}}]});assert.equal(r.cases.rename.passed,1);assert.equal(r.cases.rename.allObservedTokens,35);assert.equal(r.originalStops,1);assert.equal(r.recoveries,1);assert.equal(r.planned,1);});
+test('official and diagnostic latencies stay separated, failures remain official observations',()=>{const r=summarizeCampaign({id:'mixed',mode:'official',planned:4,repetitions:4,caseIds:['query'],results:[{caseId:'query',repetition:1,measurement:'official',status:'PASS',durationMs:10},{caseId:'query',repetition:2,measurement:'diagnostic',status:'PASS',durationMs:1000},{caseId:'query',repetition:3,measurement:'official',status:'FAIL',durationMs:20},{caseId:'query',repetition:4,status:'BLOCKED'}]});assert.equal(r.cases.query.successLatencyMs,null);assert.equal(r.cases.query.officialCount,2);assert.equal(r.cases.query.diagnosticCount,2);assert.equal(r.cases.query.measurements.official.successLatencyMs.median,10);assert.equal(r.cases.query.measurements.diagnostic.successLatencyMs.median,1000);assert.equal(r.cases.query.measurements.official.failed,1);});
+test('reported cache and new input preserve partialness and null gaps',()=>{const metrics=(input,cache)=>({inputTokens:{value:input,complete:true},cachedInputTokens:{value:cache,complete:true},outputTokens:{value:4,complete:true},totalTokens:{value:input+4,complete:true}});const r=summarizeCampaign({id:'tokens',mode:'official',planned:3,repetitions:3,caseIds:['rename'],results:[{caseId:'rename',repetition:1,measurement:'official',status:'FAIL',tokenMetrics:metrics(10,3)},{caseId:'rename',repetition:2,measurement:'official',status:'PASS',tokenMetrics:metrics(4,7)},{caseId:'rename',repetition:3,measurement:'diagnostic',status:'BLOCKED'}]});const o=r.cases.rename.measurements.official.tokens;assert.equal(o.newInputTokens.value,7);assert.equal(o.newInputTokens.missingRuns,1);assert.equal(o.newInputTokens.complete,false);assert.ok(o.newInputTokens.gaps.includes('CACHE_EXCEEDS_INPUT'));assert.equal(r.cases.rename.measurements.diagnostic.tokens.totalTokens.value,null);});
+test('no token metrics legacy does not manufacture zeros, explicit zero remains zero',()=>{const r=summarizeCampaign({id:'x',mode:'diagnostic',planned:2,repetitions:2,caseIds:['rename'],results:[{caseId:'rename',repetition:1,status:'BLOCKED'},{caseId:'rename',repetition:2,status:'PASS',tokenMetrics:{inputTokens:{value:0,complete:true},cachedInputTokens:{value:0,complete:true},totalTokens:{value:0,complete:true}}}]});assert.equal(r.cases.rename.allObservedTokens,0);assert.equal(r.cases.rename.tokens.newInputTokens.value,0);assert.equal(r.cases.rename.tokens.newInputTokens.missingRuns,1);assert.equal(r.cases.rename.tokens.outputTokens.value,null);});
+test('markdown includes separated classification and nonbilling warnings',async()=>{const{renderReport}=await import('../report.mjs');const out=renderReport({id:'test',mode:'official',planned:1,repetitions:1,caseIds:['import'],results:[{caseId:'import',repetition:1,measurement:'official',harnessValid:false,status:'BLOCKED'}]});assert.match(out,/transversal/);assert.match(out,/diagnostic/);assert.match(out,/Input novo/);assert.match(out,/sem dado/);assert.match(out,/não estimativa de cobrança/);assert.match(out,/harness inválido/);});
+
+test('requested per-task stage and child configurations are displayed without claiming execution',()=>{const p={roles:{coordinator:{model:'gpt-6.1-sol',effort:'high'},routine:{model:'gpt-6-luna',effort:'medium'},formal_validate:{model:'gpt-6.1-sol',effort:'high'}},stageRoles:{EXECUTE_SLICE:'routine'}};const campaign={id:'profiles',mode:'diagnostic',caseIds:['rename'],caseProfiles:{rename:{profile:p}},results:[]};const rows=requestedConfigurationRows(campaign);assert.equal(rows.find(r=>r.stage==='EXECUTE_SLICE'&&r.actor==='coordinator').model,'gpt-6-luna');assert.equal(rows.find(r=>r.stage==='VALIDATE_SLICE'&&r.actor==='native-child').model,'gpt-6.1-sol');assert.match(renderReport(campaign),/não afirma execução/);assert.equal(requestedConfigurationRows({}).length,0);});
+
+test('unreported usage warning prevents total completeness while preserving known field values',()=>{const r=summarizeCampaign({id:'x',planned:1,repetitions:1,caseIds:['rename'],results:[{caseId:'rename',repetition:1,status:'BLOCKED',unreportedUsagePossible:true,tokenMetrics:{inputTokens:{value:10,complete:true},cachedInputTokens:{value:3,complete:true},totalTokens:{value:12,complete:true}}}]});assert.equal(r.cases.rename.tokens.totalTokens.value,12);assert.equal(r.cases.rename.tokens.totalTokens.complete,false);assert.equal(r.cases.rename.tokens.totalTokens.partialRuns,1);assert.equal(r.cases.rename.tokens.newInputTokens.value,7);assert.equal(r.cases.rename.tokens.newInputTokens.complete,false);});
+
+test('linked child capacity appears separately without changing the campaign summary',()=>{
+ const r={caseId:'import',repetition:1,status:'BLOCKED',error:'TURN_DEADLINE',failure:{domain:'budget',code:'TURN_DEADLINE'}};
+ const c={id:'child-capacity',mode:'diagnostic',planned:1,repetitions:1,caseIds:['import'],results:[r]};
+ const annotated={...c,results:[{...r,failure:{...r.failure,childAvailabilityObservations:[{threadId:'private-id-not-rendered'}]}}]};
+ assert.deepEqual(summarizeCampaign(c),summarizeCampaign(annotated));
+ assert.doesNotMatch(renderReport(c),/Capacidade do provedor/);
+ const report=renderReport(annotated);
+ assert.match(report,/import-1 \| TURN_DEADLINE \| 1/);
+ assert.match(report,/nem autoriza retomada/);
+ assert.doesNotMatch(report,/private-id-not-rendered/);
+});
+
+test('original capacity report never renders raw failure metadata and excludes recoveries',()=>{
+ const sentinel='SECRET-capacity-test /private/source input=hidden';
+ const childAvailabilityObservations=[{threadId:sentinel}];
+ const original={caseId:'import',repetition:1,status:'BLOCKED',stopReason:sentinel,error:sentinel,failure:{domain:'unclassified',code:sentinel,childAvailabilityObservations}};
+ const recovered={caseId:'import',repetition:1,status:'BLOCKED',failure:{domain:'budget',code:'TURN_DEADLINE',childAvailabilityObservations}};
+ const options={id:'redaction',mode:'diagnostic',planned:1,repetitions:1,caseIds:['import'],results:[original],recoveries:[{cell:'import-1',result:recovered}]};
+ const text=renderReport(options);
+ assert.ok(!text.includes(sentinel));
+ assert.match(text,/import-1 \| BLOCKED \| 1/);
+ assert.match(text,/não inclui sessões de retomada/);
+ assert.match(text,/não atestam ocorrência antes do corte/);
+ assert.doesNotMatch(text,/TURN_DEADLINE/);
+ const generic=renderReport({...options,results:[{...original,status:sentinel}],recoveries:[]});
+ assert.ok(!generic.includes(sentinel));assert.match(generic,/import-1 \| não informado \| 1/);
+});

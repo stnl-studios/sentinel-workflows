@@ -16,8 +16,8 @@ import {restoreCaptureSources,verifyWorkObservation} from './execution-evidence-
 const ordinal=(a,b)=>a<b?-1:a>b?1:0;
 const digest=bytes=>`sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const equal=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
-function fail(code,reason,kind='integrity',artifact=null,field=null) {
-  const error=new Error(reason); error.code=code;
+function fail(code,reason,kind='integrity',artifact=null,field=null,reasonCode=null) {
+  const error=new Error(reason); error.code=code;if(reasonCode!==null)error.reasonCode=reasonCode;
   error.diagnostics=[{kind,artifact,field,reason}]; throw error;
 }
 async function safeRead(file) {
@@ -590,9 +590,10 @@ export async function observeCurrentDeliveryWork({context,delivery,sections,curr
     const entry=entries.get(claim.path);
     if(!entry) {
       if(claim.kind!=='input'&&provenAbsent(entries,claim.path))continue;
-      fail(claim.kind==='input'?'EVIDENCE_STALE':'EVIDENCE_INCOMPLETE',`${claim.path}: ${claim.kind==='input'?'Existing Input is absent':'Initial claim lacks a real ancestor'}`);
+      if(claim.kind==='input')fail('EVIDENCE_STALE',`${claim.path}: Existing Input is absent`,'integrity',claim.path,'Existing Inputs','EXISTING_INPUT_ABSENT');
+      fail('EVIDENCE_INCOMPLETE',`${claim.path}: Initial claim lacks a real ancestor`);
     }
-    if(claim.kind==='input'&&entry.kind!=='file')fail('EVIDENCE_STALE',`${claim.path}: Existing Input is not a file`);
+    if(claim.kind==='input'&&entry.kind!=='file')fail('EVIDENCE_STALE',`${claim.path}: Existing Input is not a file`,'integrity',claim.path,'Existing Inputs',entry.kind==='absent'?'EXISTING_INPUT_ABSENT':'EXISTING_INPUT_NOT_FILE');
     if(claim.kind==='product'&&entry.kind==='directory')fail('EVIDENCE_STALE',`${claim.path}: recipe product is a directory`);
   }
   return observed;

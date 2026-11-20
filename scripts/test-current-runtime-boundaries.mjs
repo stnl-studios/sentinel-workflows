@@ -69,16 +69,6 @@ test('retired managed entrypoints refuse finitely before consuming stdin or disp
 });
 
 
-test('benchmark product imports current contracts without the retired serializer or dispatch',async()=>{
- const {loadProduct}=await import('../benchmarks/sentinel-todo/runtime/benchmark-manager.mjs');
- const product=await loadProduct(path.resolve('.'));
- const current=await import('../skills/workflows/stnl-execution-planner/runtime/execution-state.mjs');
- const semantic=await import('../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs');
- assert.equal(product.inspectExecutionState,current.inspectExecutionState);
- assert.equal(typeof product.createNativeProvider,'function');
- for(const name of ['createManagedSliceContext','runCodexTurn','startOfficialRunnerBroker','prepareIsolatedHome'])assert.equal(product[name],undefined);
-});
-
 test('native distribution checker refuses imports of either exact excluded development stub',async t=>{
  const f=await fixture();t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
  for(const name of ['stnl-slice-executor','stnl-slice-quality-manager']){

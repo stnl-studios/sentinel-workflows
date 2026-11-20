@@ -9,7 +9,7 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 async function fixture(t) {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'stnl-test-runner-'));
   t.after(()=>fs.rm(dir,{recursive:true,force:true}));
-  for(const sub of ['scripts/lib','skills/workflows','benchmarks/sentinel-todo/seed/test'])await fs.mkdir(path.join(dir,sub),{recursive:true});
+  for(const sub of ['scripts/lib','skills/workflows','benchmarks/sentinel'])await fs.mkdir(path.join(dir,sub),{recursive:true});
   for(const file of ['scripts/run-tests.mjs','scripts/lib/test-catalog.mjs'])await fs.copyFile(path.join(root,file),path.join(dir,file));
   await fs.writeFile(path.join(dir,'scripts/test-a.mjs'),'process.exitCode=Number(process.env.FIRST_EXIT??0);\n');
   await fs.writeFile(path.join(dir,'scripts/test-b.mjs'),'console.log("second file ran");\n');

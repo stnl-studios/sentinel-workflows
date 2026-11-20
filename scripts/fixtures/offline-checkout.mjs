@@ -119,9 +119,9 @@ export async function finishOfflineFixture(fixture, { remove = true } = {}) {
   for (const name of (await fs.readdir(root)).sort()) {
     if (name.startsWith('.offline-') || name === 'benchmark-temp') await copy(name);
   }
-  const measurements = path.join(root, 'benchmarks/sentinel-todo/measurements');
+  const measurements = path.join(root, 'benchmarks/legacy/sentinel-todo/measurements');
   if (await fs.lstat(measurements).then(() => true).catch(error => { if (error.code === 'ENOENT') return false; throw error; })) {
-    await copy('benchmarks/sentinel-todo/measurements');
+    await copy('benchmarks/legacy/sentinel-todo/measurements');
   }
   await fs.writeFile(path.join(archive, 'evidence-manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
   console.log(`TEST-ONLY archived fixture evidence: ${archive}`);

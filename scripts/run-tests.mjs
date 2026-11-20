@@ -28,10 +28,10 @@ async function discover() {
   for(const file of await walk(path.join(root,'scripts')))
     if(file.endsWith('.test.mjs')&&path.relative(path.join(root,'scripts'),file).includes(path.sep))
       paths.push(path.relative(root,file));
-  for(const base of ['skills/workflows','benchmarks/sentinel-todo/seed/test']) {
+  for(const base of ['skills/workflows','benchmarks/sentinel']) {
     for(const file of await walk(path.join(root,base)))
       if(file.endsWith('.test.mjs')&&file.includes(`${path.sep}runtime${path.sep}test${path.sep}`)
-        || file.endsWith('.test.mjs')&&base==='benchmarks/sentinel-todo/seed/test')paths.push(path.relative(root,file));
+        || file.endsWith('.test.mjs')&&base==='benchmarks/sentinel'&&path.dirname(file)===path.join(root,base))paths.push(path.relative(root,file));
   }
   return [...new Set(paths)].sort();
 }
@@ -44,29 +44,7 @@ function run(command,args) {
   });
 }
 
-async function runTestFile(file) {
-  if(file!=='scripts/test-native-benchmark-integration.mjs')
-    return (await run(process.execPath,[file])).code;
-
-  // This integration suite dynamically imports runtimes from many distinct
-  // temporary source checkouts. Node's ESM cache retains each checkout until
-  // exit, so run coherent scenario groups in fresh processes rather than
-  // raising the heap limit. Every group matches complete top-level tests.
-  const groups=[
-    ['preparation and recovery','normal manager .*\\/(?:usage-|interrupt-|findings-|premature-|automatic-|pre-verification-|test-coverage-|plan-redelivery(?:-|:))'],
-    ['formal and review recovery','normal manager .*\\/(?:formal-|execute-|review-)'],
-    ['auxiliary recovery','normal manager .*\\/aux-'],
-    ['empty normal-manager variants','normal manager (?:fresh/null|author-continuity/null)'],
-    ['remaining integration scenarios','invocation provenance|offline collection|normal entry retains bounded|literal manager entry|focal resume preserves|normal entry blocks|public case finalizer|FULL operational checkpoint|FULL stops sibling'],
-  ];
-  let exitCode=0;
-  for(const [label,pattern] of groups) {
-    console.log(`\n--- ${file}: ${label} ---`);
-    const result=await run(process.execPath,['--test',`--test-name-pattern=${pattern}`,file]);
-    if(result.code!==0)exitCode=result.code;
-  }
-  return exitCode;
-}
+async function runTestFile(file) { return (await run(process.execPath,[file])).code; }
 
 const catalog=JSON.parse(await fs.readFile(catalogPath,'utf8'));
 let audited;

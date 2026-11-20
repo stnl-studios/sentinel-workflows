@@ -12,7 +12,6 @@ import { captureRunnerResponse } from '../skills/workflows/stnl-slice-executor/r
 import { emptyFindingArrays, validationResponse, newlineCheck, usageCheck, correctedCheck } from './fixtures/validation-response-regressions.mjs';
 import { parseSemanticValidationPayload } from '../skills/workflows/stnl-slice-executor/runtime/runner-result-contract.mjs';
 import { createUsageNormalizer, ZERO_USAGE, appServerUsageObservations, projectAppServerMeasurement } from '../agents/codex/runtime/usage-accounting.mjs';
-import { frozenFileMode } from '../benchmarks/sentinel-todo/runtime/benchmark-snapshot.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUNNER_ADAPTER = path.join(ROOT, 'agents/codex/runtime/validation-runner.mjs');
