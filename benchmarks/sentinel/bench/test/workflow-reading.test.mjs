@@ -52,3 +52,13 @@ test('native handoff transmits official paths without reconstructing helper iden
  const p=stagePrompt({manifest,operation:'INIT',authority});
  for(const text of ['transmita literalmente verificationHelper, originFile e requestFile','retornados pela reserva oficial','não reconstrua nomes ou caminhos','sem substituir helpers','bind-native oficial','Não repita operações já concluídas'])assert(p.includes(text),text);
 });
+
+test('only the terminal formal handoff requests bounded reads without replay or reduced authority',()=>{
+ const validation={...authority,lifecycle:{exitCode:0,output:{lifecycle_status:'ready'}},current:{exitCode:0,output:{state:'ACTIVE',normalHandoff:{operation:'VALIDATE_SLICE',slice:'slice-02'}}}};
+ const p=stagePrompt({manifest,operation:'VALIDATE_SLICE',authority:validation});
+ for(const text of ['Somente para o filho formal da reserva oficial com projeção terminal','inclua no dispatch os originFile/requestFile oficiais','requestSha256 literal retornado pela reserva, separado do conteúdo dos arquivos','bytes do request contra esse valor','se a reserva não o fornecer, preserve o diagnóstico e não invente substituto','Não faça cat conjunto','terminalPreparationUtf8','provas normativas integrais','sem substituir conteúdo por índices ou hashes','somente para a própria entrega','releia a mesma fonte vinculada em partes menores read-only','ausência, divergência ou cobertura ainda incompleta bloqueiam','não autoriza repetir turno, reserva, dispatch, captura ou receita','chamada oficial única de verify-native','independência do julgamento'])assert(p.includes(text),text);
+ for(const operation of ['INIT','EXECUTE_SLICE','APPLY_FINDINGS']){
+  const a={...validation,current:{...validation.current,output:{...validation.current.output,normalHandoff:{operation,slice:'slice-02'}}}};
+  assert(!stagePrompt({manifest,operation,authority:a}).includes('Não faça cat conjunto'));
+ }
+});
