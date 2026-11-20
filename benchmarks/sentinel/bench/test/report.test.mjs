@@ -33,6 +33,7 @@ test('original capacity report never renders raw failure metadata and excludes r
  assert.ok(!text.includes(sentinel));
  assert.match(text,/import-1 \| BLOCKED \| 1/);
  assert.match(text,/não inclui sessões de retomada/);
+ assert.match(text,/não atestam ocorrência antes do corte/);
  assert.doesNotMatch(text,/TURN_DEADLINE/);
  const generic=renderReport({...options,results:[{...original,status:sentinel}],recoveries:[]});
  assert.ok(!generic.includes(sentinel));assert.match(generic,/import-1 \| não informado \| 1/);

@@ -26,7 +26,7 @@ function availabilityFor(events,terminalAttempt){
  const progress=subsequent.some(e=>e.params.progress||e.method==='item/completed'&&(e.params.item.type==='commandExecution'&&e.params.item.exitCode===0||e.params.item.type==='agentMessage'&&e.params.item.hasOutput));
  return{events:scoped,availability:{code:'MODEL_CAPACITY_OBSERVED',status:resolved?'RESOLVED':progress?'PROGRESS_AFTER_ERROR':'UNRESOLVED',threadId:terminalAttempt.threadId,turnId:terminalAttempt.turnId,willRetry:scoped[last].params.willRetry,causality:'Observed provider condition; not proof of exclusive cause.'}};
 }
-/** Diagnostic only: attribute an event to a protocol-linked descendant of the exact root turn. */
+/** Diagnostic only: link by exact root identity. The stream can include shutdown events before root completion; this is not a pre-abort timestamp proof. */
 function childCapacityObservations(events,attempt){
  if(!attempt?.threadId||!attempt?.turnId)return [];
  const rows=events.map(failureObservation).filter(Boolean),starts=new Map();
