@@ -95,3 +95,70 @@ test('case-specific effective profile resumes, but an override drift cannot sile
  f.manifest.profile.roles.routine.effort='high';f.manifest.profileDigest=digest(f.manifest.profile);save(path.join(f.ev,'manifest.json'),f.manifest);
  let called=false;const blocked=await resumeCampaignCase({base:f.base,id:'test',cell:'rename-1',inspect:async()=>{called=true;return noPending()},execute:async()=>({status:'PASS'})});assert.equal(blocked.reason,'PROFILE_DRIFT');assert.equal(called,false);
 });
+
+test('SIMULATED v5 resume preserves deadline and original result above former campaign token cap',async t=>{
+ for(const observe of [false,true]){
+  const f=setup(t),campaign=JSON.parse(fs.readFileSync(path.join(f.dir,'campaign.json')));campaign.results=[{caseId:'rename',repetition:1,status:'BLOCKED',observedTokens:60000001}];
+  if(observe){campaign.caseIds=['rename'];campaign.repetitions=1;delete campaign.profile.limits.maxReportedTokens;delete campaign.profile.limits.maxCampaignReportedTokens;campaign.profile.limits.tokenPolicy='observe-only';}
+  campaign.identity.profile=digest(campaign.profile);f.manifest.profile=resolveCaseProfile(campaign.profile,'rename');f.manifest.profileDigest=digest(f.manifest.profile);
+  for(const name of ['campaign.json','summary.json'])save(path.join(f.dir,name),campaign);save(path.join(f.ev,'manifest.json'),f.manifest);
+  let calls=0;const r=await resumeCampaignCase({base:f.base,id:'test',cell:'rename-1',inspect:noPending,execute:async x=>{calls++;assert.equal(x.resumeState.deadline,f.state.deadline);assert.equal(x.campaignBudget.snapshot().knownReportedTokens,60000001);assert.equal(x.campaignBudget.snapshot().limit,null);return {status:'PASS'};}});
+  assert.equal(r.outcome,observe?'RESUMED':'BLOCKED');assert.equal(calls,observe?1:0);if(!observe)assert.equal(r.reason,'CAMPAIGN_OBSERVED_TOKEN_LIMIT');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.ev,'result.json'))).status,'BLOCKED');
+ }
+});
+
+function observeFixture(f,update){
+ const c=JSON.parse(fs.readFileSync(path.join(f.dir,'campaign.json')));
+ c.caseIds=['rename','query','import'];c.repetitions=2;c.planned=6;
+ delete c.profile.limits.maxReportedTokens;delete c.profile.limits.maxCampaignReportedTokens;c.profile.limits.tokenPolicy='observe-only';
+ c.identity.profile=digest(c.profile);f.manifest.profile=resolveCaseProfile(c.profile,'rename');f.manifest.profileDigest=digest(f.manifest.profile);
+ update(c);
+ for(const name of ['campaign.json','summary.json'])save(path.join(f.dir,name),c);
+ save(path.join(f.ev,'manifest.json'),f.manifest);
+}
+test('SIMULATED observe-only resume restores latest cumulative samples across all original cells',async t=>{
+ const f=setup(t),sample=(caseId,repetition,value,usageScope='reported-responses-only')=>({caseId,repetition,usageScope,observedTokens:value,tokenMetrics:{totalTokens:{value,complete:value!==null}}});
+ observeFixture(f,c=>{
+  c.results=[sample('rename',1,10),sample('query',1,20),sample('import',1,7),sample('rename',2,50)];
+  c.tokenBudget={cells:{'rename-1':{latest:null,lastKnown:10,complete:false},'query-1':{latest:20,lastKnown:20,complete:true},'import-1':{latest:7,lastKnown:7,complete:true},'rename-2':{latest:50,lastKnown:50,complete:true}}};
+  c.recoveries=[{cell:'query-1',result:sample('query',1,30)},{cell:'query-1',result:sample('query',1,33)},{cell:'query-1',result:sample('query',1,null)},{cell:'import-1',result:sample('import',1,0)},{cell:'rename-2',result:sample('rename',2,100,'scope-unproven')},{cell:'query-2',result:sample('query',2,900)}];
+  for(const r of c.recoveries)r.result.effectiveProfileDigest=digest(resolveCaseProfile(c.profile,r.result.caseId));
+  c.recoveries.push({cell:'rename-1',result:{...sample('rename',1,999),effectiveProfileDigest:'drift'}});
+ });
+ let seed;const r=await resumeCampaignCase({base:f.base,id:'test',cell:'rename-1',inspect:noPending,execute:async x=>(seed=x.campaignBudget.snapshot(),{status:'PASS'})});
+ assert.equal(r.outcome,'RESUMED');assert.equal(seed.limit,null);assert.equal(seed.knownReportedTokens,93);
+ assert.deepEqual(seed.cells,{'rename-1':{latest:null,lastKnown:10,complete:false},'query-1':{latest:null,lastKnown:33,complete:false},'import-1':{latest:0,lastKnown:0,complete:true},'rename-2':{latest:null,lastKnown:50,complete:false}});
+ assert.deepEqual(seed.missingReports,['rename-1','query-1','rename-2']);assert.equal(seed.stopReason,null);
+});
+test('SIMULATED v4 stored identity cannot resume with v5 token policy',async t=>{
+ const f=setup(t),c=JSON.parse(fs.readFileSync(path.join(f.dir,'campaign.json')));
+ delete c.profile.limits.maxReportedTokens;delete c.profile.limits.maxCampaignReportedTokens;c.profile.limits.tokenPolicy='observe-only';
+ save(path.join(f.dir,'campaign.json'),c);
+ let called=false;const r=await resumeCampaignCase({base:f.base,id:'test',cell:'rename-1',inspect:async()=>{called=true;return noPending()},execute:async()=>{called=true;return {status:'PASS'}}});
+ assert.equal(r.reason,'PROFILE_DRIFT');assert.equal(called,false);
+});
+
+test('SIMULATED malformed summary telemetry degrades to unknown before valid SETTLE',async t=>{
+ const f=setup(t),sample=(caseId,repetition,n)=>({caseId,repetition,observedTokens:n});
+ observeFixture(f,c=>{
+  c.caseIds=['rename','query'];c.repetitions=1;c.planned=2;
+  c.results=[null,sample('rename',1,17),sample('query',1,11),sample('query',1,12),sample('import',1,900),sample('rename',2,700)];
+  c.tokenBudget={cells:{'rename-1':null,'query-1':{latest:12,lastKnown:12,complete:true},'import-1':{latest:900,lastKnown:900,complete:true}}};
+  c.recoveries=[null,{cell:'rename-1',result:null},{cell:'query-1',result:{...sample('query',1,500),usageScope:'reported-responses-only',effectiveProfileDigest:digest(resolveCaseProfile(c.profile,'query'))}}];
+ });
+ const before={specPath:'spec',status:'before'},after={specPath:'spec',status:'after'};
+ f.state.pending={index:1,stage:'EXECUTE_SLICE',threadId:'p',turnId:'turn',before:'a'.repeat(64),authorityBefore:before};f.state.completedTurns=0;f.writeState();
+ const providerTurn={threadId:'p',id:'turn',status:'completed'},proof={attempt:1,stage:'EXECUTE_SLICE',threadId:'p',turnId:'turn',beforeFingerprint:'a'.repeat(64),authorityDigest:digest(after),providerTurnDigest:digest(providerTurn),beforeAuthorityDigest:digest(before),deadline:f.state.deadline,nextStage:'VALIDATE_SLICE'};
+ const inspect=async()=>({authority:after,providerTurn,decision:{outcome:'SETTLE',nextStage:'VALIDATE_SLICE',proof,proofDigest:digest(proof)}});
+ let seeded;const r=await resumeCampaignCase({base:f.base,id:'test',cell:'rename-1',inspect,execute:async x=>{seeded=x.campaignBudget.snapshot();assert.equal(x.resumeState.pending,null);return{status:'PASS'};}});
+ assert.equal(r.outcome,'RESUMED');assert.equal(seeded.restoreProvenance,'structural-summary-observations-not-authenticated');
+ assert.deepEqual(seeded.cells,{'rename-1':{latest:null,lastKnown:null,complete:false},'query-1':{latest:null,lastKnown:null,complete:false}});
+ assert.deepEqual([...new Set(seeded.restoreGaps.map(g=>g.code))].sort(),['DUPLICATE_ORIGINAL_ROW','INVALID_SAVED_CELL','ORIGINAL_ROW_UNSCOPED','RECOVERY_ROW_UNSCOPED','RECOVERY_SCOPE_UNPROVEN']);
+ assert.equal(JSON.parse(fs.readFileSync(path.join(f.ev,'checkpoint.json'))).pending,null);
+});
+test('SIMULATED observe-only seed does not adopt summary rows without original plan identity',async t=>{
+ const f=setup(t);observeFixture(f,c=>{delete c.caseIds;c.results=[{caseId:'rename',repetition:1,observedTokens:900}];});
+ let seeded;const r=await resumeCampaignCase({base:f.base,id:'test',cell:'rename-1',inspect:noPending,execute:async x=>(seeded=x.campaignBudget.snapshot(),{status:'PASS'})});
+ assert.equal(r.outcome,'RESUMED');assert.deepEqual(seeded.cells,{});assert.deepEqual(seeded.restoreGaps,[{code:'ORIGINAL_PLAN_UNAVAILABLE'}]);
+});

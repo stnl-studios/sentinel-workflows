@@ -141,3 +141,35 @@ test('tracked default v4 resolves three tasks twice with isolated import executi
   for(const role of ['execute_check','formal_validate','plan_review','plan_approver'])assert.deepEqual(c.roles[role],{model:'gpt-6.1-sol',effort:'high'});
  }
 });
+
+test('v5 isolated profile observes tokens without a ceiling, only import gets 30min turns',async()=>{
+ const v5=JSON.parse(fs.readFileSync(new URL('../profiles/reference-v5-observe.json',import.meta.url))),v4=JSON.parse(fs.readFileSync(new URL('../profiles/reference-sol-high.json',import.meta.url)));
+ assert.equal(v5.sentinelRevision,v4.sentinelRevision);validateProfile(v5);assert.notEqual(digest(v4),digest(v5));const original=structuredClone(v4);validateProfile(v4);assert.deepEqual(v4,original);
+ const {budgetDecision}=await import('../core.mjs');
+ for(const id of PROFILE_CASE_IDS){
+  const {limits,roles,stageRoles}=resolveCaseProfile(v5,id),old=resolveCaseProfile(v4,id);validateProfile(resolveCaseProfile(v5,id));
+  assert.deepEqual({roles,stageRoles},{roles:old.roles,stageRoles:old.stageRoles});assert.equal(limits.turnMs,id==='import'?1800000:900000);
+  for(const name of ['campaignMs','caseMs','maxTurns','maxNoProgress'])assert.equal(limits[name],old.limits[name]);
+  const args={now:0,campaignDeadline:limits.campaignMs,caseDeadline:limits.caseMs,turns:0,unchanged:0};
+  for(const reportedTokens of [old.limits.maxReportedTokens,60000000,60000001,null])assert.equal(budgetDecision({...args,reportedTokens},limits),'ALLOW');
+  assert.equal(budgetDecision({...args,now:limits.caseMs},limits),'DEADLINE');
+  assert.equal(budgetDecision({...args,campaignDeadline:3000,now:3000},limits),'DEADLINE');
+  assert.equal(budgetDecision({...args,unchanged:limits.maxNoProgress},limits),'NO_PROGRESS');
+  assert.equal(budgetDecision({...args,turns:limits.maxTurns},limits),'TURN_LIMIT');
+ }
+ for(const bad of [{...v5,limits:{...v5.limits,tokenPolicy:'typo'}},{...v5,limits:{...v5.limits,maxReportedTokens:14e6}},{...v5,caseOverrides:{import:{limits:{maxReportedTokens:14e6}}}},{...v5,caseOverrides:{import:{limits:{turnMs:3000001,caseMs:3000000}}}},{...v5,caseOverrides:{import:{limits:{turnMs:14400001}}}}])assert.throws(()=>validateProfile(bad));
+});
+
+test('v5 import 30-minute turn never extends remaining case or campaign time',async()=>{
+ const {turnDeadlineFor}=await import('../campaign.mjs');
+ const v5=JSON.parse(fs.readFileSync(new URL('../profiles/reference-v5-observe.json',import.meta.url)));const {turnMs}=resolveCaseProfile(v5,'import').limits;
+ const now=1000,full=now+turnMs;
+ for(const [caseDeadline,campaignDeadline,expected] of [[full+1,full+2,full],[full-1,full+1,full-1],[full+1,full-1,full-1],[full,full+1,full],[full+1,full,full]])assert.equal(turnDeadlineFor(now,Math.min(caseDeadline,campaignDeadline),turnMs),expected);
+});
+
+test('v5 import starting at minute 35 has 15 minutes left in its 50-minute case',async()=>{
+ const {turnDeadlineFor}=await import('../campaign.mjs');
+ const v5=JSON.parse(fs.readFileSync(new URL('../profiles/reference-v5-observe.json',import.meta.url)));const l=resolveCaseProfile(v5,'import').limits;
+ const now=35*60000;
+ assert.equal(turnDeadlineFor(now,Math.min(l.caseMs,l.campaignMs),l.turnMs)-now,15*60000);
+});

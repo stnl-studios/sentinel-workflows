@@ -39,14 +39,14 @@ export function validateCaseOverrides(profile) {
   if (Object.hasOwn(override,'stageRoles') && !record(override.stageRoles)) throw Error('invalid override stageRoles');
   if (Object.hasOwn(override,'limits')) {
    const limits=override.limits;
-   const caps={maxReportedTokens:'maxCampaignReportedTokens',caseMs:'campaignMs'};
-   if (!record(limits) || !Object.keys(limits).length || Object.keys(limits).some(k=>!Object.hasOwn(caps,k))) throw Error('override limits allows only maxReportedTokens/caseMs: '+id);
+   const caps={...(profile.limits?.tokenPolicy==='observe-only'?{turnMs:'campaignMs'}:{maxReportedTokens:'maxCampaignReportedTokens'}),caseMs:'campaignMs'};
+   if (!record(limits) || !Object.keys(limits).length || Object.keys(limits).some(k=>!Object.hasOwn(caps,k))) throw Error('unsupported override limits: '+id);
    for (const [key,value] of Object.entries(limits)) {
     if (!Number.isSafeInteger(value) || value<=0) throw Error('invalid override '+key+': '+id);
     const campaignLimit=profile.limits?.[caps[key]];
     if (campaignLimit!==undefined && (!Number.isSafeInteger(campaignLimit) || campaignLimit<=0 || value>campaignLimit)) throw Error('override '+key+' exceeds or has invalid campaign limit: '+id);
    }
-   if (limits.caseMs!==undefined && profile.limits?.turnMs>limits.caseMs) throw Error('override caseMs shorter than turnMs: '+id);
+   if ((limits.turnMs??profile.limits?.turnMs)>(limits.caseMs??profile.limits?.caseMs)) throw Error('override caseMs shorter than turnMs: '+id);
   }
   validateRoleConfiguration(merged(profile,override));
  }

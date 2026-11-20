@@ -59,3 +59,34 @@ test('reported fields complete does not imply exhaustive usage after completed t
 test('usage uncertainty covers missing records and pending turns but not role-only gaps',()=>{const u={observedTotals:{totalTokens:{value:10,complete:true}},gaps:[]};assert.equal(usageMayBeUnreported(u,null),false);assert.equal(usageMayBeUnreported(u,{}),true);assert.equal(usageMayBeUnreported(null,null),true);for(const code of ['NO_RESPONSE_USAGE','PARTIAL_TRAILING_LINE','INVALID_JSON','RESPONSE_IDENTITY_MISSING','CONFLICTING_USAGE','UNRELATED_OR_UNLINKED_RESPONSES_EXCLUDED'])assert.equal(usageMayBeUnreported({...u,gaps:[{code}]},null),true);assert.equal(usageMayBeUnreported({...u,gaps:[{code:'UNKNOWN_ROLE'}]},null),false);assert.equal(usageMayBeUnreported({...u,observedTotals:{totalTokens:{value:10,complete:false}}},null),true);});
 
 test('usage coverage fails closed for empty totals, missing total and invalid values',()=>{for(const observedTotals of [{},{inputTokens:{value:10,complete:true}},...[-1,NaN,Infinity,-Infinity,1.5,'10',null,undefined,Number.MAX_SAFE_INTEGER+1].map(value=>({totalTokens:{value,complete:true}})),{totalTokens:{value:0,complete:false}}])assert.equal(usageMayBeUnreported({observedTotals,gaps:[]},null),true);assert.equal(usageMayBeUnreported({observedTotals:{totalTokens:{value:0,complete:true}},gaps:[]},null),false);});
+
+test('SIMULATED v5 fresh dispatch observes former cap and unknown without token abort',async()=>{
+ const {campaignTokenLimit,createCampaignBudget}=await import('../campaign.mjs');
+ for(const reported of [14000000,60000001,null]){
+  const f=setup(),factory=f.services.serverFactory;delete f.m.profile.limits.maxReportedTokens;delete f.m.profile.limits.maxCampaignReportedTokens;f.m.profile.limits.tokenPolicy='observe-only';
+  const cap=campaignTokenLimit(f.m.profile.limits,6);assert.equal(cap,null);const budget=createCampaignBudget(cap);
+  for(const id of ['rename-1','rename-2','query-1','query-2','import-2'])budget.observe(id,{observedTotals:{totalTokens:{value:15000000,complete:true}}});
+  f.services.collectUsage=async()=>({observedTotals:{totalTokens:{value:reported,complete:reported!==null},inputTokens:{value:120,complete:true},cachedInputTokens:{value:100,complete:true},outputTokens:{value:7,complete:true}},gaps:[]});
+  f.services.serverFactory=options=>{const server=factory(options),original=server.runTurn.bind(server);server.runTurn=async o=>{options.onEvent({method:'thread/tokenUsage/updated',params:{threadId:o.threadId,tokenUsage:{total:{totalTokens:60000001}}}});assert.equal(o.signal.aborted,false);return original(o);};return server;};
+  const r=await f.run({campaignBudget:budget});assert.equal(r.status,'PASS',r.error);assert.equal(r.observedTokens,reported);
+  assert.equal(r.tokenMetrics.cachedInputTokens.value,100);assert.equal(r.tokenMetrics.outputTokens.value,7);assert.equal(budget.snapshot().limit,null);assert.equal(budget.snapshot().stopReason,null);assert.ok(budget.admit());
+  if(reported===null){assert.equal(r.unreportedUsagePossible,true);assert.ok(budget.snapshot().missingReports.includes('rename-1'));}
+ }
+});
+test('SIMULATED deadline still aborts even when v5 token counters are above old guard',async()=>{
+ const f=setup(),factory=f.services.serverFactory;delete f.m.profile.limits.maxReportedTokens;delete f.m.profile.limits.maxCampaignReportedTokens;
+ Object.assign(f.m.profile.limits,{tokenPolicy:'observe-only',turnMs:10});
+ f.services.serverFactory=options=>{const server=factory(options);server.runTurn=async o=>{o.onAccepted({threadId:o.threadId,turnId:'deadline-observe'});options.onEvent({method:'thread/tokenUsage/updated',params:{threadId:o.threadId,tokenUsage:{total:{totalTokens:60000001}}}});assert.equal(o.signal.aborted,false);await new Promise(resolve=>o.signal.addEventListener('abort',resolve,{once:true}));return{status:'interrupted',turnId:'deadline-observe',threadId:o.threadId};};return server;};
+ const r=await f.run();assert.equal(r.error,'TURN_DEADLINE');assert.equal(r.pending.turnId,'deadline-observe');
+});
+
+test('SIMULATED v5 independently exceeds former case and campaign token thresholds',async()=>{
+ const {createCampaignBudget}=await import('../campaign.mjs');
+ for(const [caseTotal,otherTotal] of [[14000001,0],[12000000,48000001]]){
+  const f=setup(),factory=f.services.serverFactory,budget=createCampaignBudget(null);f.m.caseId='import';delete f.m.profile.limits.maxReportedTokens;delete f.m.profile.limits.maxCampaignReportedTokens;f.m.profile.limits.tokenPolicy='observe-only';
+  budget.observe('query-1',{observedTotals:{totalTokens:{value:otherTotal,complete:true}}});
+  f.services.collectUsage=async()=>({observedTotals:{totalTokens:{value:caseTotal,complete:true}},gaps:[]});
+  f.services.serverFactory=options=>{const server=factory(options),original=server.runTurn.bind(server);server.runTurn=async o=>{options.onEvent({method:'thread/tokenUsage/updated',params:{threadId:o.threadId,tokenUsage:{total:{totalTokens:caseTotal}}}});assert.equal(o.signal.aborted,false);return original(o);};return server;};
+  const result=await f.run({campaignBudget:budget});assert.equal(result.status,'PASS',result.error);assert.equal(budget.snapshot().knownReportedTokens,caseTotal+otherTotal);assert.equal(budget.snapshot().stopReason,null);
+ }
+});

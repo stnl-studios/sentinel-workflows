@@ -74,14 +74,22 @@ export async function durableEffect({state,ledger,save,evidence,deadline},name,a
  const result=await action();writeOnce(path.join(evidence,`effect-${index}-result.json`),{name,result});ledger.append('effect-result',{index,name,result});state.lastEffect={index,name,result};state.pendingEffect=null;save();admitDeadline(deadline);return result;
 }
 /** Latest cumulative observations replace prior snapshots; unknown is never fabricated as zero. */
+export function turnDeadlineFor(now,activeDeadline,turnMs){return Math.min(activeDeadline,now+turnMs);}
+export function campaignTokenLimit(limits,count){return limits.tokenPolicy==='observe-only'?null:limits.maxCampaignReportedTokens??limits.maxReportedTokens*count;}
 export function createCampaignBudget(limit){
- if(!Number.isSafeInteger(limit)||limit<=0)throw Error('invalid campaign token limit');
- const cells=new Map();let stopReason=null;
- const snapshot=()=>({limit,knownReportedTokens:[...cells.values()].reduce((n,c)=>n+(c.lastKnown??0),0),missingReports:[...cells].filter(([,c])=>c.latest===null).map(([id])=>id),partialReports:[...cells].filter(([,c])=>c.complete===false).map(([id])=>id),cells:Object.fromEntries(cells),stopReason,hardCap:false,observationDelayed:true});
+ if(limit!==null&&(!Number.isSafeInteger(limit)||limit<=0))throw Error('invalid campaign token limit');
+ const cells=new Map(),restoreGaps=[];let stopReason=null,restored=false;
+ const snapshot=()=>({limit,...(limit===null?{policy:'observe-only'}:{}),...(restored?{restoreProvenance:'structural-summary-observations-not-authenticated',restoreGaps:[...restoreGaps]}:{}),knownReportedTokens:[...cells.values()].reduce((n,c)=>n+(c.lastKnown??0),0),missingReports:[...cells].filter(([,c])=>c.latest===null).map(([id])=>id),partialReports:[...cells].filter(([,c])=>c.complete===false).map(([id])=>id),cells:Object.fromEntries(cells),stopReason,hardCap:false,observationDelayed:true});
  return {
   register(id){if(!cells.has(id))cells.set(id,{latest:null,lastKnown:null,complete:false});},
-  observe(id,usage){this.register(id);const metric=usage?.observedTotals?.totalTokens,value=metric?.value;const known=Number.isSafeInteger(value)&&value>=0;const previous=cells.get(id);cells.set(id,{latest:known?value:null,lastKnown:known?value:previous.lastKnown,complete:known&&metric.complete===true});if(snapshot().knownReportedTokens>=limit)stopReason='CAMPAIGN_OBSERVED_TOKEN_LIMIT';return snapshot();},
-  admit(){if(snapshot().knownReportedTokens>=limit)stopReason='CAMPAIGN_OBSERVED_TOKEN_LIMIT';return stopReason===null;},
+  noteRestore(gap=null){restored=true;if(gap)restoreGaps.push(gap);},
+  restoreObservation(id,entry){
+   const {latest,lastKnown,complete}=entry??{};
+   if(limit!==null||![latest,lastKnown].every(n=>n===null||Number.isSafeInteger(n)&&n>=0)||latest!==null&&latest!==lastKnown||typeof complete!=='boolean'||latest===null&&complete)return false;
+   cells.set(id,{latest,lastKnown,complete});return true;
+  },
+  observe(id,usage){this.register(id);const metric=usage?.observedTotals?.totalTokens,value=metric?.value;const known=Number.isSafeInteger(value)&&value>=0;const previous=cells.get(id);cells.set(id,{latest:known?value:null,lastKnown:known?value:previous.lastKnown,complete:known&&metric.complete===true});if(limit!==null&&snapshot().knownReportedTokens>=limit)stopReason='CAMPAIGN_OBSERVED_TOKEN_LIMIT';return snapshot();},
+  admit(){if(limit!==null&&snapshot().knownReportedTokens>=limit)stopReason='CAMPAIGN_OBSERVED_TOKEN_LIMIT';return stopReason===null;},
   snapshot
  };
 }
@@ -106,7 +114,7 @@ export async function executeCase({manifest:m,campaignDeadline,requirements,camp
  m={...m,deadline:activeDeadline};const save=()=>atomicJson(stateFile,{...state,roots});save();
  const assertCapture=()=>{const p=state.plan;if(!p?.captureSha256||!p.snapshotPath)throw Error('PLAN_CAPTURE_BINDING_MISSING');const bytes=fs.readFileSync(confined(m.workspace,p.snapshotPath));if('sha256:'+sha256(bytes)!==p.captureSha256||p.snapshot&&digest(JSON.parse(bytes))!==digest(p.snapshot))throw Error('PLAN_CAPTURE_CHANGED');if(['APPROVED','REVIEWED'].includes(p.phase)&&(p.approvedCaptureSha256!==p.captureSha256||!p.approvalResult))throw Error('PLAN_APPROVAL_BINDING_MISSING');};
  const contexts=eventContextRegistry(row=>{fs.appendFileSync(eventsFile,JSON.stringify(row)+'\n');ledger.append('provider-event',row);});
- let activeAbort=null,activeStopReason=null;const observedFailures=[];const monitor=new UsageBudgetMonitor({limit:m.profile.limits.maxReportedTokens,onLimit:()=>{if(activeAbort){activeStopReason??='OBSERVED_TOKEN_LIMIT';activeAbort.abort();}}});
+ let activeAbort=null,activeStopReason=null;const observedFailures=[];const observeOnly=m.profile.limits.tokenPolicy==='observe-only';const monitor=new UsageBudgetMonitor({limit:observeOnly?null:m.profile.limits.maxReportedTokens,onLimit:()=>{if(activeAbort){activeStopReason??='OBSERVED_TOKEN_LIMIT';activeAbort.abort();}}});
  const server=api.serverFactory({cli:m.profile.cli,cwd:m.workspace,home:m.codexHome,tmpDir:m.tmpDir,onEvent:payload=>{contexts.event(payload);monitor.observe(payload);const observation=failureObservation(payload);if(observation)observedFailures.push(observation);}});
  let usage=null,oracle=null,closedObserved=false,completeProof=state.preCloseComplete??null;
  const effect=(name,args,action)=>durableEffect({state,ledger,save,evidence:m.evidence,deadline:activeDeadline},name,args,action);
@@ -136,13 +144,13 @@ export async function executeCase({manifest:m,campaignDeadline,requirements,camp
  }
  async function turn(stage,prompt,role='coordinator',threadId=null){
   const coordinated=threadId===null;
-  await measure();if(campaignBudget&&!campaignBudget.admit())throw Error('CAMPAIGN_OBSERVED_TOKEN_LIMIT');const reportedTokens=observedBudgetTokens(usage,state.completedTurns);
+  await measure();if(campaignBudget&&!campaignBudget.admit())throw Error('CAMPAIGN_OBSERVED_TOKEN_LIMIT');const reportedTokens=observeOnly?null:observedBudgetTokens(usage,state.completedTurns);
   const decision=budgetDecision({campaignDeadline,caseDeadline:activeDeadline,turns:state.turns,unchanged:state.unchanged,reportedTokens},m.profile.limits);if(decision!=='ALLOW')throw Error(decision);
   const authorityBefore=authorityNow();if(coordinated){const selected=await ensureStageThread(stage,authorityBefore);threadId=selected.threadId;role=selected.role;}
   const productBefore=coordinated?trajectoryProductHashes(m.workspace):null;const before=semanticFingerprint(m.workspace,authorityBefore),context={caseId:m.caseId,stage,role,slice:authorityBefore.current?.output?.normalHandoff?.slice??null,contextPolicy};const index=++state.turns;
   writeOnce(path.join(m.evidence,`turn-${index}-request.json`),{stage,prompt,role,threadId,model:m.profile.roles[role],before});state.pending={index,stage,threadId,before,authorityBefore,turnId:null,...(coordinated?{trajectoryBefore:{productBefore,slice:context.slice}}:{})};ledger.append('dispatch-intent',state.pending);save();contexts.begin(threadId,context);
   let result,turnStopReason=null;activeAbort=new AbortController();activeStopReason=null;if(monitor.triggered)throw Object.assign(Error('OBSERVED_TOKEN_LIMIT'),{code:'OBSERVED_TOKEN_LIMIT',operation:stage});
-  const turnDeadline=Math.min(activeDeadline,Date.now()+m.profile.limits.turnMs);
+  const turnDeadline=turnDeadlineFor(Date.now(),activeDeadline,m.profile.limits.turnMs);
   const deadlineTimer=setTimeout(()=>{activeStopReason??=turnDeadline===activeDeadline?'CASE_DEADLINE':'TURN_DEADLINE';activeAbort?.abort();},Math.max(0,turnDeadline-Date.now()));
   try{result=await server.runTurn({threadId,input:[{type:'text',text:prompt}],...m.profile.roles[role],deadline:turnDeadline,signal:activeAbort.signal,onAccepted:accepted=>{state.pending={...state.pending,...accepted};ledger.append('dispatch-accepted',state.pending);save();contexts.accept(accepted);}});}finally{clearTimeout(deadlineTimer);turnStopReason=activeStopReason;contexts.finish();activeAbort=null;activeStopReason=null;atomicJson(path.join(m.evidence,'operational-budget-monitor.json'),monitor.snapshot());}
   if(result.status==='interrupted'&&turnStopReason)result={...result,stopReason:turnStopReason};
@@ -216,7 +224,7 @@ export async function runCampaign({id,profile,caseIds=profile.suiteCases??CASES.
  profile={...profile,repetitions,suiteCases:Array.isArray(caseIds)?[...caseIds]:caseIds};validateProfile(profile);
  if(!Array.isArray(caseIds)||!caseIds.length||new Set(caseIds).size!==caseIds.length||caseIds.some(id=>!CASES.some(c=>c.id===id)))throw Error('invalid cases');
  const cells=Array.from({length:repetitions},(_,i)=>caseIds.map(caseId=>({caseId,repetition:i+1}))).flat();
- const cap=profile.limits.maxCampaignReportedTokens??profile.limits.maxReportedTokens*cells.length;
+ const cap=campaignTokenLimit(profile.limits,cells.length);
  const source=await materializeSourceSnapshot({base:BASE,repository:path.resolve(BASE,'../..'),revision:profile.sentinelRevision});
  const budget=createCampaignBudget(cap),identity=campaignIdentity(profile,source.sourceRoot),directory=path.join(BASE,'evidence/campaigns',id);
  let mode='diagnostic',verifiedAdmission=null;

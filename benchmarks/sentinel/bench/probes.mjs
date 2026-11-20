@@ -39,10 +39,10 @@ export async function runNoProgressProbe({base,label,profile,authFile,services={
  try{
   await server.start();const started=await server.startThread({model:role(profile).model,sandbox:'read-only',config:{model_reasoning_effort:role(profile).effort}});assertEffectiveProbe(started,profile,'readOnly',p);threadId=started.thread.id;writeOnce(path.join(p.evidence,'thread.json'),{threadId,effective:started});
   for(let i=0;i<2;i++){
-   const decision=budgetDecision({now:Date.now(),campaignDeadline:p.deadline,caseDeadline:p.deadline,turns:i,unchanged,reportedTokens:0},{maxTurns:3,maxNoProgress:2,maxReportedTokens:profile.limits.maxReportedTokens});if(decision!=='ALLOW')throw Error('probe admission '+decision);
+   const decision=budgetDecision({now:Date.now(),campaignDeadline:p.deadline,caseDeadline:p.deadline,turns:i,unchanged,reportedTokens:0},{...profile.limits,maxTurns:3,maxNoProgress:2});if(decision!=='ALLOW')throw Error('probe admission '+decision);
    const r=await server.runTurn({threadId,input:[{type:'text',text:'Synthetic no-progress probe. Do not use tools, delegate or write files. Reply exactly SEM_PROGRESSO.'}],...role(profile),deadline:p.deadline,onAccepted:a=>writeOnce(path.join(p.evidence,`accepted-${i}.json`),a)});turns.push(r);writeOnce(path.join(p.evidence,`turn-${i}.json`),r);if(r.status!=='completed')throw Error('probe turn not completed');if(fingerprint()===before)unchanged++;else throw Error('read-only probe mutated workspace');
   }
-  const third=budgetDecision({campaignDeadline:p.deadline,caseDeadline:p.deadline,turns:turns.length,unchanged,reportedTokens:0},{maxTurns:3,maxNoProgress:2,maxReportedTokens:profile.limits.maxReportedTokens});
+  const third=budgetDecision({campaignDeadline:p.deadline,caseDeadline:p.deadline,turns:turns.length,unchanged,reportedTokens:0},{...profile.limits,maxTurns:3,maxNoProgress:2});
   result={status:turns.length===2&&unchanged===2&&third==='NO_PROGRESS'?'PASS':'FAIL',scope,threadId,turns,thirdDispatch:third,providerDispatches:turns.length,beforeFingerprint:before,afterFingerprint:fingerprint()};
  }catch(e){result={status:'BLOCKED',scope,threadId,error:e.message,turns};}finally{try{await server.stop();}catch{result={...result,status:'BLOCKED',cleanup:'unconfirmed'};}}
  result.usage=await usageFor(p,threadId,[events],collector);result.limitations=['Synthetic no-op probe; two turns do not prove general semantic progress detection.','Missing token observations remain missing, never billing estimates.'];writeOnce(path.join(p.evidence,'result.json'),result);return result;
