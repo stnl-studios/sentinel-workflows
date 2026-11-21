@@ -45,8 +45,23 @@ export function requestedConfigurationRows(campaign){
  }
  return rows;
 }
+function overlapPeak(windows){
+ const points=windows.flatMap(w=>Number.isFinite(w.startedAt)&&Number.isFinite(w.finishedAt)&&w.finishedAt>w.startedAt?[[w.startedAt,1],[w.finishedAt,-1]]:[]);
+ let active=0,peak=0;
+ for(const [,delta] of points.sort((a,b)=>a[0]-b[0]||a[1]-b[1])){active+=delta;peak=Math.max(peak,active);}
+ return points.length?peak:null;
+}
+export function executionOverlap(dispatches=[]){
+ return overlapPeak(dispatches.flatMap(d=>Array.isArray(d.providerWindows)?d.providerWindows:[]));
+}
 export function renderReport(campaign){
  const report=summarizeCampaign(campaign),lines=[`# Bancada Sentinel: ${label(report.id)}`,'',`Modo solicitado: **${label(report.mode)}**. Planejadas: ${report.planned}; iniciadas: ${report.started}; não iniciadas: ${report.notStarted}. Observações oficiais: ${report.officialCount}; diagnósticas: ${report.diagnosticCount}.`,'','| Tarefa / dificuldade | Oficiais | Diagnósticas | Não iniciadas |','|---|---:|---:|---:|'];
+ if(campaign.dispatches?.length){
+  const overlap=executionOverlap(campaign.dispatches);
+  const cellOverlap=overlapPeak(campaign.dispatches);
+  const elapsed=Number.isFinite(campaign.finishedAt)?campaign.finishedAt-campaign.startedAt:null;
+  lines.splice(4,0,`Slots configurados: ${campaign.profile.concurrency}. Pico de células simultâneas (inclui preparo): ${cellOverlap??'sem dado'}. Pico de turnos aceitos e concluídos simultaneamente: ${overlap??'sem dado'}. Tempo de parede total: ${elapsed===null?'em andamento':elapsed+' ms'}.`,'');
+ }
  for(const [id,c]of Object.entries(report.cases))lines.push(`| ${label(id)} / ${c.difficulty} | ${c.officialCount} | ${c.diagnosticCount} | ${c.planned===null?'sem dado':Math.max(0,c.planned-c.started)} |`);
  lines.push('','| Tarefa | Classificação | PASS | FAIL | Bloqueadas | Inválidas/preparo | Outros | Mediana dos sucessos (ms) |','|---|---|---:|---:|---:|---:|---:|---:|');
  for(const [id,c]of Object.entries(report.cases))for(const [kind,s]of Object.entries(c.measurements))if(s.started)lines.push(`| ${label(id)} | ${kind} | ${s.passed} | ${s.failed} | ${s.blocked} | ${s.invalid} | ${s.otherOutcomes} | ${s.successLatencyMs?.median??'sem dado'}${s.latencyUnknownRuns?' + lacunas':''} |`);

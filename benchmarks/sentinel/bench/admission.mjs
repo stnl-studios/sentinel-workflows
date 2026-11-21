@@ -5,7 +5,7 @@ import {CASES} from './scenarios.mjs';
 import {campaignIdentity} from './campaign.mjs';
 import {materializeSourceSnapshot} from './source-snapshot.mjs';
 import {targetPreflight} from './target-preflight.mjs';
-import {admitOfficial} from './qualification.mjs';
+import {admitOfficial,campaignConcurrency} from './qualification.mjs';
 import {harnessIdentityFromCampaign,verifyQualificationEvidence,createQualification} from './qualification-store.mjs';
 
 export function effectiveRunProfile(profile,{caseIds,repetitions}={}){
@@ -13,6 +13,11 @@ export function effectiveRunProfile(profile,{caseIds,repetitions}={}){
  validateProfile(result);
  if(!result.suiteCases.length||new Set(result.suiteCases).size!==result.suiteCases.length||result.suiteCases.some(id=>!CASES.some(c=>c.id===id)))throw Error('invalid suite cases');
  return result;
+}
+export function requirePublicCampaignProfile(profile){
+ if(profile?.concurrency!==3)throw Error('PUBLIC_BENCHMARK_REQUIRES_THREE_SLOTS: profile.concurrency must be 3');
+ if(profile.repetitions!==2||JSON.stringify(profile.suiteCases)!==JSON.stringify(['rename','query','import']))throw Error('PUBLIC_BENCHMARK_REQUIRES_FULL_MATRIX: rename,query,import in order with two repetitions');
+ return profile;
 }
 function evidenceJson(base,file){
  const absolute=confined(base,file),evidence=path.join(fs.realpathSync.native(base),'evidence');
@@ -33,6 +38,7 @@ export async function prepareOfficialAdmission({base,id,profile,qualificationFil
   const initial=await verifyQualificationEvidence({base,qualification});
   if(initial.status!=='PASS')throw Error('QUALIFICATION_EVIDENCE_BLOCKED: '+initial.reasons.join('; '));
   if(qualification.status!=='QUALIFIED')throw Error('QUALIFICATION_NOT_READY');
+  if(profile.concurrency!==campaignConcurrency(qualification.identity))throw Error('CONCURRENCY_REQUALIFICATION_REQUIRED');
   const referenceDecision=admitOfficial({qualification,identity:qualification.identity,harnessIdentity:qualification.harnessIdentity});
   if(!referenceDecision.allowed)throw Error('QUALIFICATION_NOT_READY: '+referenceDecision.reasons.join('; '));
   const source=await materializeSourceSnapshot({base,repository,revision:profile.sentinelRevision});

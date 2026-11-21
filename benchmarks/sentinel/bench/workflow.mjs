@@ -83,5 +83,32 @@ export function stagePrompt({manifest:m,operation,authority,plan}){const spec=au
  if(operation==='CLOSE')return guard+`Use stnl-spec-lifecycle-manager MODE=CLOSE SPEC_PATH=${spec}. Consuma prova terminal atual; se faltar, siga delegação oficial de prova dentro do escopo. Não fabrique validação histórica. Complete publicação/cleanup oficial. Sem runbook.`;
  throw Error('unsupported operation '+operation);
 }
-export function planApproverPrompt({requirements,capture,trajectory}){return `Você é aprovador independente delegado da bancada, sob autonomia autorizada por Aj. Esta é uma decisão de aceite de escopo sobre a captura completa já fornecida, não a operação stnl-plan-reviewer. Não invoque skills, comandos ou ferramentas; nenhuma consulta externa é necessária. A bancada confere mecanicamente o digest e os bytes antes de publicar aprovação. Examine TODOS os bytes de Plan/Tasks, critérios, limites, receita e cobertura contra OS. Aprovação não é revisão técnica nativa nem PASS de implementação. Retorne SOMENTE JSON {"decision":"APPROVE"|"REJECT"|"BLOCKED","captureSha256":"${capture.captureSha256}","reasons":["..."],"missingCriteria":[]}. Use REJECT somente para defeitos concretos do plano: omissões, contradições, receita insuficiente, permissões excessivas ou decisão ausente. Se não conseguir avaliar por impedimento operacional, use BLOCKED e descreva a limitação, sem fingir que o plano precisa ser refeito. OS:\n${requirements}\nContrato operacional de trajetória: ${JSON.stringify(trajectory??{minSlices:1})}. Confira que o plano respeita o número mínimo de slices e sua progressão.\nCAPTURA COMPLETA:\n${JSON.stringify(capture.snapshot)}`;}
+export function planApproverPrompt({requirements,capture,trajectory}){return `Você é aprovador independente delegado da bancada, sob autonomia autorizada por Aj. Esta é uma decisão de aceite de escopo sobre a captura completa já fornecida, não a operação stnl-plan-reviewer. Não invoque skills, comandos ou ferramentas; nenhuma consulta externa é necessária. A bancada confere mecanicamente o digest e os bytes antes de publicar aprovação. Examine TODOS os bytes de Plan/Tasks, critérios, limites, receita e cobertura contra OS. Aprovação não é revisão técnica nativa nem PASS de implementação. Retorne SOMENTE JSON {"decision":"APPROVE"|"REJECT"|"BLOCKED","reasons":["..."],"missingCriteria":[]}. Use REJECT somente para defeitos concretos do plano: omissões, contradições, receita insuficiente, permissões excessivas ou decisão ausente. Se não conseguir avaliar por impedimento operacional, use BLOCKED e descreva a limitação, sem fingir que o plano precisa ser refeito. OS:\n${requirements}\nContrato operacional de trajetória: ${JSON.stringify(trajectory??{minSlices:1})}. Confira que o plano respeita o número mínimo de slices e sua progressão.\nCAPTURA COMPLETA:\n${JSON.stringify(capture.snapshot)}`;}
 export function parseApproval(text){const value=JSON.parse(text.trim());if(!value||Array.isArray(value)||Object.keys(value).sort().join(',')!=='captureSha256,decision,missingCriteria,reasons'||!['APPROVE','REJECT','BLOCKED'].includes(value.decision)||!/^sha256:[0-9a-f]{64}$/.test(value.captureSha256)||!Array.isArray(value.reasons)||!value.reasons.length||!value.reasons.every(s=>typeof s==='string'&&s.trim())||!Array.isArray(value.missingCriteria)||!value.missingCriteria.every(s=>typeof s==='string'&&s.trim())||value.decision==='APPROVE'&&value.missingCriteria.length)throw Error('invalid approval');return value;}
+// Model output is a verdict, never the source of capture identity.
+export function bindPlanVerdict(text,captureSha256){
+ const verdict=JSON.parse(text.trim());
+ // After JSON syntax is validated, only object keys are quoted tokens followed by a colon.
+ const tokens=text.matchAll(/"(?:[^"\\]|\\[\s\S])*"|:/g);
+ let previous=null;
+ const keys=new Set();
+ for(const [token] of tokens){
+  if(token===':'){
+   const key=JSON.parse(previous);
+   if(keys.has(key))throw Error('INVALID_PLAN_APPROVER_VERDICT');
+   keys.add(key);
+  }
+  previous=token;
+ }
+ if(!verdict||Array.isArray(verdict)||Object.keys(verdict).sort().join(',')!=='decision,missingCriteria,reasons')throw Error('INVALID_PLAN_APPROVER_VERDICT');
+ return parseApproval(JSON.stringify({...verdict,captureSha256}));
+}
+export function readPlanApproverVerdict(read,{threadId,turnId}){
+ if(read.thread?.id!==threadId)throw Error('APPROVAL_THREAD_IDENTITY_MISMATCH');
+ if(!Array.isArray(read.thread.turns))throw Error('APPROVAL_TURN_IDENTITY_MISMATCH');
+ const matches=read.thread.turns.filter(t=>t.id===turnId);
+ if(matches.length!==1||matches[0].status!=='completed')throw Error('APPROVAL_TURN_IDENTITY_MISMATCH');
+ const text=matches[0].items?.filter(i=>i.type==='agentMessage').at(-1)?.text;
+ if(typeof text!=='string'||!text.trim())throw Error('APPROVAL_MESSAGE_MISSING');
+ return text;
+}

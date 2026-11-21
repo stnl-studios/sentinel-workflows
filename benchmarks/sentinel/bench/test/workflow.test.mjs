@@ -1,4 +1,4 @@
-import{test}from'node:test';import assert from'node:assert/strict';import fs from'node:fs';import path from'node:path';import{fileURLToPath}from'node:url';import{sha256}from'../core.mjs';import{inspectAuthority,reviseRejectedPlan,recoverUncapturedDraft,callPreparationExport,nextOperation,capturePlan,approvePlan,parseApproval,stagePrompt,planApproverPrompt}from'../workflow.mjs';
+import{test}from'node:test';import assert from'node:assert/strict';import fs from'node:fs';import path from'node:path';import{fileURLToPath}from'node:url';import{sha256}from'../core.mjs';import{inspectAuthority,reviseRejectedPlan,recoverUncapturedDraft,callPreparationExport,nextOperation,capturePlan,approvePlan,parseApproval,bindPlanVerdict,stagePrompt,planApproverPrompt}from'../workflow.mjs';
 const base=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../temp/bench-workflow-tests');
 const ready=(current)=>({specPath:'/work/specs/case',lifecycle:{exitCode:0,output:{lifecycle_status:'ready',execution_state:'EMPTY',legal_execution_operations:['PLAN']}},current:{exitCode:0,output:current}});
 const closed={specPath:'/work/specs/case',lifecycle:{exitCode:0,output:{lifecycle_status:'closed',execution_state:'NOT_APPLICABLE',normal_handoff:null}},current:{exitCode:0,output:{state:'SPEC_CLOSED'}}};
@@ -69,4 +69,11 @@ test('local contract bytes are referenced or directly copied, never model-transc
  for(const expected of ['passe caminho canônico e hash ao filho, sem retranscrever','heredocs, literais de comandos ou novas configurações','O próprio filho deve ler integralmente','hash isolado não provam leitura independente','cat da fonte canônica para contract.toml','shasum para contract.sha256','tee arbitrário não comprova','não torna capture-native um recibo genérico','contexto novo, alteração, truncamento ou identidade incerta'])assert.ok(prompt.includes(expected),expected);
  assert.ok(prompt.includes('finalResponse é uma string com o texto inteiro literal'));
  assert.ok(prompt.includes('sem redirecionamento, encadeamento ou composição de comandos'));
+});
+
+test('model verdict rejects literal and escaped duplicate keys without changing native format',()=>{
+ const hash='sha256:'+'0'.repeat(64);
+ const verdict={decision:'APPROVE',reasons:['"decision": quoted'],missingCriteria:[]};
+ assert.deepEqual(bindPlanVerdict(JSON.stringify(verdict),hash),{...verdict,captureSha256:hash});
+ for(const key of ['decision',String.raw`decisi\u006fn`])assert.throws(()=>bindPlanVerdict(`{"decision":"REJECT","${key}":"APPROVE","reasons":["x"],"missingCriteria":[]}`,hash),/INVALID_PLAN_APPROVER_VERDICT/);
 });

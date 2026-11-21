@@ -10,14 +10,14 @@ Veja [validação funcional das três tarefas e limites](VALIDATION.md).
 npm run benchmark
 ```
 
-Gera um ID único, executa duas repetições por tarefa e entrega relatório, resultados, configurações efetivas e evidências. O modo padrão é **diagnóstico**, com o perfil `bench/profiles/reference-v5-observe.json`: tokens são somente telemetria; turno de 30 min na importação e 15 min nas demais tarefas; prazo de 50 min na importação, 40 min nas demais e 4h no total. Continua GPT-6.1 Sol/high, exceto o coordenador de EXECUTE_SLICE na importação em medium; Sentinel fixado em43659631. Essa configuração não foi qualificada. O perfil v4 com limites de tokens permanece byte a byte em `bench/profiles/reference-sol-high.json` e deve ser escolhido expressamente via `--profile`; v3 e o perfil misto também seguem disponíveis.
+Gera um ID único, executa duas repetições por tarefa em três vagas simultâneas e entrega relatório, resultados, configurações efetivas e evidências. O modo padrão é **diagnóstico**, com o perfil `bench/profiles/reference-v5-observe.json`: tokens são somente telemetria; turno de 30 min na importação e 15 min nas demais tarefas; prazo de 50 min na importação, 40 min nas demais e 4h no total. Continua GPT-6.1 Sol/high, exceto o coordenador de EXECUTE_SLICE na importação em medium; Sentinel fixado em43659631. Essa configuração não foi qualificada. Perfis seriais antigos ficam como referência histórica: não são aceitos pelo comando público.
 
 **O comando inicia chamadas reais de modelos.** Antes de executar, ajuste CLI/versão, revisão Sentinel, modelos e limites no perfil. A revisão deve ser um commit local completo. Modelos/esforços indisponíveis ou configuração divergente não recebem fallback silencioso. Somente GPT está configurado; não usa Claude corporativo.
 
 ```sh
 npm run benchmark:profile
 npm run benchmark:test
-npm run benchmark -- --id meu-diagnostico --cases import --repetitions 1
+npm run benchmark -- --id meu-diagnostico
 npm run benchmark -- --profile benchmarks/sentinel/bench/profiles/meu-perfil.json
 npm run benchmark:status -- --id meu-diagnostico
 npm run benchmark:report -- --id meu-diagnostico
@@ -33,11 +33,7 @@ Um perfil de referência fixo permite observar evolução do Sentinel. Comparaç
 
 ## Recuperação e limites
 
-```sh
-npm run benchmark:resume -- --id meu-diagnostico --case import-1
-```
-
-Nunca repita `run` para recuperar uma execução incerta. A retomada verifica identidade, efeitos pendentes e prazo original; não reinicia orçamento, não duplica trabalho e pode recusar a continuação. Código novo não substitui um runtime com lease/lock ativo. `status`, `report` e `resume` usam o runtime existente sem upgrade automático. Uma interrupção incerta exige diagnóstico, não remoção de lock por conveniência.
+A retomada pública está desativada: use `status` e `report` para consultar a evidência preservada. Não repita `run` nem remova o lock de uma execução incerta. Antes de qualquer retomada futura, é preciso provar que os processos antigos encerraram. Código novo não substitui um runtime com lease/lock ativo.
 
 O perfil registra limites por turno, tarefa, campanha, tokens observados e falta de progresso. Tokens em cache são subconjunto de input; reasoning é subconjunto de output. A coleta não estima cobrança e não garante um teto rígido de consumo em tempo real.
 

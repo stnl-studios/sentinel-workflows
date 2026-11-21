@@ -1,4 +1,4 @@
-import{test}from'node:test';import assert from'node:assert/strict';import fs from'node:fs';import path from'node:path';import{fileURLToPath}from'node:url';import{sha256}from'../core.mjs';import{REQUIRED_CHECKS,qualificationDigest}from'../qualification.mjs';import{harnessIdentityFromCampaign,verifyQualificationEvidence,createQualification}from'../qualification-store.mjs';
+import{test}from'node:test';import assert from'node:assert/strict';import fs from'node:fs';import path from'node:path';import{fileURLToPath}from'node:url';import{sha256,digest}from'../core.mjs';import{REQUIRED_CHECKS,qualificationDigest}from'../qualification.mjs';import{harnessIdentityFromCampaign,verifyQualificationEvidence,createQualification}from'../qualification-store.mjs';
 const temp=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../../temp/qualification-store-tests');
 function fixture(t){fs.mkdirSync(temp,{recursive:true});const base=fs.mkdtempSync(path.join(temp,'test-'));t.after(()=>fs.rmSync(base,{recursive:true,force:true}));fs.mkdirSync(path.join(base,'evidence'));const proof=(name,value={status:'observed'})=>{const ref='evidence/'+name+'.json';fs.writeFileSync(path.join(base,ref),JSON.stringify(value));return{ref,sha256:sha256(fs.readFileSync(path.join(base,ref)))}};const identity={engine:'1'.repeat(64),fixture:'2'.repeat(64),scenarioOracle:'3'.repeat(64),source:'4'.repeat(64),profile:'5'.repeat(64),cliVersion:'0.163.0',sentinelRevision:'a'.repeat(40),contextPolicy:'stage',adapterProtocol:'public-v1'};return{base,proof,identity,harnessIdentity:harnessIdentityFromCampaign(identity)}}
 function reference(f){const plannedCells=['rename','query','import'].flatMap(caseId=>[1,2].map(repetition=>({caseId,repetition})));const results=plannedCells.map(c=>{const r={...c,measurement:'diagnostic',harnessValid:true,status:c.repetition===1?'PASS':'FAIL',closed:c.repetition===1,oracle:c.repetition===1?'PASS':'FAIL'};return{...r,proof:f.proof(c.caseId+c.repetition,r)}});const campaign={id:'ref',mode:'diagnostic',scope:'live',identity:f.identity,plannedCells,results};campaign.proof=f.proof('campaign',campaign);const checks=REQUIRED_CHECKS.map(id=>{const c={id,harnessIdentity:f.harnessIdentity,dependencies:[f.proof(id+'-dependency')],pass:true,scope:['profile-observation','authority-byte-binding'].includes(id)?'live':'local'};return{...c,proof:f.proof(id,c)}});return{...f,campaigns:[campaign],checks,evidenceDir:'evidence/certificate'}}
@@ -66,4 +66,37 @@ test('matching failed check stays blocked; no boolean truth certification from v
  const d=reference(fixture(t)),c=d.checks[0];c.pass=false;
  const {proof,...saved}=c;c.proof=d.proof(c.id,saved);
  const r=createQualification(d);assert.equal(r.status,'BLOCKED');assert.ok(r.reasons.includes('CHECK_NOT_PASS:'+c.id));
+});
+
+test('parallel byte evidence verifies actual completed provider overlap and FIFO, not just a C3 profile',t=>{
+ const f=fixture(t),profile={concurrency:3},id={...f.identity,concurrency:3,profile:digest(profile)};
+ const d=reference({...f,identity:id}),c=d.campaigns[0],caseIds=['rename','query','import'];
+ const schedule=[0,1,2,0,1,2].map((slot,i)=>({caseId:caseIds[slot],repetition:i<3?1:2,slot:slot+1,queueIndex:i,startedAt:i<3?1:11,executionStartedAt:i<3?2:12,executionFinishedAt:i<3?9:19,finishedAt:i<3?10:20,providerWindows:[{index:1,threadId:'thread-'+i,turnId:'turn-'+i,startedAt:i<3?3:13,finishedAt:i<3?8:18}]}));
+ c.turnProofs=Object.fromEntries(schedule.map(d=>{
+  const cell=d.caseId+'-'+d.repetition,root='evidence/campaigns/ref/'+cell;
+  fs.mkdirSync(path.join(f.base,root),{recursive:true});
+  const w=d.providerWindows[0],at='campaigns/ref/'+cell+'/turn-'+w.index;
+  return [cell,[{request:f.proof(at+'-request',{threadId:w.threadId}),result:f.proof(at+'-result',{threadId:w.threadId,turnId:w.turnId,status:'completed',providerWindow:w})}]];
+ }));
+ const summary={...c,profile,caseIds,repetitions:2,startedAt:0,finishedAt:20,dispatches:schedule};
+ const verified=change=>{c.proof=f.proof('campaign',change);return verifyQualificationEvidence({base:f.base,qualification:d});};
+ assert.equal(verified(summary).status,'PASS');
+ for(const change of [
+  x=>{x.dispatches[2].providerWindows=[];},
+  x=>{x.dispatches[1].providerWindows=[{startedAt:8,finishedAt:9}];x.dispatches[4].providerWindows=[{startedAt:18,finishedAt:19}];},
+  x=>{[x.dispatches[0],x.dispatches[1]]=[x.dispatches[1],x.dispatches[0]];},
+  x=>{x.dispatches[1].slot=1;},
+  x=>{delete x.dispatches;},
+  x=>{x.dispatches[0].providerWindows[0].finishedAt--;}, // Still C3, but no exact receipt.
+  x=>{x.dispatches[0].providerWindows[0].turnId='other';}
+ ]){const altered=structuredClone(summary);change(altered);assert.ok(verified(altered).reasons.includes('PARALLEL_EXECUTION_UNPROVEN:ref'));}
+ const original=c.turnProofs['rename-1'];c.turnProofs['rename-1']=c.turnProofs['query-1'];
+ assert.ok(verified(summary).reasons.includes('PARALLEL_EXECUTION_UNPROVEN:ref'));
+ c.turnProofs['rename-1']=original;delete c.turnProofs['rename-1'];
+ assert.ok(verified(summary).reasons.includes('PARALLEL_EXECUTION_UNPROVEN:ref'));
+});
+test('legacy C2 campaigns without concurrency identity cannot be treated as serial',t=>{
+ const f=fixture(t),profile={concurrency:2},d=reference({...f,identity:{...f.identity,profile:digest(profile)}}),c=d.campaigns[0];
+ c.proof=f.proof('campaign',{...c,profile});
+ assert.ok(verifyQualificationEvidence({base:d.base,qualification:d}).reasons.includes('CAMPAIGN_CONCURRENCY_PROFILE_BINDING:ref'));
 });

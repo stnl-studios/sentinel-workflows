@@ -82,11 +82,11 @@ export class AppServer {
     let buffer = '';
     this.child.stdout.on('data', chunk => {
       buffer += chunk;
-      if (Buffer.byteLength(buffer) > 16 * 1024 * 1024) { this.fail(Error('Protocol line exceeds limit')); void this.stop(); return; }
+      if (Buffer.byteLength(buffer) > 16 * 1024 * 1024) { this.fail(Error('Protocol line exceeds limit')); void this.stop().catch(()=>{}); return; }
       let i;
       while ((i = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, i); buffer = buffer.slice(i + 1); if (!line) continue;
-        try { this.receive(JSON.parse(line)); } catch (e) { this.fail(e); void this.stop(); return; }
+        try { this.receive(JSON.parse(line)); } catch (e) { this.fail(e); void this.stop().catch(()=>{}); return; }
       }
     });
     // Deliberately discard stderr text: it may contain private diagnostics.
@@ -175,6 +175,7 @@ export class AppServer {
       await Promise.race([this.exit.promise, delay(1000)]);
       if (this.child.exitCode == null && this.child.signalCode == null) { this.child.kill('SIGKILL'); await Promise.race([this.exit.promise, delay(500)]); }
       this.fail(Error('App Server stopped'));
+      if(Number.isSafeInteger(this.child.pid)&&this.child.exitCode==null&&this.child.signalCode==null)throw Object.assign(Error('App Server exit not observed'),{code:'APP_SERVER_EXIT_UNCONFIRMED'});
     })();
     return this.stopping;
   }

@@ -14,7 +14,7 @@ import{Ledger,atomicJson,writeOnce,treeHashes,digest,safeId,validateProfile,budg
 import{materializeSourceSnapshot}from'./source-snapshot.mjs';
 import{runPool}from'./pool.mjs';
 import{prepareCase,configureRunner}from'./prepare.mjs';import{AppServer}from'./app-server.mjs';import{CASES,verifyCase}from'./scenarios.mjs';import{collectUsage}from'./telemetry.mjs';
-import{inspectAuthority,nextOperation,allocatePlan,capturePlan,recoverUncapturedDraft,reviseRejectedPlan,approvePlan,stagePrompt,planApproverPrompt,parseApproval}from'./workflow.mjs';
+import{inspectAuthority,nextOperation,allocatePlan,capturePlan,recoverUncapturedDraft,reviseRejectedPlan,approvePlan,stagePrompt,planApproverPrompt,bindPlanVerdict,readPlanApproverVerdict}from'./workflow.mjs';
 export const BASE=fs.realpathSync.native(path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'));
 // Field completeness covers collected response records, not exhaustive consumption.
 export function usageMayBeUnreported(usage,pending){
@@ -25,7 +25,7 @@ export function usageMayBeUnreported(usage,pending){
 }
 export const ADAPTER_PROTOCOL='sentinel-app-server-public-v1';
 export const implementationHashes=(root=path.join(BASE,'bench'))=>treeHashes(root,{exclude:['profiles','cases','test','README.md']});
-export function campaignIdentity(profile,sourceRoot=path.join(BASE,'source')){return{engine:digest(implementationHashes()),fixture:digest(treeHashes(path.join(BASE,'fixtures/todo'))),scenarioOracle:digest({cases:CASES,oracles:treeHashes(path.join(BASE,'bench/cases'))}),source:digest(treeHashes(sourceRoot)),profile:digest(profile),cliVersion:profile.cliVersion,sentinelRevision:profile.sentinelRevision,contextPolicy:profile.contextPolicy??'stage',adapterProtocol:ADAPTER_PROTOCOL};}
+export function campaignIdentity(profile,sourceRoot=path.join(BASE,'source')){return{engine:digest(implementationHashes()),fixture:digest(treeHashes(path.join(BASE,'fixtures/todo'))),scenarioOracle:digest({cases:CASES,oracles:treeHashes(path.join(BASE,'bench/cases'))}),source:digest(treeHashes(sourceRoot)),profile:digest(profile),concurrency:profile.concurrency,cliVersion:profile.cliVersion,sentinelRevision:profile.sentinelRevision,contextPolicy:profile.contextPolicy??'stage',adapterProtocol:ADAPTER_PROTOCOL};}
 const roleRules=[{role:'plan_review',agentNamePrefix:'plan_review'},{role:'execute_check',agentNamePrefix:'execute_check'},{role:'formal_validate',agentNamePrefix:'formal_validate'}];
 export function validateModels(roles,listing){const available=new Set((listing?.data??[]).flatMap(item=>[item.model,item.id]).filter(v=>typeof v==='string'));for(const [role,config]of Object.entries(roles)){if(!available.has(config.model))throw Error(`MODEL_UNAVAILABLE_${role}: ${config.model}`);const item=listing.data.find(x=>x.model===config.model||x.id===config.model);if(Array.isArray(item.supportedReasoningEfforts)&&!item.supportedReasoningEfforts.some(x=>x.reasoningEffort===config.effort))throw Error(`EFFORT_UNAVAILABLE_${role}: ${config.effort}`);}return true;}
 export function effectiveThread(response){return {threadId:response.thread?.id??null,...Object.fromEntries(['model','modelProvider','reasoningEffort','cwd','approvalPolicy','sandbox'].map(k=>[k,response[k]??null]))};}
@@ -93,10 +93,11 @@ export function createCampaignBudget(limit){
   snapshot
  };
 }
-export async function executeCase({manifest:m,campaignDeadline,requirements,campaignBudget,resumeState=null,resumeAuthorization=null,services={}}){
+export async function executeCase({manifest:m,campaignDeadline,requirements,campaignBudget,providerWindows=null,resumeState=null,resumeAuthorization=null,services={}}){
  const api={serverFactory:options=>new AppServer(options),collectUsage,inspectAuthority,verifyCase,allocatePlan,capturePlan,recoverUncapturedDraft,reviseRejectedPlan,approvePlan,configureRunner,...services};
  validateProfile(m.profile);const contextPolicy=m.profile.contextPolicy??'stage';
  const resuming=resumeState!==null;
+ if(resuming&&resumeState.plan?.phase==='CAPTURED')throw Error('RESUME_CAPTURED_APPROVAL_NOT_AUTHORIZED');
  if(resuming&&(resumeState.contextPolicy??'persistent')!==contextPolicy)throw Error('RESUME_CONTEXT_POLICY_MISMATCH');
  if(resuming&&contextPolicy==='stage'&&(!resumeState.stageThreads||typeof resumeState.stageThreads!=='object'||Array.isArray(resumeState.stageThreads)))throw Error('RESUME_STAGE_THREADS_MISSING');
  if(resuming){if(resumeState.pending!=null||resumeState.pendingEffect!=null)throw Error('RESUME_UNSETTLED_EFFECT_OR_TURN');if(!resumeState.threadId||!Number.isFinite(resumeState.deadline)||!Number.isFinite(resumeState.startedAt)||!['turns','completedTurns','unchanged'].every(k=>Number.isSafeInteger(resumeState[k])&&resumeState[k]>=0)||!Array.isArray(resumeState.roots))throw Error('RESUME_CHECKPOINT_INVALID');}
@@ -142,19 +143,22 @@ export async function executeCase({manifest:m,campaignDeadline,requirements,camp
   }
   state.threadId=entry.threadId;save();return entry;
  }
- async function turn(stage,prompt,role='coordinator',threadId=null){
+ async function turn(stage,prompt,role='coordinator',threadId=null,captureSha256=null){
   const coordinated=threadId===null;
   await measure();if(campaignBudget&&!campaignBudget.admit())throw Error('CAMPAIGN_OBSERVED_TOKEN_LIMIT');const reportedTokens=observeOnly?null:observedBudgetTokens(usage,state.completedTurns);
   const decision=budgetDecision({campaignDeadline,caseDeadline:activeDeadline,turns:state.turns,unchanged:state.unchanged,reportedTokens},m.profile.limits);if(decision!=='ALLOW')throw Error(decision);
   const authorityBefore=authorityNow();if(coordinated){const selected=await ensureStageThread(stage,authorityBefore);threadId=selected.threadId;role=selected.role;}
   const productBefore=coordinated?trajectoryProductHashes(m.workspace):null;const before=semanticFingerprint(m.workspace,authorityBefore),context={caseId:m.caseId,stage,role,slice:authorityBefore.current?.output?.normalHandoff?.slice??null,contextPolicy};const index=++state.turns;
-  writeOnce(path.join(m.evidence,`turn-${index}-request.json`),{stage,prompt,role,threadId,model:m.profile.roles[role],before});state.pending={index,stage,threadId,before,authorityBefore,turnId:null,...(coordinated?{trajectoryBefore:{productBefore,slice:context.slice}}:{})};ledger.append('dispatch-intent',state.pending);save();contexts.begin(threadId,context);
-  let result,turnStopReason=null;activeAbort=new AbortController();activeStopReason=null;if(monitor.triggered)throw Object.assign(Error('OBSERVED_TOKEN_LIMIT'),{code:'OBSERVED_TOKEN_LIMIT',operation:stage});
+  writeOnce(path.join(m.evidence,`turn-${index}-request.json`),{stage,prompt,role,threadId,model:m.profile.roles[role],before,...(captureSha256?{captureSha256}:{})});state.pending={index,stage,threadId,before,authorityBefore,turnId:null,...(coordinated?{trajectoryBefore:{productBefore,slice:context.slice}}:{})};ledger.append('dispatch-intent',state.pending);save();contexts.begin(threadId,context);
+  let result,turnStopReason=null,acceptedApproval=null,providerAcceptance=null;activeAbort=new AbortController();activeStopReason=null;if(monitor.triggered)throw Object.assign(Error('OBSERVED_TOKEN_LIMIT'),{code:'OBSERVED_TOKEN_LIMIT',operation:stage});
   const scheduledAt=Date.now(),turnDeadline=turnDeadlineFor(scheduledAt,activeDeadline,m.profile.limits.turnMs);
   const timing={scheduledAt,deadlineAt:turnDeadline};
   const deadlineTimer=setTimeout(()=>{activeStopReason??=turnDeadline===activeDeadline?'CASE_DEADLINE':'TURN_DEADLINE';timing.policyDeadlineFiredAt=Date.now();activeAbort?.abort();},Math.max(0,turnDeadline-Date.now()));
-  try{result=await server.runTurn({threadId,input:[{type:'text',text:prompt}],...m.profile.roles[role],deadline:turnDeadline,signal:activeAbort.signal,timing,onAccepted:accepted=>{state.pending={...state.pending,...accepted};ledger.append('dispatch-accepted',state.pending);save();contexts.accept(accepted);}});}finally{clearTimeout(deadlineTimer);turnStopReason=activeStopReason;contexts.finish();activeAbort=null;activeStopReason=null;atomicJson(path.join(m.evidence,'operational-budget-monitor.json'),monitor.snapshot());}
-  result={...result,timing};
+  try{result=await server.runTurn({threadId,input:[{type:'text',text:prompt}],...m.profile.roles[role],deadline:turnDeadline,signal:activeAbort.signal,timing,onAccepted:accepted=>{if(accepted.threadId===threadId&&accepted.turnId)providerAcceptance??={startedAt:Date.now(),threadId,turnId:accepted.turnId};if(captureSha256){if(acceptedApproval||accepted.threadId!==threadId||!accepted.turnId)throw Error('APPROVAL_DISPATCH_IDENTITY_MISMATCH');acceptedApproval={...accepted};}state.pending={...state.pending,...accepted};ledger.append('dispatch-accepted',state.pending);save();contexts.accept(accepted);}});}finally{clearTimeout(deadlineTimer);turnStopReason=activeStopReason;contexts.finish();activeAbort=null;activeStopReason=null;atomicJson(path.join(m.evidence,'operational-budget-monitor.json'),monitor.snapshot());}
+  const providerWindow=result.status==='completed'&&providerAcceptance&&providerAcceptance.threadId===result.threadId&&providerAcceptance?.turnId===result.turnId?{...providerAcceptance,index,finishedAt:Date.now()}:null;
+  if(providerWindow&&providerWindow.finishedAt>providerWindow.startedAt)providerWindows?.push(providerWindow);
+  if(captureSha256&&result.status==='completed'&&(!acceptedApproval||result.threadId!==threadId||result.turnId!==acceptedApproval.turnId))throw Error('APPROVAL_COMPLETION_IDENTITY_MISMATCH');
+  result={...result,timing,...(providerWindow?{providerWindow}:{}),...(acceptedApproval?{approvalDispatch:{index,captureSha256,promptSha256:sha256(prompt),...acceptedApproval}}:{})};
   if(result.status==='interrupted'&&turnStopReason)result={...result,stopReason:turnStopReason};
   writeOnce(path.join(m.evidence,`turn-${index}-result.json`),result);ledger.append('dispatch-result',result);await measure();if(result.status!=='completed'){state.status='BLOCKED';state.stopReason=result.stopReason??null;save();const reason=result.stopReason??('UNCERTAIN_TRANSPORT_'+result.status);throw Object.assign(Error(reason),{code:result.stopReason??null,operation:stage});}
   state.completedTurns++;const afterAuthority=authorityNow();const after=semanticFingerprint(m.workspace,afterAuthority);if(coordinated){const snapshot={index,stage,slice:context.slice,threadId,turnId:result.turnId,beforeAuthority:authorityBefore,afterAuthority,productBefore,productAfter:trajectoryProductHashes(m.workspace)};writeOnce(path.join(m.evidence,`turn-${index}-authority-after.json`),snapshot);state.trajectorySnapshots??=[];state.trajectorySnapshots.push(snapshot);ledger.append('authority-after',snapshot);}if(coordinated)state.unchanged=before===after?state.unchanged+1:0;state.pending=null;save();return result;
@@ -190,14 +194,28 @@ export async function executeCase({manifest:m,campaignDeadline,requirements,camp
     }
     if(state.plan.phase==='CAPTURED'){
      assertCapture();const capture=state.plan,reviewSuffix=suffix+'-plan-'+(state.plan.corrections??0);
-     let delegated=state.plan.delegatedApproval;
-     if(delegated&&delegated.captureSha256!==capture.captureSha256)throw Error('DELEGATED_APPROVAL_CAPTURE_MISMATCH');
-     if(!delegated){
+     if(state.plan.delegatedApproval)throw Error('DELEGATED_APPROVAL_ALREADY_PRESENT');
+     let delegated;
+     const prompt=planApproverPrompt({requirements,capture,trajectory:m.trajectory});
+     const verifyBinding=receipt=>{
+      const binding=receipt.binding,hash=capture.captureSha256,thread=receipt.threadId,turnId=receipt.turnId;
+      if(!binding||typeof thread!=='string'||!thread||typeof turnId!=='string'||!turnId||!Number.isSafeInteger(binding.index)||binding.index<1||binding.index>state.turns||binding.captureSha256!==hash||binding.promptSha256!==sha256(prompt)||binding.threadId!==thread||binding.turnId!==turnId||receipt.captureSha256!==hash||receipt.completionStatus!=='completed'||!roots.some(r=>r.role==='plan_approver'&&r.threadId===thread))throw Error('DELEGATED_APPROVAL_BINDING_MISMATCH');
+      const read=name=>JSON.parse(fs.readFileSync(confined(m.evidence,name),'utf8'));
+      const request=read(`turn-${binding.index}-request.json`),result=read(`turn-${binding.index}-result.json`);
+      if(request.stage!=='APPROVE_PLAN'||request.role!=='plan_approver'||request.threadId!==thread||request.prompt!==prompt||request.captureSha256!==hash||result.status!=='completed'||result.threadId!==thread||result.turnId!==turnId||!result.approvalDispatch||digest(result.approvalDispatch)!==digest(binding)||digest(bindPlanVerdict(receipt.verdict,hash))!==digest(receipt.decision))throw Error('DELEGATED_APPROVAL_BINDING_MISMATCH');
+      assertCapture();
+     };
+     {
       admitDeadline(activeDeadline);const reviewThread=await server.startThread({model:m.profile.roles.plan_approver.model,config:{model_reasoning_effort:m.profile.roles.plan_approver.effort},sandbox:'read-only'});
+      if(roots.some(r=>r.threadId===reviewThread.thread.id))throw Error('PLAN_APPROVER_THREAD_ID_REUSED');
       writeOnce(path.join(m.evidence,'plan-approver-thread-effective'+reviewSuffix+'.json'),effectiveThread(reviewThread));assertEffectiveThread(reviewThread,{...m.profile.roles.plan_approver,cwd:m.workspace,sandbox:'readOnly'});roots.push({threadId:reviewThread.thread.id,caseId:m.caseId,role:'plan_approver'});save();
-      const approval=await turn('APPROVE_PLAN',planApproverPrompt({requirements,capture,trajectory:m.trajectory}),'plan_approver',reviewThread.thread.id);
-      admitDeadline(activeDeadline);const read=await server.readThread(reviewThread.thread.id);if(read.thread?.id!==reviewThread.thread.id)throw Error('APPROVAL_THREAD_IDENTITY_MISMATCH');const actualTurn=read.thread.turns.find(t=>t.id===approval.turnId),messages=actualTurn?.items?.filter(i=>i.type==='agentMessage')??[],text=messages.at(-1)?.text;if(!text)throw Error('APPROVAL_MESSAGE_MISSING');
-      const decision=parseApproval(text);delegated={provenance:'DELEGATED_AUTONOMY',threadId:reviewThread.thread.id,turnId:approval.turnId,completionStatus:approval.status,captureSha256:capture.captureSha256,decision};state.plan.delegatedApproval=delegated;save();writeOnce(path.join(m.evidence,'delegated-approval'+reviewSuffix+'.json'),delegated);
+      const approval=await turn('APPROVE_PLAN',prompt,'plan_approver',reviewThread.thread.id,capture.captureSha256);
+      admitDeadline(activeDeadline);
+      const verdict=readPlanApproverVerdict(await server.readThread(reviewThread.thread.id),approval);
+      const decision=bindPlanVerdict(verdict,capture.captureSha256);
+      delegated={provenance:'DELEGATED_AUTONOMY',threadId:reviewThread.thread.id,turnId:approval.turnId,completionStatus:approval.status,captureSha256:capture.captureSha256,binding:approval.approvalDispatch,verdict,decision,receipt:'delegated-approval'+reviewSuffix+'.json'};
+      verifyBinding(delegated);
+      writeOnce(confined(m.evidence,delegated.receipt),delegated);state.plan.delegatedApproval=delegated;save();
      }
      if(delegated.decision.decision==='BLOCKED')throw Error('APPROVAL_OPERATIONALLY_BLOCKED');
      if(delegated.decision.decision==='REJECT'){
@@ -217,7 +235,7 @@ export async function executeCase({manifest:m,campaignDeadline,requirements,camp
    if(operation==='CLOSE'){if(authority.current.output.state!=='COMPLETE')throw Error('CLOSE_REQUIRES_COMPLETE');completeProof=authority;state.preCloseComplete=authority;save();writeOnce(path.join(m.evidence,'pre-close-authority'+suffix+'.json'),authority);oracle=await oracleAt('oracle-pre-close');if(oracle.status!=='PASS'){state.status='FAIL';break;}}
    await turn(operation,stagePrompt({manifest:m,operation,authority,plan:state.plan}));
   }
- }catch(error){state.status=state.status==='FAIL'?'FAIL':'BLOCKED';state.error=error.message;state.errorCode=error.code??null;state.errorOperation=error.operation??null;ledger.append('stop',{error:error.message,errorCode:state.errorCode,errorOperation:state.errorOperation,pending:state.pending,pendingEffect:state.pendingEffect});}finally{contexts.finish();await server.stop();await measure().catch(error=>{state.telemetryError=error.message;});state.finishedAt=Date.now();save();if(usage){const cycles=buildCycleReport({usage,events:fs.readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)});atomicJson(path.join(m.evidence,'cycle-report'+suffix+'.json'),cycles);fs.writeFileSync(path.join(m.evidence,'cycles'+suffix+'.csv'),toCycleCsv(cycles),{flag:'wx'});try{const communications=await collectCommunicationProof({events:fs.readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse),workspace:m.workspace,tmpDir:m.tmpDir,home:m.home,sessionRoot:path.join(m.codexHome,'sessions')});atomicJson(path.join(m.evidence,'communication-proof'+suffix+'.json'),communications);}catch(error){atomicJson(path.join(m.evidence,'communication-proof'+suffix+'.json'),{status:'INCOMPLETE',error:error.message});}}}
+ }catch(error){state.status=state.status==='FAIL'?'FAIL':'BLOCKED';state.error=error.message;state.errorCode=error.code??null;state.errorOperation=error.operation??null;ledger.append('stop',{error:error.message,errorCode:state.errorCode,errorOperation:state.errorOperation,pending:state.pending,pendingEffect:state.pendingEffect});}finally{try{contexts.finish();}finally{await server.stop();}await measure().catch(error=>{state.telemetryError=error.message;});state.finishedAt=Date.now();save();if(usage){const cycles=buildCycleReport({usage,events:fs.readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)});atomicJson(path.join(m.evidence,'cycle-report'+suffix+'.json'),cycles);fs.writeFileSync(path.join(m.evidence,'cycles'+suffix+'.csv'),toCycleCsv(cycles),{flag:'wx'});try{const communications=await collectCommunicationProof({events:fs.readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse),workspace:m.workspace,tmpDir:m.tmpDir,home:m.home,sessionRoot:path.join(m.codexHome,'sessions')});atomicJson(path.join(m.evidence,'communication-proof'+suffix+'.json'),communications);}catch(error){atomicJson(path.join(m.evidence,'communication-proof'+suffix+'.json'),{status:'INCOMPLETE',error:error.message});}}}
  const trajectory=buildTrajectoryReport({caseId:m.caseId,trajectory:m.trajectory??{minSlices:1},snapshots:state.trajectorySnapshots??[]});writeOnce(path.join(m.evidence,'trajectory-report'+suffix+'.json'),trajectory);
  const result={effectiveProfileDigest:digest(m.profile),trajectoryStatus:trajectory.status,sharedFileChange:trajectory.sharedFileChange,caseId:m.caseId,repetition:m.repetition,status:state.status,error:state.error??null,errorCode:state.errorCode??null,errorOperation:state.errorOperation??null,stopReason:state.stopReason??null,durationMs:state.finishedAt-state.startedAt,turns:state.turns,measurement:'diagnostic',oracle:oracle?.status??null,complete:!!completeProof,pending:state.pending,pendingEffect:state.pendingEffect,observedTokens:usage?.observedTotals?.totalTokens?.value??null,tokenMetrics:usage?.observedTotals??null,usageScope:'reported-responses-only',unreportedUsagePossible:usageMayBeUnreported(usage,state.pending),tokenBudgetIsHardCap:false,failure:classifyFailure({error:state.error,errorCode:state.errorCode,stopReason:state.stopReason,status:state.status,oracle:oracle?.status,providerEvents:observedFailures,terminalAttempt:state.pending}),closed:closedObserved,usage};writeOnce(path.join(m.evidence,resuming?`recovery-${recoveryIndex}-result.json`:'result.json'),result);atomicJson(path.join(m.evidence,'result-latest.json'),result);return result;
 }
@@ -236,21 +254,24 @@ export async function runCampaign({id,profile,caseIds=profile.suiteCases??CASES.
  const startedAt=Date.now(),deadline=startedAt+profile.limits.campaignMs;
 
  const caseProfiles=Object.fromEntries(caseIds.map(caseId=>{const effective=resolveCaseProfile(profile,caseId);return[caseId,{profile:effective,profileDigest:digest(effective)}]}));
- const campaign={schemaVersion:1,id,mode,identity,profile,caseProfiles,startedAt,deadline,planned:cells.length,started:0,notStarted:cells.length,stopReason:null,caseIds,repetitions,results:[],tokenBudget:budget.snapshot()};
+ const campaign={schemaVersion:1,id,mode,identity,profile,caseProfiles,startedAt,deadline,planned:cells.length,started:0,notStarted:cells.length,stopReason:null,caseIds,repetitions,results:[],dispatches:[],tokenBudget:budget.snapshot()};
  const save=()=>{campaign.tokenBudget=budget.snapshot();campaign.stopReason??=campaign.tokenBudget.stopReason;if(Date.now()>=deadline)campaign.stopReason??='CAMPAIGN_DEADLINE';atomicJson(path.join(directory,'summary.json'),campaign);fs.writeFileSync(path.join(directory,'report.md'),renderReport(campaign));};
  try{
   if(verifiedAdmission)writeOnce(path.join(directory,'admission.json'),{...admission,reverified:verifiedAdmission});
   writeOnce(path.join(directory,'campaign.json'),campaign);fs.cpSync(path.join(BASE,'bench'),path.join(directory,'engine-snapshot'),{recursive:true});if(digest(implementationHashes(path.join(directory,'engine-snapshot')))!==identity.engine)throw Error('engine changed during snapshot');
-  const pool=await runPool(cells,profile.concurrency,async({caseId,repetition})=>{
-   campaign.started++;campaign.notStarted=campaign.planned-campaign.started;save();
+  const pool=await runPool(cells,profile.concurrency,async({caseId,repetition},{queueIndex})=>{
+   const dispatch=campaign.dispatches[queueIndex];
    const scenario=CASES.find(c=>c.id===caseId),requirements=`# ${scenario.title}\n\n${scenario.requirements.map((r,i)=>`${i+1}. ${r}`).join('\n')}`;
    let manifest;
    try{
     manifest=await prepareCase({base:BASE,campaignId:id,caseId,repetition,profile:caseProfiles[caseId].profile,requestedProfile:profile,requirements,trajectory:scenario.trajectory??{minSlices:1},deadline,sourceRoot:source.sourceRoot,engineRoot:path.join(directory,'engine-snapshot')});
     if(manifest.fixtureDigest!==identity.fixture||manifest.sourceProof.sha256TreeDigest!==identity.source)throw Error('campaign immutable snapshot drift');
     await environmentPreflight({manifest,deadline});
-   }catch(error){return {caseId,repetition,status:'PREPARATION_FAILED',measurement:'diagnostic',error:String(error.message),evidence:path.join(directory,`${caseId}-${repetition}`)};}
-   const result=await executeCase({manifest,campaignDeadline:deadline,requirements,campaignBudget:budget});
+   }catch(error){if(error.code==='APP_SERVER_EXIT_UNCONFIRMED')throw error;return {caseId,repetition,status:'PREPARATION_FAILED',measurement:'diagnostic',error:String(error.message),evidence:path.join(directory,`${caseId}-${repetition}`)};}
+   dispatch.executionStartedAt=Date.now();
+   let result;
+   try{result=await executeCase({manifest,campaignDeadline:deadline,requirements,campaignBudget:budget,providerWindows:dispatch.providerWindows});}
+   finally{dispatch.executionFinishedAt=Date.now();}
    const observedIdentity=campaignIdentity(profile,source.sourceRoot);
    const snapshotIntegrity={engine:digest(implementationHashes(manifest.engineRoot)),scenarioOracle:digest({cases:CASES,oracles:treeHashes(path.join(manifest.engineRoot,'cases'))})};
    const integrity=digest(observedIdentity)===digest(identity)&&snapshotIntegrity.engine===identity.engine&&snapshotIntegrity.scenarioOracle===identity.scenarioOracle;
@@ -260,11 +281,13 @@ export async function runCampaign({id,profile,caseIds=profile.suiteCases??CASES.
    const observation={...classification,...harness,identityAtStart:identity,identityAtEnd:observedIdentity,snapshotIntegrity,runnerContractProofStatus:runnerContractProof.status,classificationIsProspective:true};writeOnce(path.join(manifest.evidence,'measurement-admission.json'),observation);
    return{...result,...classification,...harness,runnerContractProofStatus:runnerContractProof.status};
   },{
+   isFatal:error=>error.code==='APP_SERVER_EXIT_UNCONFIRMED',
    admit:()=>{if(Date.now()>=deadline){campaign.stopReason??='CAMPAIGN_DEADLINE';return false;}if(!budget.admit()){campaign.stopReason??=budget.snapshot().stopReason;return false;}return true;},
-   onResult:result=>{campaign.results.push({...result,usage:undefined});save();}
+   onStart:({caseId,repetition},{slot,queueIndex})=>{campaign.dispatches.push({caseId,repetition,slot,queueIndex,startedAt:Date.now(),providerWindows:[]});campaign.started++;campaign.notStarted=campaign.planned-campaign.started;save();},
+   onResult:(result,{queueIndex})=>{const dispatch=campaign.dispatches[queueIndex];if(dispatch)dispatch.finishedAt=Date.now();campaign.results.push({...result,usage:undefined});save();}
   });
   campaign.started=pool.started;campaign.notStarted=pool.notStarted;campaign.stopped=pool.stopped;
- }catch(error){campaign.stopReason??='HARNESS_FAILED';campaign.error=String(error.message);throw error;}
- finally{campaign.finishedAt=Date.now();try{save();}finally{release();}}
+ }catch(error){campaign.stopReason??='HARNESS_FAILED';campaign.error=String(error.message);if(error.code==='APP_SERVER_EXIT_UNCONFIRMED')campaign.exitUnconfirmed=true;throw error;}
+ finally{campaign.finishedAt=Date.now();try{save();}finally{if(!campaign.exitUnconfirmed)release();}}
  return campaign;
 }
