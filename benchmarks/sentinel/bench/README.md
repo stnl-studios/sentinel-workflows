@@ -9,14 +9,12 @@ From the Sentinel repository root; the launcher materializes the runtime inside 
 ```sh
 npm run benchmark:test
 node scripts/run-benchmark.mjs validate-profile
-# Single path while calibrating; do not start the full matrix before qualification.
-node scripts/run-benchmark.mjs run --id unique-diagnostic --cases rename --repetitions 1
+node scripts/run-benchmark.mjs run --id unique-diagnostic
 node scripts/run-benchmark.mjs status --id unique-diagnostic
 node scripts/run-benchmark.mjs report --id unique-diagnostic
-node scripts/run-benchmark.mjs resume --id unique-diagnostic --case rename-1
 ```
 
-Once the single path and resource budget have been demonstrated, normal `run --id ID` uses two repetitions of each of three independent tasks. Concurrency is bounded by the profile. No best-of selection. Default is **diagnostic**. A running campaign is not a qualification certificate or evidence that the current edited engine passed.
+Public `run --id ID` executes two repetitions of each of three independent tasks with three slots. No best-of selection. Default is **diagnostic**. A running campaign is not a qualification certificate or evidence that the current edited engine passed.
 
 Official use is fail-closed:
 
@@ -29,11 +27,11 @@ The qualification input explicitly identifies the reference harness, all declare
 
 ## Configuration and evidence
 
-Edit `bench/profiles/default.json` or supply `--profile PATH`. Roles and optional stage-role mappings select advertised models and reasoning effort without implicit fallback. Effective profile and provider acknowledgments are saved. `contextPolicy: stage` opens a coordinator thread per operation/slice; corrections and safe resumes within that stage keep its thread. The independent plan approver evaluates captured bytes; native plan review and formal slice validation remain separate real Sentinel steps.
+The launcher uses `bench/profiles/reference-v5-observe.json`; supply `--profile PATH` for a custom C3 profile with the same full matrix. Roles and optional stage-role mappings select advertised models and reasoning effort without implicit fallback. Effective profile and provider acknowledgments are saved. `contextPolicy: stage` opens a coordinator thread per operation/slice; corrections and safe resumes within that stage keep its thread. The independent plan approver evaluates captured bytes; native plan review and formal slice validation remain separate real Sentinel steps.
 
 Source snapshot materialization and admission are preflight, outside measured task duration. Preparation and model execution have bounded deadlines; guards observe tokens during turns, but delayed/unreported usage means they are not hard spending caps. Cache is part of input; reasoning is part of output. Reports expose known usage and gaps, not billing estimates. Two repetitions do not establish a statistical ranking.
 
-Evidence: `evidence/campaigns/ID/`; working copies: `work/campaigns/ID/`. Both are beneath the outer ignored `benchmark-temp` tree. Each campaign preserves engine snapshot, identity, effective profile, durable ledger, checkpoints, accepted thread/turn IDs, per-cycle usage, failure classification, captured approvals, native communication evidence, external oracle and report. Missing native communication evidence is not fabricated. Resume verifies original identity, deadline, effects and provider/Sentinel authority; uncertain dispatch is not blindly repeated. Some interrupted states intentionally require investigation rather than automatic continuation.
+Evidence: `evidence/campaigns/ID/`; working copies: `work/campaigns/ID/`. Both are beneath the outer ignored `benchmark-temp` tree. Each campaign preserves engine snapshot, identity, effective profile, durable ledger, checkpoints, accepted thread/turn IDs, per-cycle usage, failure classification, captured approvals, native communication evidence, external oracle and report. Missing native communication evidence is not fabricated. Public resume is disabled until ownership and termination can be re-proved; status and report remain available. Do not rerun an uncertain dispatch or remove its lock.
 
 The main repository, global installation, Claude and old measurements are not modified. IDs cannot be reused. On macOS the host must be able to launch Codex's own sandbox; nested seatbelt may fail with exit71. Use the supported authorized execution channel, never disable Codex protection. All temporary folders are inside benchmark-temp, including model TMPDIR; system `/tmp` is excluded from writable roots.
 
@@ -92,3 +90,28 @@ Stage instructions reuse persisted output only within the same confirmed context
 Import11 demonstrated both slices PASS, COMPLETE, CLOSE and the external oracle in 33m30, but its original measurement admission is invalid because one child's name was not recognized. Preserve that result and its post-audits as diagnostics. It reported 11,643,180 tokens (10,496,640 cached input, 1,064,379 new input, 82,161 output), close to the unchanged 12M/case limit. A new bounded gate is required before the six-cell matrix; do not retroactively certify import11 with this collector or silently raise budgets.
 
 The prospective collector now accepts bounded quoted literal arguments and the explicitly supplied isolated TMPDIR for operation handles; expansion, operators, traversal, symlinks and unrelated roots remain rejected. The original matrix is not rewritten by this correction. See [READINESS.md](READINESS.md) for the complete diagnostic outcome and the explicit qualification boundary.
+
+## Parallel campaign
+
+The repository launcher runs the full reference matrix with 3 slots. One campaign queues
+`rename-1, query-1, import-1, rename-2, query-2, import-2`; when any slot is released,
+it takes the next cell without a wave barrier, even if the same scenario is still running.
+Each cell has its own workspace, temp, Codex home, App Server and evidence. The provider
+account and Mac CPU/I/O are shared. A blocked cell remains in the report; case limits are
+independent, with a shared campaign deadline that prevents new starts. A coordinator
+persistence/control failure stops issuance and lets launched workers drain; missing direct
+App Server exit evidence blocks refill rather than assuming a clean slot.
+
+The public launcher accepts only the full matrix with 3 slots and two repetitions.
+Single-cell probes and test fixtures are internal, not a second live mode. Old results
+remain readable through status/report/compare, but cannot launch a serial fallback.
+A historical serial qualification does not admit a parallel target. The terminal summary preserves FIFO and per-cell wall timestamps,
+while the report's overlap peak counts accepted-and-completed turn intervals measured by
+the App Server client, not preparation, CPU usage, or exact provider compute time. No
+claims about capacity or simultaneous descendants are inferred from requested slots.
+
+For parallel qualification, the campaign descriptor includes `turnProofs`, keyed by
+`<scenario>-<repetition>`. For each reported provider window (in order), include
+`{request: {ref, sha256}, result: {ref, sha256}}` pointing to its original cell's
+`turn-N-request.json` and `turn-N-result.json`. The verifier checks both file bytes,
+request and completion IDs, and exact observed timestamps before counting overlap.

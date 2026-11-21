@@ -27,7 +27,7 @@
     }
   },
   "repetitions": 2,
-  "concurrency": 1,
+  "concurrency": 3,
   "limits": {
     "campaignMs": 14400000,
     "caseMs": 2400000,

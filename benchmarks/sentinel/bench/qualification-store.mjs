@@ -1,11 +1,50 @@
+import {executionOverlap} from './report.mjs';
 import {effectiveRoleBindings} from './case-profile.mjs';
 import fs from 'node:fs';import path from 'node:path';
 import{confined,sha256,writeOnce,digest,validateProfile}from'./core.mjs';
-import{buildQualification,qualificationDigest,checkBindingReasons}from'./qualification.mjs';
+import{buildQualification,qualificationDigest,checkBindingReasons,campaignConcurrency}from'./qualification.mjs';
 /** Identity of the reusable harness, separate from target source/profile. */
 export function harnessIdentityFromCampaign(identity){if(!identity||typeof identity.contextPolicy!=='string'||!identity.contextPolicy||typeof identity.adapterProtocol!=='string'||!identity.adapterProtocol)throw Error('CAMPAIGN_POLICY_IDENTITY_REQUIRED');const out=Object.fromEntries(['engine','fixture','scenarioOracle','cliVersion'].map(k=>[k,identity[k]]));return{...out,contextPolicy:qualificationDigest(identity.contextPolicy),adapterProtocol:qualificationDigest(identity.adapterProtocol)};}
 function refs(value,label,out,seen=new Set(),requiresLive=false){if(!value||typeof value!=='object'||seen.has(value))return;seen.add(value);requiresLive=requiresLive||value.scope==='live';if(Object.hasOwn(value,'ref')&&Object.hasOwn(value,'sha256'))out.push({proof:value,label,requiresLive});for(const[k,v]of Object.entries(value))refs(v,label+'/'+k,out,seen,requiresLive)}
 const hashPattern=/^(?:sha256:)?[a-f0-9]{64}$/;
+/** A requested setting is not evidence of actual simultaneous execution. */
+function verifiedParallelSchedule(saved,campaign,slots,doc){
+ const {caseIds,repetitions,startedAt,finishedAt,dispatches}=saved;
+ if(saved.profile?.concurrency!==slots||digest(saved.profile)!==campaign.identity.profile||
+    !Array.isArray(caseIds)||!caseIds.length||!Number.isSafeInteger(repetitions)||repetitions<1||
+    repetitions*caseIds.length!==campaign.results.length||![startedAt,finishedAt].every(Number.isFinite)||
+    finishedAt<startedAt||!Array.isArray(dispatches)||dispatches.length!==campaign.results.length)return false;
+ const slotEnds=new Map(),usedTurns=new Set();
+ const refs=campaign.turnProofs;
+ if(!refs||Object.keys(refs).length!==dispatches.length)return false;
+ for(const [i,d] of dispatches.entries()){
+  if(d?.queueIndex!==i||d.caseId!==caseIds[i%caseIds.length]||d.repetition!==Math.floor(i/caseIds.length)+1||
+     !Number.isSafeInteger(d.slot)||d.slot<1||d.slot>slots||
+     ![d.startedAt,d.executionStartedAt,d.executionFinishedAt,d.finishedAt].every(Number.isFinite)||
+     !(startedAt<=d.startedAt&&d.startedAt<=d.executionStartedAt&&d.executionStartedAt<d.executionFinishedAt&&
+       d.executionFinishedAt<=d.finishedAt&&d.finishedAt<=finishedAt)||
+     (i>0&&d.startedAt<dispatches[i-1].startedAt)||(slotEnds.get(d.slot)??startedAt)>d.startedAt||
+     !Array.isArray(d.providerWindows)||!d.providerWindows.length)return false;
+  let previous=d.executionStartedAt,previousIndex=0;
+  const cell=d.caseId+'-'+d.repetition,proofs=refs[cell];
+  if(!Array.isArray(proofs)||proofs.length!==d.providerWindows.length)return false;
+  for(const [j,w] of d.providerWindows.entries()){
+   if(!Number.isSafeInteger(w?.index)||w.index<=previousIndex||typeof w.threadId!=='string'||!w.threadId||
+      typeof w.turnId!=='string'||!w.turnId||!Number.isFinite(w.startedAt)||!Number.isFinite(w.finishedAt)||
+      !(previous<=w.startedAt&&w.startedAt<w.finishedAt&&w.finishedAt<=d.executionFinishedAt))return false;
+   const root='evidence/campaigns/'+campaign.id+'/'+cell+'/turn-'+w.index;
+   const pair=proofs[j],request=doc(pair?.request),result=doc(pair?.result);
+   const turnKey=JSON.stringify([w.threadId,w.turnId]);
+   if(pair?.request?.ref!==root+'-request.json'||pair?.result?.ref!==root+'-result.json'||
+      request?.threadId!==w.threadId||result?.threadId!==w.threadId||result?.turnId!==w.turnId||
+      result?.status!=='completed'||!result.providerWindow||qualificationDigest(result.providerWindow)!==qualificationDigest(w)||
+      usedTurns.has(turnKey))return false;
+   usedTurns.add(turnKey);previous=w.finishedAt;previousIndex=w.index;
+  }
+  slotEnds.set(d.slot,d.finishedAt);
+ }
+ return executionOverlap(dispatches)===slots;
+}
 /** Hash actual bytes through pinned file descriptor. Every ancestor must be owned,
  * non-symlink, under BASE/evidence. No providers, credentials, or external I/O. */
 export function verifyQualificationEvidence({base,qualification,targetProof}={}){
@@ -31,6 +70,9 @@ export function verifyQualificationEvidence({base,qualification,targetProof}={})
   const declared=saved.plannedCells??(Array.isArray(saved.caseIds)&&Number.isSafeInteger(saved.repetitions)?saved.caseIds.flatMap(caseId=>Array.from({length:saved.repetitions},(_,i)=>({caseId,repetition:i+1}))):null);
   const cells=a=>Array.isArray(a)?a.map(r=>`${r.caseId}/${r.repetition}`).sort():null;
   if(!eq(cells(declared),cells(campaign.plannedCells))||!eq(cells(saved.results),cells(campaign.results)))reasons.push('CAMPAIGN_CELL_BINDING:'+campaign.id);
+  const parallelism=campaignConcurrency(campaign.identity);
+  if(saved.profile&&(digest(saved.profile)!==campaign.identity.profile||saved.profile.concurrency!==parallelism))reasons.push('CAMPAIGN_CONCURRENCY_PROFILE_BINDING:'+campaign.id);
+  if(parallelism>1&&!verifiedParallelSchedule(saved,campaign,parallelism,doc))reasons.push('PARALLEL_EXECUTION_UNPROVEN:'+campaign.id);
   for(const result of campaign.results??[]){const row=saved.results?.find(r=>r.caseId===result.caseId&&r.repetition===result.repetition),bytes=doc(result.proof)?.result??doc(result.proof);const core=['caseId','repetition','status','closed','oracle','measurement'];
    if(!fields(row,result,[...core,'harnessValid'])||!fields(bytes,result,core))reasons.push(`RESULT_PROOF_BINDING:${campaign.id}/${result.caseId}/${result.repetition}`);
    if(result.admissionProof){const admission=doc(result.admissionProof);if(!admission||admission.harnessValid!==result.harnessValid||!eq(admission.identityAtStart,campaign.identity)||!eq(admission.identityAtEnd,campaign.identity))reasons.push('RESULT_ADMISSION_BINDING:'+result.proof?.ref)}

@@ -38,3 +38,13 @@ test('original capacity report never renders raw failure metadata and excludes r
  const generic=renderReport({...options,results:[{...original,status:sentinel}],recoveries:[]});
  assert.ok(!generic.includes(sentinel));assert.match(generic,/import-1 \| não informado \| 1/);
 });
+
+test('parallel report uses measured accepted/complete intervals, not prep or elapsed cell time',async()=>{
+ const {executionOverlap}=await import('../report.mjs');
+ const dispatches=[{providerWindows:[{startedAt:2,finishedAt:9}]},{providerWindows:[{startedAt:3,finishedAt:7}]},{providerWindows:[{startedAt:4,finishedAt:6}]}];
+ assert.equal(executionOverlap(dispatches),3);
+ assert.equal(executionOverlap([{executionStartedAt:1,executionFinishedAt:12}]),null);
+ assert.equal(executionOverlap([{providerWindows:[{startedAt:0,finishedAt:5},{startedAt:5,finishedAt:8}]}]),1);
+ const md=renderReport({id:'parallel',mode:'diagnostic',profile:{concurrency:3},planned:6,caseIds:['rename','query','import'],repetitions:2,results:[],dispatches,startedAt:5,finishedAt:30});
+ assert.match(md,/Slots configurados: 3/);assert.match(md,/concluídos simultaneamente: 3/);assert.match(md,/Tempo de parede total: 25 ms/);
+});

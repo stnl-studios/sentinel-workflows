@@ -39,3 +39,17 @@ test('probe leaves workspace bytes and directory metadata untouched',async t=>{
  assert.equal(result.proof.file,'environment-preflight/heredoc.txt');
  assert.equal(fs.existsSync(path.join(root,'.benchmark-temp')),false);
 });
+
+test('uncertain process exit outranks an unwriteable preflight receipt and drains the pool before rejection',async t=>{
+ const {runPool}=await import('../pool.mjs');
+ const f=setup(t),make=f.services.createServer,receipt=path.join(f.manifest.evidence,'environment-preflight.json');
+ f.services.createServer=o=>({...make(o),stop:async()=>{fs.mkdirSync(receipt);throw Object.assign(Error('unconfirmed child exit'),{code:'APP_SERVER_EXIT_UNCONFIRMED'});}});
+ const started=[],recorded=[];let settle,terminal=false;
+ const run=runPool(['preflight','existing','not-started'],2,async id=>{started.push(id);if(id==='preflight')return environmentPreflight(f);await new Promise(r=>{settle=r;});return{id};},{isFatal:error=>error.code==='APP_SERVER_EXIT_UNCONFIRMED',onResult:r=>recorded.push(r)});
+ const failure=run.catch(error=>{terminal=true;return error;});
+ while(recorded.length===0)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(terminal,false);assert.deepEqual(started,['preflight','existing']);assert.equal(fs.lstatSync(receipt).isDirectory(),true);
+ settle();
+ const error=await failure;assert.equal(error.code,'APP_SERVER_EXIT_UNCONFIRMED');assert.equal(error.report.stopCode,error.code);
+ assert.ok(error.report.persistenceError.code);assert.equal(error.report.status,'BLOCKED');assert.equal(recorded.length,2);
+});

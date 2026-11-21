@@ -53,3 +53,11 @@ test('check identity and nonempty dependencies are mandatory, without legacy fal
  const d=data();d.checks[1].dependencies=[{...d.checks[0].dependencies[0],sha256:'f'.repeat(64)}];
  assert.ok(buildQualification(d).reasons.some(r=>r.startsWith('PROOF_HASH_CONFLICT')));
 });
+
+test('literal concurrency binding refuses serial-to-parallel and parallel-to-serial',()=>{
+ const serial=data(),q=buildQualification(serial),changed=target(serial);changed.identity.concurrency=3;changed.targetProof.targetIdentityDigest=qualificationDigest(changed.identity);
+ assert.ok(admitOfficial({qualification:q,...changed}).reasons.includes('CONCURRENCY_REQUALIFICATION_REQUIRED'));
+ const parallel=data();parallel.identity.concurrency=3;parallel.campaigns[0].identity=structuredClone(parallel.identity);
+ const pq=buildQualification(parallel),back=target(parallel);back.identity.concurrency=1;back.targetProof.targetIdentityDigest=qualificationDigest(back.identity);
+ assert.equal(pq.status,'QUALIFIED');assert.ok(admitOfficial({qualification:pq,...back}).reasons.includes('CONCURRENCY_REQUALIFICATION_REQUIRED'));
+});

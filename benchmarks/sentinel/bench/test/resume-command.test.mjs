@@ -162,3 +162,11 @@ test('SIMULATED observe-only seed does not adopt summary rows without original p
  let seeded;const r=await resumeCampaignCase({base:f.base,id:'test',cell:'rename-1',inspect:noPending,execute:async x=>(seeded=x.campaignBudget.snapshot(),{status:'PASS'})});
  assert.equal(r.outcome,'RESUMED');assert.deepEqual(seeded.cells,{});assert.deepEqual(seeded.restoreGaps,[{code:'ORIGINAL_PLAN_UNAVAILABLE'}]);
 });
+
+test('public recovery cannot reopen a legacy serial campaign, even with a dead-looking lock',async t=>{
+ const f=setup(t),lock=path.join(f.dir,'.lock'),owner={pid:123456,id:'historical'};save(lock,owner);
+ let calls=0;
+ const r=await resumeCampaignCase({base:f.base,id:'test',cell:'rename-1',requireParallel:true,inspect:async()=>calls++,execute:async()=>calls++});
+ assert.equal(r.reason,'HISTORICAL_NON_C3_CAMPAIGN_READ_ONLY');assert.equal(calls,0);
+ assert.deepEqual(JSON.parse(fs.readFileSync(lock)),owner);
+});
