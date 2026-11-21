@@ -116,6 +116,24 @@ async function reserved(f,responseVariant) {
   return {started,dispatch};
 }
 
+test('EC-1 EXECUTE generic inspection does not prove a different owner or replace native observation',async t=>{
+  const f=await fixture({single:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
+  await installCurrentInitial(f);
+  const {started,dispatch}=await reserved(f,'stnl-current-native-judgment-v1');
+  const agentId='blocked-before-verification';
+  await bindNative(started.handle,agentId);
+  const origin=JSON.parse(await fs.readFile(dispatch.originFile,'utf8'));
+  assert.equal(origin.requestSha256,dispatch.requestSha256);
+  assert.equal(origin.requestSha256,digest(await fs.readFile(dispatch.requestFile)));
+  await assert.rejects(captureCurrentExecution(f.specPath),error=>error.code==='OWNER_UNCERTAIN');
+  const toolResult=path.join(f.root,'blocked-tool-result.json');
+  const finalResponse=JSON.stringify({format:'stnl-current-native-judgment-v1',result:{status:'BLOCKED'}});
+  await fs.writeFile(toolResult,JSON.stringify({agentId,status:'completed',finalResponse})+'\n');
+  await assert.rejects(captureNative(started.handle,toolResult),
+    error=>error.code==='ENOENT'&&/round-1\.observation\.json/u.test(error.message));
+  assert.equal((await resume(started.handle)).nextAction,'await-same-agent');
+});
+
 test('EC-1 EXECUTE preserves stale evidence, then retries the same owner without treating stale as a verdict',async t=>{
   const f=await fixture({single:true,staleMode:'once'});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   await installCurrentInitial(f);
@@ -2865,7 +2883,9 @@ for(const missing of ['input-file','input-ancestor'])test(`future-output absence
   const f=await fixture({single:true,inputTest:true,sharedAncestor:true,missingAncestor:true});t.after(()=>fs.rm(f.root,{recursive:true,force:true}));
   if(missing==='input-ancestor')await fs.rm(path.join(f.root,'src'),{recursive:true});
   else await fs.rm(path.join(f.root,'src/pay.test.mjs'));
-  await assert.rejects(()=>installCurrentInitial(f),error=>['EVIDENCE_STALE','EVIDENCE_INCOMPLETE'].includes(error.code));
+  await assert.rejects(()=>installCurrentInitial(f),{
+    code:'INVALID_CURRENT_IMAGE',reasonCode:'DRAFT_EXISTING_INPUT_UNAVAILABLE'
+  });
   assert.equal((await inspectCurrentExecution(f.specPath)).state,'NO_EXECUTION');
   await assert.rejects(fs.lstat(path.join(f.root,'docs/missing')),error=>error.code==='ENOENT');
 });

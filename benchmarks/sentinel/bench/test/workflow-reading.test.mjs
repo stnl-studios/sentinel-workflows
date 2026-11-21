@@ -62,3 +62,17 @@ test('only the terminal formal handoff requests bounded reads without replay or 
   assert(!stagePrompt({manifest,operation,authority:a}).includes('Não faça cat conjunto'));
  }
 });
+
+test('EXECUTE dispatch gives its child a reservation-bound verification, not generic inspection',()=>{
+ const active=operation=>({...authority,lifecycle:{exitCode:0,output:{lifecycle_status:'ready'}},
+  current:{exitCode:0,output:{state:'ACTIVE',normalHandoff:{operation,slice:'slice-01'}}}});
+ const p=stagePrompt({manifest,operation:'EXECUTE_SLICE',authority:active('EXECUTE_SLICE')});
+ for(const text of ['SLICE=slice-01','No dispatch do filho execute_check','após bind-native oficial',
+  'o próprio filho chama uma única vez node VERIFICATION_HELPER verify-native --origin-file ORIGIN_FILE',
+  'caminhos literais retornados pela mesma reserva','Inspect genérico do SPEC não autentica o owner ativo',
+  'não substitui verify-native nem sua observação','BLOCKED sem a observação oficial',
+  'preserve a resposta literal e o diagnóstico','não deduza owner divergente',
+  'não fabrique observação ou aceite','não repita reserva, dispatch ou receita','Pare antes validação formal'])assert(p.includes(text),text);
+ for(const operation of ['APPLY_FINDINGS','VALIDATE_SLICE'])
+  assert(!stagePrompt({manifest,operation,authority:active(operation)}).includes('No dispatch do filho execute_check'));
+});
