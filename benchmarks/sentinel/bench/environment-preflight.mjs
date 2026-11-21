@@ -44,9 +44,14 @@ export async function environmentPreflight({manifest:m,deadline,services}={}) {
   report.status='PASS';
  }catch(error){report.error={message:String(error.message),code:error.code??null};}
  finally{
-  if(server)try{await server.stop();}catch(error){report.status='BLOCKED';report.stopError=String(error.message);}
-  report.finishedAt=Date.now();writeOnce(file,report);
+  if(server)try{await server.stop();}catch(error){report.status='BLOCKED';report.stopError=String(error.message);if(error.code==='APP_SERVER_EXIT_UNCONFIRMED')report.stopCode=error.code;}
+  report.finishedAt=Date.now();
  }
- if(report.status!=='PASS'){const error=Error(report.error?.message??'ENVIRONMENT_PREFLIGHT_STOP_FAILED');error.report=report;throw error;}
+ try{writeOnce(file,report);}catch(error){
+  if(!report.stopCode)throw error;
+  // A failed receipt must not downgrade uncertain process ownership to a refillable cell failure.
+  report.persistenceError={code:error.code??null};
+ }
+ if(report.status!=='PASS'){const error=Error(report.stopCode??report.error?.message??'ENVIRONMENT_PREFLIGHT_STOP_FAILED');error.report=report;if(report.stopCode)error.code=report.stopCode;throw error;}
  return report;
 }

@@ -20,8 +20,9 @@ function modelRolesValid(roles){
  return [...new Set(roles.map(r=>r.caseId))].every(caseId=>ROLES.every(required=>roles.some(r=>r.caseId===caseId&&r.logicalRole===required)));
 }
 
+export const campaignConcurrency=identity=>identity?.concurrency??1; // Old evidence has no parallel claim.
 function validIdentity(identity) {
-  return identity && ['engine', 'fixture', 'source', 'profile'].every(k => typeof identity[k] === 'string' && HASH.test(identity[k])) && typeof identity.cliVersion === 'string' && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(identity.cliVersion) && /^[a-f0-9]{40}$/.test(identity.sentinelRevision ?? '');
+  return identity && [1,2,3].includes(campaignConcurrency(identity)) && ['engine', 'fixture', 'source', 'profile'].every(k => typeof identity[k] === 'string' && HASH.test(identity[k])) && typeof identity.cliVersion === 'string' && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(identity.cliVersion) && /^[a-f0-9]{40}$/.test(identity.sentinelRevision ?? '');
 }
 function validProof(proof) {
   return proof && typeof proof.ref === 'string' && proof.ref.length > 0 && !proof.ref.startsWith('/') && !proof.ref.includes('\\') && !proof.ref.split('/').some(p => p === '.' || p === '..' || p === '') && !/[\x00-\x1f]/.test(proof.ref) && HASH.test(proof.sha256 ?? '');
@@ -112,6 +113,7 @@ export function admitOfficial({ qualification, identity, harnessIdentity, target
  const rebuilt=buildQualification({identity:qualification.identity,harnessIdentity:qualification.harnessIdentity,campaigns:qualification.campaigns,checks:qualification.checks});
  if(rebuilt.status!=='QUALIFIED'||qualification.status!=='QUALIFIED')reasons.push('QUALIFICATION_NOT_READY',...rebuilt.reasons);
  if(!validIdentity(identity))reasons.push('IDENTITY_INVALID');
+ if(campaignConcurrency(identity)!==campaignConcurrency(qualification.identity))reasons.push('CONCURRENCY_REQUALIFICATION_REQUIRED');
  const sameTarget=canonical(qualification.identity)===canonical(identity);
  const targetHarness=harnessIdentity??(sameTarget?qualification.harnessIdentity:null);
  if(!validHarness(targetHarness)||!harnessBinds(targetHarness,identity))reasons.push('TARGET_HARNESS_IDENTITY_INVALID');

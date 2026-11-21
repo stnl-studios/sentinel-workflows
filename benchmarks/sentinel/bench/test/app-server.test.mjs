@@ -112,3 +112,10 @@ test('SIMULATED: stop escalates unresponsive process and stays bounded', async (
   const f = fake(); await f.server.start(); f.p.kill = signal => { f.kills.push(signal); return true; };
   const start = Date.now(); await f.server.stop(); assert.ok(Date.now() - start < 2200); assert.deepEqual(f.kills, ['SIGTERM', 'SIGKILL']);
 });
+
+test('SIMULATED: a signalled PID without code or signal is not a confirmed direct child exit',async()=>{
+ const f=fake();f.p.pid=123456;f.p.kill=signal=>{f.kills.push(signal);return true;};
+ await f.server.start();
+ await assert.rejects(f.server.stop(),error=>error.code==='APP_SERVER_EXIT_UNCONFIRMED');
+ assert.deepEqual(f.kills,['SIGTERM','SIGKILL']);
+});

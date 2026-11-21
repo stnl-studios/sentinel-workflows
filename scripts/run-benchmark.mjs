@@ -9,12 +9,16 @@ function blockers(base){const hits=[];function walk(dir){if(!fs.existsSync(dir))
 function jsonOnce(file,x){fs.writeFileSync(file,JSON.stringify(x,null,2)+'\n',{flag:'wx',mode:0o600});}
 export function prepareLaunch({repo=repositoryRoot,argv=[]}={}){
  repo=path.resolve(repo);safePath(repo,'.');const [command,...args]=argv,allowed=new Set(['run','status','report','resume','validate-profile','compare','qualify','test']);if(!allowed.has(command))throw Error('Usage: run | status | report | resume | validate-profile | compare | qualify | test');if(command==='test'&&args.length)throw Error('test takes no arguments');
- const base=safePath(repo,'benchmark-temp/benchmark-v2'),source=safePath(repo,'benchmarks/sentinel');fs.mkdirSync(base,{recursive:true});for(const n of ['temp','evidence','launcher-logs','launcher-leases'])fs.mkdirSync(safePath(base,n),{recursive:true});
+ if(command==='run'&&args.some((arg,i)=>i%2===0&&/^--concurrency(?:=|$)/.test(arg)))throw Error('REMOVED_CONCURRENCY_OPTION: benchmark always uses three slots');
+ const base=safePath(repo,'benchmark-temp/benchmark-v2'),source=safePath(repo,'benchmarks/sentinel');
+ // Block before spawning (including an older installed runtime) or creating runtime files.
+ if(command==='resume')throw Error('PUBLIC_BENCHMARK_RESUME_DISABLED: inspect status/report; process ownership must be reconciled first');
+ fs.mkdirSync(base,{recursive:true});for(const n of ['temp','evidence','launcher-logs','launcher-leases'])fs.mkdirSync(safePath(base,n),{recursive:true});
  const lock=safePath(base,'.launcher-install.lock');jsonOnce(lock,{pid:process.pid,at:new Date().toISOString()});let lease=null;
  try{
   const record=safePath(base,'launcher-install.json'),exists=fs.existsSync(record),stored=exists?JSON.parse(fs.readFileSync(record)):null;
   if(exists&&digest(snapshot(base))!==stored.contentDigest)throw Error('INSTALLED_IDENTITY_UNCERTAIN');
-  const existingOnly=['status','report','resume'].includes(command);if(existingOnly&&!exists)throw Error('EXISTING_RUNTIME_REQUIRED');
+  const existingOnly=['status','report'].includes(command);if(existingOnly&&!exists)throw Error('EXISTING_RUNTIME_REQUIRED');
   let desired=stored?.content,sourceBefore=null;
   if(!existingOnly){sourceBefore=snapshot(source);desired=sourceBefore;}
   let action='unchanged';
@@ -29,6 +33,8 @@ export function prepareLaunch({repo=repositoryRoot,argv=[]}={}){
    const next={schemaVersion:1,sourceRoot:source,content:desired,contentDigest:digest(desired),installedAt:new Date().toISOString()};const tmp=record+'.'+randomUUID();jsonOnce(tmp,next);fs.renameSync(tmp,record);action=exists?'upgraded':'installed';
   }
   if(sourceBefore&&digest(snapshot(source))!==digest(sourceBefore))throw Error('SOURCE_CHANGED');
+  // The installer lock serializes this guard with new launcher leases. A new ID does not clear old ownership.
+  if(command==='run'&&blockers(base).length)throw Error('CAMPAIGN_RUNTIME_BUSY_OR_UNCERTAIN');
   const mapped=[...args];for(let i=0;i<mapped.length;i++)if(['--profile','--input','--qualification'].includes(mapped[i])){if(!mapped[i+1])throw Error('MISSING_FILE_ARGUMENT');const input=safePath(mapped[i]==='--profile'?repo:base,mapped[i+1]);if(!fs.statSync(input).isFile())throw Error('FILE_REQUIRED');mapped[++i]=input;}
   if(['run','validate-profile'].includes(command)&&!mapped.includes('--profile'))mapped.push('--profile',path.join(base,'bench/profiles/reference-v5-observe.json'));
   if(command==='run'&&!mapped.includes('--id')){const id='run-'+new Date().toISOString().replace(/[^0-9]/g,'')+'-'+randomUUID().slice(0,8);mapped.push('--id',id);console.log('Benchmark ID: '+id);}
