@@ -58,7 +58,10 @@ export class AppServer {
         if (threadId && turn?.id) {
           this.completed.set(key(threadId, turn.id), turn);
           if (this.completed.size > 256) this.completed.delete(this.completed.keys().next().value);
-          if (this.active?.threadId === threadId && this.active.turnId === turn.id) this.active.terminal.resolve(turn);
+          if (this.active?.threadId === threadId && this.active.turnId === turn.id) {
+            if (turn.status === 'interrupted') this.active.timing.providerInterruptedAt ??= Date.now();
+            this.active.terminal.resolve(turn);
+          }
         }
       }
       return;
@@ -109,16 +112,24 @@ export class AppServer {
   resumeThread(params) { return this.request('thread/resume', { cwd: this.cwd, approvalPolicy: 'never', sandbox: 'workspace-write', ...params }); }
   async readThread(threadId) { return clean(await this.request('thread/read', { threadId, includeTurns: true })); }
   modelList() { return this.request('model/list', {}); }
-  async runTurn({ threadId, input, model, effort, deadline = Date.now() + 900000, onAccepted = () => {}, signal }) {
+  async runTurn({ threadId, input, model, effort, deadline = Date.now() + 900000, onAccepted = () => {}, signal, timing = {} }) {
     if (this.active) throw Error('Only one active turn per adapter');
     const remaining = Number(new Date(deadline)) - Date.now();
     if (!Number.isFinite(remaining)) throw Error('Invalid turn deadline');
-    if (signal?.aborted || remaining <= 0) return { threadId, turnId: null, status: 'interrupted', turn: null };
-    const active = { threadId, turnId: null, terminal: deferred(), interrupted: false };
+    if (signal?.aborted || remaining <= 0) {
+      timing.interruptRpcOutcome = 'not-dispatched';
+      return { threadId, turnId: null, status: 'interrupted', turn: null };
+    }
+    const active = { threadId, turnId: null, terminal: deferred(), interrupted: false, timing };
     this.active = active;
     const interruption = deferred();
-    const abort = () => { active.interrupted = true; interruption.resolve({ status: 'interrupted' }); };
-    const timer = setTimeout(abort, remaining); signal?.addEventListener('abort', abort, { once: true });
+    const abort = source => {
+      timing.adapterAbortAt ??= Date.now(); timing.adapterAbortSource ??= source;
+      active.interrupted = true; interruption.resolve({ status: 'interrupted' });
+    };
+    const onSignal = () => abort('signal');
+    const timer = setTimeout(() => abort('adapter-deadline'), remaining);
+    signal?.addEventListener('abort', onSignal, { once: true });
     try {
       const ack = await Promise.race([
         this.request('turn/start', { threadId, input, ...(model ? { model } : {}), ...(effort ? { effort } : {}) }, { timeoutMs: Math.max(1, Math.min(30000, remaining)) }),
@@ -137,10 +148,20 @@ export class AppServer {
       active.interrupted = true;
       return { threadId, turnId: active.turnId, status: 'interrupted', turn: null, error: error.message };
     } finally {
-      clearTimeout(timer); signal?.removeEventListener('abort', abort);
+      clearTimeout(timer); signal?.removeEventListener('abort', onSignal);
       if (active.interrupted) {
-        if (active.turnId && !this.closed) await this.request('turn/interrupt', { threadId, turnId: active.turnId }, { timeoutMs: 500 }).catch(() => {});
+        if (active.turnId && !this.closed) {
+          timing.interruptRpcAttemptedAt = Date.now();
+          try {
+            await this.request('turn/interrupt', { threadId, turnId: active.turnId }, { timeoutMs: 500 });
+            timing.interruptRpcOutcome = 'acknowledged';
+          } catch (error) {
+            timing.interruptRpcOutcome = error.message === 'JSON-RPC timeout: turn/interrupt' ? 'timeout' : 'failed';
+          }
+          timing.interruptRpcSettledAt = Date.now();
+        } else timing.interruptRpcOutcome = active.turnId ? 'transport-closed' : 'turn-identity-unknown';
         await this.stop();
+        timing.adapterStoppedAt = Date.now();
       }
       this.active = null;
     }

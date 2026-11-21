@@ -51,9 +51,42 @@ test('SIMULATED: abort wins completed event during acceptance and interrupts', a
 });
 test('SIMULATED: deadline without acknowledgement stops uncertain dispatch', async () => {
   const f = fake(); await f.server.start();
-  const r = await f.server.runTurn({ threadId: 't', input: [], deadline: Date.now() + 15 });
+  const timing = {};
+  const r = await f.server.runTurn({ threadId: 't', input: [], deadline: Date.now() + 15, timing });
   assert.equal(r.status, 'interrupted'); assert.equal(r.turnId, null); assert.ok(f.kills.length);
+  assert.equal(timing.adapterAbortSource, 'adapter-deadline');
+  assert.equal(timing.interruptRpcOutcome, 'turn-identity-unknown');
+  assert.equal(timing.interruptRpcAttemptedAt, undefined);
+  assert.equal(timing.providerInterruptedAt, undefined);
 });
+test('SIMULATED: interruption receipt separates provider notification from RPC acknowledgment and timeout', async () => {
+  for (const acknowledge of [true, false]) {
+    const ac = new AbortController(), timing = {};
+    const f = fake((m, send) => {
+      if (m.method === 'turn/start') send({ id: m.id, result: { turn: { id: 'bound' } } });
+      if (m.method === 'turn/interrupt') {
+        send({ method: 'turn/completed', params: { threadId: 't', turn: { id: 'foreign', status: 'interrupted' } } });
+        if (acknowledge) {
+          send({ method: 'turn/completed', params: { threadId: 't', turn: { id: 'bound', status: 'interrupted' } } });
+          setTimeout(() => send({ id: m.id, result: {} }), 5);
+        }
+      }
+    });
+    await f.server.start();
+    const r = await f.server.runTurn({ threadId: 't', input: [], timing, signal: ac.signal, onAccepted: () => ac.abort() });
+    assert.equal(r.status, 'interrupted');
+    assert.equal(timing.adapterAbortSource, 'signal');
+    assert.equal(timing.interruptRpcOutcome, acknowledge ? 'acknowledged' : 'timeout');
+    assert.ok(timing.adapterAbortAt <= timing.interruptRpcAttemptedAt);
+    assert.ok(timing.interruptRpcAttemptedAt <= timing.interruptRpcSettledAt);
+    assert.ok(timing.interruptRpcSettledAt <= timing.adapterStoppedAt);
+    if (acknowledge) {
+      assert.ok(timing.interruptRpcAttemptedAt <= timing.providerInterruptedAt);
+      assert.ok(timing.providerInterruptedAt <= timing.interruptRpcSettledAt);
+    } else assert.equal(timing.providerInterruptedAt, undefined);
+  }
+});
+
 test('SIMULATED: request errors/timeouts and process exit settle pending work', async () => {
   const f = fake((m, send) => { if (m.method === 'reject') send({ id: m.id, error: { code: -1, message: 'rejected' } }); });
   await f.server.start(); await assert.rejects(f.server.request('reject', {}), /rejected/);
