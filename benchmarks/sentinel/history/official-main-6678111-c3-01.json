@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "id": "official-main-6678111-c3-01",
+  "classification": "official",
+  "sentinelRevision": "6678111558a798a0ad5666d3deb2ad2872f70526",
+  "benchmarkEngineDigest": "0e50a2ff29b10a1e3f46dd965c29c336278788e385a35f8b0dfd7069ebf9efc4",
+  "profileDigest": "6bc1dbfa8eeafbd341ba78ae578be148b40ce4fb7f887d45991330579ec15984",
+  "fixtureDigest": "0214744b5442a4df52f71b3392b2ab6531cd34fa25b93b5a4b58cb1504c731fe",
+  "scenarioOracleDigest": "b48cc865c84f048c497ec1ee88d35d4b3f69c4f8aa2da3d1e01d1465c9d0f929",
+  "cliVersion": "0.163.0",
+  "startedAt": "2026-11-21T21:27:31.520Z",
+  "finishedAt": "2026-11-21T22:39:09.889Z",
+  "elapsedMs": 4298369,
+  "casesPassed": 6,
+  "casesPlanned": 6,
+  "concurrency": {
+    "configuredSlots": 3,
+    "peakOverlappingCompletedTurns": 3,
+    "completedTurnWindows": 49,
+    "threeTurnOverlapMs": 2921497
+  },
+  "tokens": {
+    "scope": "observed-provider-reports-only",
+    "unreportedUsagePossible": true,
+    "inputTokens": 60301983,
+    "cachedInputTokens": 56126720,
+    "cacheWriteInputTokens": 0,
+    "outputTokens": 447328,
+    "reasoningOutputTokens": 56535,
+    "totalTokens": 60749311,
+    "freshInputTokens": 4175263,
+    "missingObservedFieldCellReports": 0,
+    "partialObservedFieldCellReports": 0,
+    "observedResponses": 1058,
+    "unmappedObservedResponses": 0,
+    "excludedResponses": 0
+  },
+  "cases": [
+    {
+      "scenario": "rename",
+      "repetition": 1,
+      "status": "PASS",
+      "closed": true,
+      "oracle": "PASS",
+      "runnerContract": "MATCH",
+      "measurement": "official",
+      "elapsedMs": 1524145,
+      "tokens": {
+        "inputTokens": 8603938,
+        "cachedInputTokens": 8049408,
+        "cacheWriteInputTokens": 0,
+        "outputTokens": 64991,
+        "reasoningOutputTokens": 8699,
+        "totalTokens": 8668929,
+        "freshInputTokens": 554530
+      },
+      "completedHarnessTurns": 7,
+      "observedResponses": 149
+    },
+    {
+      "scenario": "query",
+      "repetition": 1,
+      "status": "PASS",
+      "closed": true,
+      "oracle": "PASS",
+      "runnerContract": "MATCH",
+      "measurement": "official",
+      "elapsedMs": 1827278,
+      "tokens": {
+        "inputTokens": 9775659,
+        "cachedInputTokens": 9137408,
+        "cacheWriteInputTokens": 0,
+        "outputTokens": 79623,
+        "reasoningOutputTokens": 10871,
+        "totalTokens": 9855282,
+        "freshInputTokens": 638251
+      },
+      "completedHarnessTurns": 8,
+      "observedResponses": 164
+    },
+    {
+      "scenario": "import",
+      "repetition": 1,
+      "status": "PASS",
+      "closed": true,
+      "oracle": "PASS",
+      "runnerContract": "MATCH",
+      "measurement": "official",
+      "elapsedMs": 2109320,
+      "tokens": {
+        "inputTokens": 12010121,
+        "cachedInputTokens": 11075200,
+        "cacheWriteInputTokens": 0,
+        "outputTokens": 88328,
+        "reasoningOutputTokens": 10019,
+        "totalTokens": 12098449,
+        "freshInputTokens": 934921
+      },
+      "completedHarnessTurns": 10,
+      "observedResponses": 213
+    },
+    {
+      "scenario": "rename",
+      "repetition": 2,
+      "status": "PASS",
+      "closed": true,
+      "oracle": "PASS",
+      "runnerContract": "MATCH",
+      "measurement": "official",
+      "elapsedMs": 1431835,
+      "tokens": {
+        "inputTokens": 8395580,
+        "cachedInputTokens": 7824640,
+        "cacheWriteInputTokens": 0,
+        "outputTokens": 59108,
+        "reasoningOutputTokens": 7566,
+        "totalTokens": 8454688,
+        "freshInputTokens": 570940
+      },
+      "completedHarnessTurns": 7,
+      "observedResponses": 152
+    },
+    {
+      "scenario": "query",
+      "repetition": 2,
+      "status": "PASS",
+      "closed": true,
+      "oracle": "PASS",
+      "runnerContract": "MATCH",
+      "measurement": "official",
+      "elapsedMs": 1512494,
+      "tokens": {
+        "inputTokens": 8300296,
+        "cachedInputTokens": 7738240,
+        "cacheWriteInputTokens": 0,
+        "outputTokens": 63736,
+        "reasoningOutputTokens": 7917,
+        "totalTokens": 8364032,
+        "freshInputTokens": 562056
+      },
+      "completedHarnessTurns": 7,
+      "observedResponses": 153
+    },
+    {
+      "scenario": "import",
+      "repetition": 2,
+      "status": "PASS",
+      "closed": true,
+      "oracle": "PASS",
+      "runnerContract": "MATCH",
+      "measurement": "official",
+      "elapsedMs": 2187402,
+      "tokens": {
+        "inputTokens": 13216389,
+        "cachedInputTokens": 12301824,
+        "cacheWriteInputTokens": 0,
+        "outputTokens": 91542,
+        "reasoningOutputTokens": 11463,
+        "totalTokens": 13307931,
+        "freshInputTokens": 914565
+      },
+      "completedHarnessTurns": 10,
+      "observedResponses": 227
+    }
+  ]
+}
