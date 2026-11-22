@@ -45,3 +45,27 @@ test('two-line proof refuses non-template shell and incomplete or unrelated evid
   assert.notEqual(collectRunnerContractProof(f).status,'MATCH',kind);
  }
 });
+
+test('literal compound canonical read plus exact trailing digest matches for both hash commands',t=>{
+ for(const hashCommand of ['shasum -a 256','sha256sum'])for(const wrapped of [true,false]){
+  const f=fixture(t),text=fs.readFileSync(f.file,'utf8'),cmd='cat '+f.file+' && '+hashCommand+' '+f.file;
+  f.events=[row(wrapped?"/bin/zsh -lc '"+cmd+"'":cmd,text+sha256(text)+'  '+f.file+'\n')];
+  const r=collectRunnerContractProof(f);
+  assert.equal(r.status,'MATCH');
+  assert.equal(r.children[0].evidence[0].byteProof,'full-output-exact-with-trailing-source-digest');
+ }
+});
+test('compound proof refuses altered output, wrong source, unrelated child and extra shell',t=>{
+ const changes=['other-source','different-digest-path','wrong-hash','short','suffix','extra','nonzero','outside-thread','symlink'];
+ for(const variant of changes)for(const hashCommand of ['shasum -a 256','sha256sum']){
+  const f=fixture(t),text=fs.readFileSync(f.file,'utf8'),other=path.join(f.base,'stnl_validation_runner.toml');
+  fs.writeFileSync(other,text);
+  const source=variant==='other-source'?other:f.file, digestPath=variant==='different-digest-path'?other:source;
+  const command='cat '+source+' && '+hashCommand+' '+digestPath+(variant==='extra'?' && echo extra':'');
+  const hash=variant==='wrong-hash'?'0'.repeat(64):sha256(text);
+  const output=(variant==='short'?text.slice(0,-1):text)+hash+'  '+digestPath+'\n'+(variant==='suffix'?'extra\n':'');
+  if(variant==='symlink'){fs.unlinkSync(f.file);fs.symlinkSync(other,f.file);}
+  f.events=[row("/bin/zsh -lc '"+command+"'",output,{threadId:variant==='outside-thread'?'other':'child',exitCode:variant==='nonzero'?1:0})];
+  assert.notEqual(collectRunnerContractProof(f).status,'MATCH',hashCommand+': '+variant);
+ }
+});

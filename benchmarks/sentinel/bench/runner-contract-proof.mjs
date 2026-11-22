@@ -5,11 +5,14 @@ const NAME='stnl_validation_runner.toml';
 const ROLES=new Set(['execute_check','formal_validate']);
 function canonicalFile(file){if(!path.isAbsolute(file))throw Error('absolute path required');const normalized=path.normalize(file);let current=path.parse(normalized).root;for(const part of normalized.slice(current.length).split(path.sep)){current=path.join(current,part);if(fs.lstatSync(current).isSymbolicLink())throw Error('symlink path');}return normalized;}
 function reads(command,source){
- // Observed two-line frame only: canonical literal source, no shell expansion,
- // quoting variants, extra commands or arguments. All other multiline is refused.
+ // Observed literal frames only: canonical source repeated exactly, no shell
+ // expansion, quoting variants, extra commands or arguments.
  if(typeof source==='string'&&/^\/[A-Za-z0-9_./-]+$/.test(source)){
-  const body='cat '+source+'\nshasum -a 256 '+source;
-  if(command===body||command==="/bin/zsh -lc '"+body+"'")return[{file:source,kind:'full-digest'}];
+  const frames=['\nshasum -a 256 ',' && shasum -a 256 ',' && sha256sum '];
+  for(const separator of frames){
+   const body='cat '+source+separator+source;
+   if(command===body||command==="/bin/zsh -lc '"+body+"'")return[{file:source,kind:'full-digest'}];
+  }
  }
  // Only literal cat /path and sed -n 'N,Mp' /path. No inferred reads from comments,
  // hashes alone, variable expansion, redirects or dynamically constructed commands.
