@@ -69,3 +69,33 @@ test('compound proof refuses altered output, wrong source, unrelated child and e
   assert.notEqual(collectRunnerContractProof(f).status,'MATCH',hashCommand+': '+variant);
  }
 });
+
+test('observed literal leading digest and semicolon trailing digest prove complete canonical bytes',t=>{
+ for(const variant of ['bare','wrapped','quoted','trailing']){
+  const f=fixture(t),text=fs.readFileSync(f.file,'utf8'),digest=sha256(text)+'  '+f.file+'\n',body='shasum -a 256 '+f.file+' && cat '+f.file;
+  const command={bare:body,wrapped:"/bin/zsh -lc '"+body+"'",quoted:`/bin/zsh -lc "shasum -a 256 '${f.file}' && cat '${f.file}'"`,trailing:"/bin/zsh -lc 'cat "+f.file+"; shasum -a 256 "+f.file+"'"}[variant];
+  f.events=[row(command,variant==='trailing'?text+digest:digest+text)];
+  const proof=collectRunnerContractProof(f);
+  assert.equal(proof.status,'MATCH',variant);
+  assert.equal(proof.children[0].evidence[0].byteProof,'full-output-exact-with-'+(variant==='trailing'?'trailing':'leading')+'-source-digest');
+ }
+});
+test('new literal frames reject altered or unproven evidence',t=>{
+ for(const variant of ['wrong-sha','wrong-digest-path','wrong-read-path','wrong-checksum-source','truncated','missing-linebreak','extra-output','extra-command','extra-delimiter','failed','other-child','started','symlink','hash-only'])for(const trailing of [false,true]){
+  const f=fixture(t),text=fs.readFileSync(f.file,'utf8'),other=f.file+'.other';fs.writeFileSync(other,text);
+  const digest=(variant==='wrong-sha'?'0'.repeat(64):sha256(text))+'  '+(variant==='wrong-digest-path'?other:f.file)+(variant==='missing-linebreak'?'':'\n');
+  const read='cat '+(variant==='wrong-read-path'?other:f.file),sha='shasum -a 256 '+(variant==='wrong-checksum-source'?other:f.file);
+  let body=trailing?read+'; '+sha:sha+' && '+read;
+  if(variant==='extra-command')body+='; echo extra';
+  if(variant==='extra-delimiter')body=body.replace(trailing?'; ':' && ',trailing?';; ':' && && ');
+  if(variant==='hash-only')body=sha;
+  let output=trailing?text+digest:digest+text;
+  if(variant==='truncated')output=output.slice(1);
+  if(variant==='extra-output')output+='extra';
+  if(variant==='hash-only')output=digest;
+  if(variant==='symlink'){fs.unlinkSync(f.file);fs.symlinkSync(other,f.file);}
+  f.events=[row("/bin/zsh -lc '"+body+"'",output,{threadId:variant==='other-child'?'other':'child',exitCode:variant==='failed'?1:0})];
+  if(variant==='started')f.events[0].payload.method='item/started';
+  assert.notEqual(collectRunnerContractProof(f).status,'MATCH',variant);
+ }
+});
