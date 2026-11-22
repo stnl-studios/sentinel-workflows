@@ -1,0 +1,1937 @@
+{
+  "schemaVersion": 1,
+  "kind": "experimental-posthoc",
+  "verifierSha256": "65c828c4beb06e41f2e1ed6da37a587a3a4aaf466f3baaa42fb8246d81a32890",
+  "profiles": [
+    {
+      "name": "basic",
+      "id": "exp-basic-c3-v2",
+      "elapsedMs": 3505453,
+      "identity": {
+        "engine": "c252eec28d6872b22da4ac5f45452e80760868a935de0c93685ed77b840fc6dd",
+        "fixture": "0214744b5442a4df52f71b3392b2ab6531cd34fa25b93b5a4b58cb1504c731fe",
+        "scenarioOracle": "b48cc865c84f048c497ec1ee88d35d4b3f69c4f8aa2da3d1e01d1465c9d0f929",
+        "source": "37601c0a237e61fef91504fc1acd0d60c73a60b4ce9d49dbe711a24aa4b681cd",
+        "profile": "d18c8da3bcaf831a704b376a91e1066433f774a81537c63b2b505bf633b1eb69",
+        "concurrency": 3,
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "contextPolicy": "stage",
+        "adapterProtocol": "sentinel-app-server-public-v1"
+      },
+      "config": {
+        "schemaVersion": 1,
+        "id": "exp-basic-c3-v2",
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "roles": {
+          "coordinator": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "plan_approver": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "plan_review": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "formal_validate": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "execute_check": {
+            "model": "gpt-6-luna",
+            "effort": "medium"
+          },
+          "execute_coordinator": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          }
+        },
+        "repetitions": 2,
+        "concurrency": 3,
+        "limits": {
+          "campaignMs": 14400000,
+          "caseMs": 2400000,
+          "turnMs": 900000,
+          "maxTurns": 20,
+          "maxNoProgress": 2,
+          "tokenPolicy": "observe-only"
+        },
+        "contextPolicy": "stage",
+        "stageRoles": {
+          "EXECUTE_SLICE": "execute_coordinator",
+          "APPLY_FINDINGS": "execute_coordinator"
+        },
+        "caseOverrides": {
+          "rename": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6-luna",
+                "effort": "medium"
+              }
+            }
+          },
+          "query": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6.1-terra",
+                "effort": "medium"
+              }
+            }
+          },
+          "import": {
+            "limits": {
+              "caseMs": 3000000,
+              "turnMs": 1800000
+            }
+          }
+        },
+        "suiteCases": [
+          "rename",
+          "query",
+          "import"
+        ]
+      },
+      "reportedTokens": 38510338,
+      "nativeFunctionalPass": 3,
+      "nativeProofQualifiedPass": 3,
+      "offlineProofQualifiedPass": 3,
+      "cases": [
+        {
+          "scenario": "rename",
+          "repetition": 1,
+          "elapsedMs": 672536,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 5,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 2190801,
+            "cache": 1939456,
+            "fresh": 251345,
+            "output": 29007,
+            "reasoning": 4668,
+            "total": 2219808,
+            "observedResponses": 64,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "query",
+          "repetition": 1,
+          "elapsedMs": 1246524,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 7,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 6639908,
+            "cache": 6098432,
+            "fresh": 541476,
+            "output": 51817,
+            "reasoning": 6044,
+            "total": 6691725,
+            "observedResponses": 146,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "rename",
+          "repetition": 2,
+          "elapsedMs": 797852,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 5,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 2562657,
+            "cache": 2271872,
+            "fresh": 290785,
+            "output": 33019,
+            "reasoning": 5935,
+            "total": 2595676,
+            "observedResponses": 68,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "query",
+          "repetition": 2,
+          "elapsedMs": 654795,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 5,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 2675456,
+            "cache": 2333568,
+            "fresh": 341888,
+            "output": 25524,
+            "reasoning": 1682,
+            "total": 2700980,
+            "observedResponses": 73,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "import",
+          "repetition": 1,
+          "elapsedMs": 2025222,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 10,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 12198239,
+            "cache": 11234944,
+            "fresh": 963295,
+            "output": 70196,
+            "reasoning": 7345,
+            "total": 12268435,
+            "observedResponses": 222,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "import",
+          "repetition": 2,
+          "elapsedMs": 2032922,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 11,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 11952662,
+            "cache": 11055360,
+            "fresh": 897302,
+            "output": 81052,
+            "reasoning": 7683,
+            "total": 12033714,
+            "observedResponses": 221,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "balanced",
+      "id": "exp-balanced-c3-v2",
+      "elapsedMs": 2877505,
+      "identity": {
+        "engine": "c252eec28d6872b22da4ac5f45452e80760868a935de0c93685ed77b840fc6dd",
+        "fixture": "0214744b5442a4df52f71b3392b2ab6531cd34fa25b93b5a4b58cb1504c731fe",
+        "scenarioOracle": "b48cc865c84f048c497ec1ee88d35d4b3f69c4f8aa2da3d1e01d1465c9d0f929",
+        "source": "37601c0a237e61fef91504fc1acd0d60c73a60b4ce9d49dbe711a24aa4b681cd",
+        "profile": "5e114fee702f9080f07cf45cb8ff0de0702c728edba090ad3c6c7ad84ff54eb6",
+        "concurrency": 3,
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "contextPolicy": "stage",
+        "adapterProtocol": "sentinel-app-server-public-v1"
+      },
+      "config": {
+        "schemaVersion": 1,
+        "id": "exp-balanced-c3-v2",
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "roles": {
+          "coordinator": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "plan_approver": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "plan_review": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "formal_validate": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "execute_check": {
+            "model": "gpt-6-luna",
+            "effort": "high"
+          },
+          "execute_coordinator": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          }
+        },
+        "repetitions": 2,
+        "concurrency": 3,
+        "limits": {
+          "campaignMs": 14400000,
+          "caseMs": 2400000,
+          "turnMs": 900000,
+          "maxTurns": 20,
+          "maxNoProgress": 2,
+          "tokenPolicy": "observe-only"
+        },
+        "contextPolicy": "stage",
+        "stageRoles": {
+          "EXECUTE_SLICE": "execute_coordinator",
+          "APPLY_FINDINGS": "execute_coordinator"
+        },
+        "caseOverrides": {
+          "rename": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6-luna",
+                "effort": "high"
+              }
+            }
+          },
+          "query": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6.1-terra",
+                "effort": "medium"
+              }
+            }
+          },
+          "import": {
+            "limits": {
+              "caseMs": 3000000,
+              "turnMs": 1800000
+            }
+          }
+        },
+        "suiteCases": [
+          "rename",
+          "query",
+          "import"
+        ]
+      },
+      "reportedTokens": 32947473,
+      "nativeFunctionalPass": 2,
+      "nativeProofQualifiedPass": 2,
+      "offlineProofQualifiedPass": 2,
+      "cases": [
+        {
+          "scenario": "query",
+          "repetition": 1,
+          "elapsedMs": 373636,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "model-output",
+          "failureCode": "INVALID_CURRENT_IMAGE",
+          "completedHarnessTurns": 4,
+          "native": {
+            "contract": "NOT_APPLICABLE",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "NOT_APPLICABLE",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 1129472,
+            "cache": 1060480,
+            "fresh": 68992,
+            "output": 14479,
+            "reasoning": 1032,
+            "total": 1143951,
+            "observedResponses": 29,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "rename",
+          "repetition": 1,
+          "elapsedMs": 1043482,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 6,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 3572661,
+            "cache": 3181056,
+            "fresh": 391605,
+            "output": 45907,
+            "reasoning": 12539,
+            "total": 3618568,
+            "observedResponses": 90,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "rename",
+          "repetition": 2,
+          "elapsedMs": 835003,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 5,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 2698641,
+            "cache": 2392064,
+            "fresh": 306577,
+            "output": 36049,
+            "reasoning": 8638,
+            "total": 2734690,
+            "observedResponses": 76,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "query",
+          "repetition": 2,
+          "elapsedMs": 718608,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 5,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 2799541,
+            "cache": 2538752,
+            "fresh": 260789,
+            "output": 29213,
+            "reasoning": 2963,
+            "total": 2828754,
+            "observedResponses": 74,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "import",
+          "repetition": 1,
+          "elapsedMs": 1858287,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 11,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 12565713,
+            "cache": 11596672,
+            "fresh": 969041,
+            "output": 74306,
+            "reasoning": 10044,
+            "total": 12640019,
+            "observedResponses": 229,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "import",
+          "repetition": 2,
+          "elapsedMs": 1666820,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 9,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 9914496,
+            "cache": 9019264,
+            "fresh": 895232,
+            "output": 66995,
+            "reasoning": 6923,
+            "total": 9981491,
+            "observedResponses": 195,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "balanced-sol62",
+      "id": "exp-balanced-sol62-c3-v2",
+      "elapsedMs": 1937544,
+      "identity": {
+        "engine": "c252eec28d6872b22da4ac5f45452e80760868a935de0c93685ed77b840fc6dd",
+        "fixture": "0214744b5442a4df52f71b3392b2ab6531cd34fa25b93b5a4b58cb1504c731fe",
+        "scenarioOracle": "b48cc865c84f048c497ec1ee88d35d4b3f69c4f8aa2da3d1e01d1465c9d0f929",
+        "source": "37601c0a237e61fef91504fc1acd0d60c73a60b4ce9d49dbe711a24aa4b681cd",
+        "profile": "9764e4ec62fc4eb18ac9521fd6e98ba2e17fedd8783416dca1d32384d2d13bef",
+        "concurrency": 3,
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "contextPolicy": "stage",
+        "adapterProtocol": "sentinel-app-server-public-v1"
+      },
+      "config": {
+        "schemaVersion": 1,
+        "id": "exp-balanced-sol62-c3-v2",
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "roles": {
+          "coordinator": {
+            "model": "gpt-6.2-sol",
+            "effort": "medium"
+          },
+          "plan_approver": {
+            "model": "gpt-6.2-sol",
+            "effort": "medium"
+          },
+          "plan_review": {
+            "model": "gpt-6.2-sol",
+            "effort": "medium"
+          },
+          "formal_validate": {
+            "model": "gpt-6.2-sol",
+            "effort": "medium"
+          },
+          "execute_check": {
+            "model": "gpt-6-luna",
+            "effort": "high"
+          },
+          "execute_coordinator": {
+            "model": "gpt-6.2-sol",
+            "effort": "medium"
+          }
+        },
+        "repetitions": 2,
+        "concurrency": 3,
+        "limits": {
+          "campaignMs": 14400000,
+          "caseMs": 2400000,
+          "turnMs": 900000,
+          "maxTurns": 20,
+          "maxNoProgress": 2,
+          "tokenPolicy": "observe-only"
+        },
+        "contextPolicy": "stage",
+        "stageRoles": {
+          "EXECUTE_SLICE": "execute_coordinator",
+          "APPLY_FINDINGS": "execute_coordinator"
+        },
+        "caseOverrides": {
+          "rename": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6-luna",
+                "effort": "high"
+              }
+            }
+          },
+          "query": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6.1-terra",
+                "effort": "medium"
+              }
+            }
+          },
+          "import": {
+            "limits": {
+              "caseMs": 3000000,
+              "turnMs": 1800000
+            }
+          }
+        },
+        "suiteCases": [
+          "rename",
+          "query",
+          "import"
+        ]
+      },
+      "reportedTokens": 23188521,
+      "nativeFunctionalPass": 1,
+      "nativeProofQualifiedPass": 1,
+      "offlineProofQualifiedPass": 1,
+      "cases": [
+        {
+          "scenario": "import",
+          "repetition": 1,
+          "elapsedMs": 502277,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "REVIEWED_PLAN_NOT_ACTIVATED",
+          "completedHarnessTurns": 4,
+          "native": {
+            "contract": "NOT_APPLICABLE",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "NOT_APPLICABLE",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 2152995,
+            "cache": 1885184,
+            "fresh": 267811,
+            "output": 20771,
+            "reasoning": 1799,
+            "total": 2173766,
+            "observedResponses": 56,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "query",
+          "repetition": 1,
+          "elapsedMs": 1104342,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 7,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 6809623,
+            "cache": 6200192,
+            "fresh": 609431,
+            "output": 46888,
+            "reasoning": 4878,
+            "total": 6856511,
+            "observedResponses": 146,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "rename",
+          "repetition": 1,
+          "elapsedMs": 1147800,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 5,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 3768061,
+            "cache": 3382912,
+            "fresh": 385149,
+            "output": 36902,
+            "reasoning": 7316,
+            "total": 3804963,
+            "observedResponses": 92,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "query",
+          "repetition": 2,
+          "elapsedMs": 505524,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "REVIEWED_PLAN_NOT_ACTIVATED",
+          "completedHarnessTurns": 4,
+          "native": {
+            "contract": "NOT_APPLICABLE",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "NOT_APPLICABLE",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 1910758,
+            "cache": 1676032,
+            "fresh": 234726,
+            "output": 19994,
+            "reasoning": 2398,
+            "total": 1930752,
+            "observedResponses": 54,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "import",
+          "repetition": 2,
+          "elapsedMs": 504552,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "REVIEWED_PLAN_NOT_ACTIVATED",
+          "completedHarnessTurns": 4,
+          "native": {
+            "contract": "NOT_APPLICABLE",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "NOT_APPLICABLE",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 1876695,
+            "cache": 1623296,
+            "fresh": 253399,
+            "output": 21276,
+            "reasoning": 1911,
+            "total": 1897971,
+            "observedResponses": 51,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "rename",
+          "repetition": 2,
+          "elapsedMs": 1433784,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "budget",
+          "failureCode": "TURN_DEADLINE",
+          "completedHarnessTurns": 5,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 6455867,
+            "cache": 5974528,
+            "fresh": 481339,
+            "output": 68691,
+            "reasoning": 20618,
+            "total": 6524558,
+            "observedResponses": 136,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "astra-medium",
+      "id": "exp-astra-medium-c3-v2",
+      "elapsedMs": 3299600,
+      "identity": {
+        "engine": "c252eec28d6872b22da4ac5f45452e80760868a935de0c93685ed77b840fc6dd",
+        "fixture": "0214744b5442a4df52f71b3392b2ab6531cd34fa25b93b5a4b58cb1504c731fe",
+        "scenarioOracle": "b48cc865c84f048c497ec1ee88d35d4b3f69c4f8aa2da3d1e01d1465c9d0f929",
+        "source": "37601c0a237e61fef91504fc1acd0d60c73a60b4ce9d49dbe711a24aa4b681cd",
+        "profile": "0e5d7c0d86b7c8344c16f24494bdd2610ed2e9e517784a827b2cdd29eef838a9",
+        "concurrency": 3,
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "contextPolicy": "stage",
+        "adapterProtocol": "sentinel-app-server-public-v1"
+      },
+      "config": {
+        "schemaVersion": 1,
+        "id": "exp-astra-medium-c3-v2",
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "roles": {
+          "coordinator": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "plan_approver": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "plan_review": {
+            "model": "gpt-6-astra",
+            "effort": "medium"
+          },
+          "formal_validate": {
+            "model": "gpt-6-astra",
+            "effort": "medium"
+          },
+          "execute_check": {
+            "model": "gpt-6-luna",
+            "effort": "medium"
+          },
+          "execute_coordinator": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "planner": {
+            "model": "gpt-6-astra",
+            "effort": "medium"
+          }
+        },
+        "repetitions": 2,
+        "concurrency": 3,
+        "limits": {
+          "campaignMs": 14400000,
+          "caseMs": 2400000,
+          "turnMs": 900000,
+          "maxTurns": 20,
+          "maxNoProgress": 2,
+          "tokenPolicy": "observe-only"
+        },
+        "contextPolicy": "stage",
+        "stageRoles": {
+          "EXECUTE_SLICE": "execute_coordinator",
+          "APPLY_FINDINGS": "execute_coordinator",
+          "INIT": "plan_review",
+          "READINESS": "plan_review",
+          "PLAN": "planner",
+          "REVIEW_PLAN": "plan_review",
+          "VALIDATE_SLICE": "formal_validate"
+        },
+        "caseOverrides": {
+          "rename": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6-luna",
+                "effort": "medium"
+              }
+            }
+          },
+          "query": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6.1-terra",
+                "effort": "medium"
+              }
+            }
+          },
+          "import": {
+            "limits": {
+              "caseMs": 3000000,
+              "turnMs": 1800000
+            }
+          }
+        },
+        "suiteCases": [
+          "rename",
+          "query",
+          "import"
+        ]
+      },
+      "reportedTokens": 42173860,
+      "nativeFunctionalPass": 4,
+      "nativeProofQualifiedPass": 2,
+      "offlineProofQualifiedPass": 2,
+      "cases": [
+        {
+          "scenario": "rename",
+          "repetition": 1,
+          "elapsedMs": 904858,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 5,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 3354728,
+            "cache": 3011840,
+            "fresh": 342888,
+            "output": 40524,
+            "reasoning": 6263,
+            "total": 3395252,
+            "observedResponses": 80,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "query",
+          "repetition": 1,
+          "elapsedMs": 1142111,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 9,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 5904839,
+            "cache": 5421312,
+            "fresh": 483527,
+            "output": 40838,
+            "reasoning": 2865,
+            "total": 5945677,
+            "observedResponses": 135,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "rename",
+          "repetition": 2,
+          "elapsedMs": 728676,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 5,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 2589184,
+            "cache": 2324864,
+            "fresh": 264320,
+            "output": 29135,
+            "reasoning": 4096,
+            "total": 2618319,
+            "observedResponses": 75,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "import",
+          "repetition": 1,
+          "elapsedMs": 1856468,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 9,
+          "native": {
+            "contract": "INCOMPLETE",
+            "harnessValid": false,
+            "reasons": [
+              "RUNNER_CONTRACT_PROVENANCE_UNPROVEN"
+            ]
+          },
+          "offline": {
+            "contract": "INCOMPLETE",
+            "harnessValid": false,
+            "reasons": [
+              "RUNNER_CONTRACT_PROVENANCE_UNPROVEN"
+            ],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 10533018,
+            "cache": 9652992,
+            "fresh": 880026,
+            "output": 71058,
+            "reasoning": 6368,
+            "total": 10604076,
+            "observedResponses": 208,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "query",
+          "repetition": 2,
+          "elapsedMs": 1582893,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 11,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 9484458,
+            "cache": 8775808,
+            "fresh": 708650,
+            "output": 58950,
+            "reasoning": 4038,
+            "total": 9543408,
+            "observedResponses": 192,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "import",
+          "repetition": 2,
+          "elapsedMs": 1663789,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 10,
+          "native": {
+            "contract": "INCOMPLETE",
+            "harnessValid": false,
+            "reasons": [
+              "RUNNER_CONTRACT_PROVENANCE_UNPROVEN"
+            ]
+          },
+          "offline": {
+            "contract": "INCOMPLETE",
+            "harnessValid": false,
+            "reasons": [
+              "RUNNER_CONTRACT_PROVENANCE_UNPROVEN"
+            ],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 10003830,
+            "cache": 9173888,
+            "fresh": 829942,
+            "output": 63298,
+            "reasoning": 3906,
+            "total": 10067128,
+            "observedResponses": 195,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "astra62-medium",
+      "id": "exp-astra62-medium-c3-v2",
+      "elapsedMs": 2429464,
+      "identity": {
+        "engine": "c252eec28d6872b22da4ac5f45452e80760868a935de0c93685ed77b840fc6dd",
+        "fixture": "0214744b5442a4df52f71b3392b2ab6531cd34fa25b93b5a4b58cb1504c731fe",
+        "scenarioOracle": "b48cc865c84f048c497ec1ee88d35d4b3f69c4f8aa2da3d1e01d1465c9d0f929",
+        "source": "37601c0a237e61fef91504fc1acd0d60c73a60b4ce9d49dbe711a24aa4b681cd",
+        "profile": "69fc3edc85daf654fc0ab9907d0246078cbf195c1bf8259e4d60a2b39cf9eb8e",
+        "concurrency": 3,
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "contextPolicy": "stage",
+        "adapterProtocol": "sentinel-app-server-public-v1"
+      },
+      "config": {
+        "schemaVersion": 1,
+        "id": "exp-astra62-medium-c3-v2",
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "roles": {
+          "coordinator": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "plan_approver": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "plan_review": {
+            "model": "gpt-6.2-astra",
+            "effort": "medium"
+          },
+          "formal_validate": {
+            "model": "gpt-6.2-astra",
+            "effort": "medium"
+          },
+          "execute_check": {
+            "model": "gpt-6-luna",
+            "effort": "medium"
+          },
+          "execute_coordinator": {
+            "model": "gpt-6.1-sol",
+            "effort": "medium"
+          },
+          "planner": {
+            "model": "gpt-6.2-astra",
+            "effort": "medium"
+          }
+        },
+        "repetitions": 2,
+        "concurrency": 3,
+        "limits": {
+          "campaignMs": 14400000,
+          "caseMs": 2400000,
+          "turnMs": 900000,
+          "maxTurns": 20,
+          "maxNoProgress": 2,
+          "tokenPolicy": "observe-only"
+        },
+        "contextPolicy": "stage",
+        "stageRoles": {
+          "EXECUTE_SLICE": "execute_coordinator",
+          "APPLY_FINDINGS": "execute_coordinator",
+          "INIT": "plan_review",
+          "READINESS": "plan_review",
+          "PLAN": "planner",
+          "REVIEW_PLAN": "plan_review",
+          "VALIDATE_SLICE": "formal_validate"
+        },
+        "caseOverrides": {
+          "rename": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6-luna",
+                "effort": "medium"
+              }
+            }
+          },
+          "query": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6.1-terra",
+                "effort": "medium"
+              }
+            }
+          },
+          "import": {
+            "limits": {
+              "caseMs": 3000000,
+              "turnMs": 1800000
+            }
+          }
+        },
+        "suiteCases": [
+          "rename",
+          "query",
+          "import"
+        ]
+      },
+      "reportedTokens": 28726596,
+      "nativeFunctionalPass": 3,
+      "nativeProofQualifiedPass": 0,
+      "offlineProofQualifiedPass": 2,
+      "cases": [
+        {
+          "scenario": "rename",
+          "repetition": 1,
+          "elapsedMs": 558670,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 5,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 2075085,
+            "cache": 1777408,
+            "fresh": 297677,
+            "output": 23511,
+            "reasoning": 4780,
+            "total": 2098596,
+            "observedResponses": 61,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "query",
+          "repetition": 1,
+          "elapsedMs": 747927,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 6,
+          "native": {
+            "contract": "INCOMPLETE",
+            "harnessValid": false,
+            "reasons": [
+              "RUNNER_CONTRACT_PROVENANCE_UNPROVEN"
+            ]
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": [
+              {
+                "role": "formal_validate",
+                "kind": "full-output-exact-with-leading-source-digest"
+              }
+            ]
+          },
+          "observedUsage": {
+            "input": 4094566,
+            "cache": 3705728,
+            "fresh": 388838,
+            "output": 28909,
+            "reasoning": 1894,
+            "total": 4123475,
+            "observedResponses": 106,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "rename",
+          "repetition": 2,
+          "elapsedMs": 568983,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 5,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 2130761,
+            "cache": 1821568,
+            "fresh": 309193,
+            "output": 23303,
+            "reasoning": 3838,
+            "total": 2154064,
+            "observedResponses": 64,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "import",
+          "repetition": 1,
+          "elapsedMs": 1298887,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 9,
+          "native": {
+            "contract": "INCOMPLETE",
+            "harnessValid": false,
+            "reasons": [
+              "RUNNER_CONTRACT_PROVENANCE_UNPROVEN"
+            ]
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": [
+              {
+                "role": "formal_validate",
+                "kind": "full-output-exact-with-leading-source-digest"
+              }
+            ]
+          },
+          "observedUsage": {
+            "input": 7934714,
+            "cache": 7105536,
+            "fresh": 829178,
+            "output": 49451,
+            "reasoning": 4880,
+            "total": 7984165,
+            "observedResponses": 173,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "query",
+          "repetition": 2,
+          "elapsedMs": 780976,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 7,
+          "native": {
+            "contract": "INCOMPLETE",
+            "harnessValid": false,
+            "reasons": [
+              "RUNNER_CONTRACT_PROVENANCE_UNPROVEN"
+            ]
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": [
+              {
+                "role": "formal_validate",
+                "kind": "full-output-exact-with-leading-source-digest"
+              },
+              {
+                "role": "formal_validate",
+                "kind": "full-output-exact-with-leading-source-digest"
+              }
+            ]
+          },
+          "observedUsage": {
+            "input": 4014321,
+            "cache": 3634304,
+            "fresh": 380017,
+            "output": 29499,
+            "reasoning": 1768,
+            "total": 4043820,
+            "observedResponses": 108,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "import",
+          "repetition": 2,
+          "elapsedMs": 1299650,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 9,
+          "native": {
+            "contract": "INCOMPLETE",
+            "harnessValid": false,
+            "reasons": [
+              "RUNNER_CONTRACT_PROVENANCE_UNPROVEN"
+            ]
+          },
+          "offline": {
+            "contract": "INCOMPLETE",
+            "harnessValid": false,
+            "reasons": [
+              "RUNNER_CONTRACT_PROVENANCE_UNPROVEN"
+            ],
+            "proofQualifiedPass": false,
+            "newFrames": [
+              {
+                "role": "formal_validate",
+                "kind": "full-output-exact-with-leading-source-digest"
+              }
+            ]
+          },
+          "observedUsage": {
+            "input": 8273943,
+            "cache": 7542784,
+            "fresh": 731159,
+            "output": 48533,
+            "reasoning": 3838,
+            "total": 8322476,
+            "observedResponses": 174,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        }
+      ]
+    },
+    {
+      "name": "forte",
+      "id": "exp-forte-c3-v2",
+      "elapsedMs": 5361666,
+      "identity": {
+        "engine": "c252eec28d6872b22da4ac5f45452e80760868a935de0c93685ed77b840fc6dd",
+        "fixture": "0214744b5442a4df52f71b3392b2ab6531cd34fa25b93b5a4b58cb1504c731fe",
+        "scenarioOracle": "b48cc865c84f048c497ec1ee88d35d4b3f69c4f8aa2da3d1e01d1465c9d0f929",
+        "source": "37601c0a237e61fef91504fc1acd0d60c73a60b4ce9d49dbe711a24aa4b681cd",
+        "profile": "153b6f093866cfd1b13a2d6fbd8694b746506e2234e92cf8eb360b5309cab5e4",
+        "concurrency": 3,
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "contextPolicy": "stage",
+        "adapterProtocol": "sentinel-app-server-public-v1"
+      },
+      "config": {
+        "schemaVersion": 1,
+        "id": "exp-forte-c3-v2",
+        "cliVersion": "0.171.0",
+        "sentinelRevision": "8f35fdadf18bcaeaea0525d6b5b8ee55e91fee7c",
+        "roles": {
+          "coordinator": {
+            "model": "gpt-6.1-sol",
+            "effort": "high"
+          },
+          "plan_approver": {
+            "model": "gpt-6.1-sol",
+            "effort": "high"
+          },
+          "plan_review": {
+            "model": "gpt-6-astra",
+            "effort": "high"
+          },
+          "formal_validate": {
+            "model": "gpt-6-astra",
+            "effort": "xhigh"
+          },
+          "execute_check": {
+            "model": "gpt-6.1-terra",
+            "effort": "high"
+          },
+          "execute_coordinator": {
+            "model": "gpt-6.1-sol",
+            "effort": "high"
+          },
+          "planner": {
+            "model": "gpt-6-astra",
+            "effort": "xhigh"
+          }
+        },
+        "repetitions": 2,
+        "concurrency": 3,
+        "limits": {
+          "campaignMs": 14400000,
+          "caseMs": 2400000,
+          "turnMs": 900000,
+          "maxTurns": 20,
+          "maxNoProgress": 2,
+          "tokenPolicy": "observe-only"
+        },
+        "contextPolicy": "stage",
+        "stageRoles": {
+          "EXECUTE_SLICE": "execute_coordinator",
+          "APPLY_FINDINGS": "execute_coordinator",
+          "INIT": "plan_review",
+          "READINESS": "plan_review",
+          "PLAN": "planner",
+          "REVIEW_PLAN": "plan_review",
+          "VALIDATE_SLICE": "formal_validate"
+        },
+        "caseOverrides": {
+          "rename": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6.1-terra",
+                "effort": "high"
+              }
+            }
+          },
+          "query": {
+            "roles": {
+              "execute_coordinator": {
+                "model": "gpt-6.1-sol",
+                "effort": "high"
+              }
+            }
+          },
+          "import": {
+            "limits": {
+              "caseMs": 3000000,
+              "turnMs": 1800000
+            }
+          }
+        },
+        "suiteCases": [
+          "rename",
+          "query",
+          "import"
+        ]
+      },
+      "reportedTokens": 58568511,
+      "nativeFunctionalPass": 4,
+      "nativeProofQualifiedPass": 3,
+      "offlineProofQualifiedPass": 4,
+      "cases": [
+        {
+          "scenario": "rename",
+          "repetition": 1,
+          "elapsedMs": 1143250,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 6,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 3972634,
+            "cache": 3596672,
+            "fresh": 375962,
+            "output": 47798,
+            "reasoning": 5975,
+            "total": 4020432,
+            "observedResponses": 89,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "query",
+          "repetition": 1,
+          "elapsedMs": 1385749,
+          "status": "BLOCKED",
+          "close": false,
+          "oracle": null,
+          "trajectory": "INCOMPLETE",
+          "failureDomain": "sentinel-boundary",
+          "failureCode": "SENTINEL_AUTHORITY_BLOCKED",
+          "completedHarnessTurns": 6,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": false,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 4807678,
+            "cache": 4387712,
+            "fresh": 419966,
+            "output": 54569,
+            "reasoning": 9288,
+            "total": 4862247,
+            "observedResponses": 94,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "import",
+          "repetition": 1,
+          "elapsedMs": 2695407,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 9,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 16247031,
+            "cache": 15120512,
+            "fresh": 1126519,
+            "output": 108321,
+            "reasoning": 16976,
+            "total": 16355352,
+            "observedResponses": 245,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "rename",
+          "repetition": 2,
+          "elapsedMs": 1681400,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 7,
+          "native": {
+            "contract": "INCOMPLETE",
+            "harnessValid": false,
+            "reasons": [
+              "RUNNER_CONTRACT_PROVENANCE_UNPROVEN"
+            ]
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": [
+              {
+                "role": "formal_validate",
+                "kind": "full-output-exact-with-trailing-source-digest"
+              }
+            ]
+          },
+          "observedUsage": {
+            "input": 7802306,
+            "cache": 7196416,
+            "fresh": 605890,
+            "output": 65416,
+            "reasoning": 10599,
+            "total": 7867722,
+            "observedResponses": 147,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "query",
+          "repetition": 2,
+          "elapsedMs": 1807549,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 8,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 9245595,
+            "cache": 8610560,
+            "fresh": 635035,
+            "output": 71474,
+            "reasoning": 10777,
+            "total": 9317069,
+            "observedResponses": 153,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        },
+        {
+          "scenario": "import",
+          "repetition": 2,
+          "elapsedMs": 2664519,
+          "status": "PASS",
+          "close": true,
+          "oracle": "PASS",
+          "trajectory": "PASS",
+          "failureDomain": null,
+          "failureCode": null,
+          "completedHarnessTurns": 9,
+          "native": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": []
+          },
+          "offline": {
+            "contract": "MATCH",
+            "harnessValid": true,
+            "reasons": [],
+            "proofQualifiedPass": true,
+            "newFrames": []
+          },
+          "observedUsage": {
+            "input": 16040229,
+            "cache": 15019520,
+            "fresh": 1020709,
+            "output": 105460,
+            "reasoning": 16464,
+            "total": 16145689,
+            "observedResponses": 244,
+            "reportedTotalMissingResponses": 0,
+            "unreportedUsagePossible": true
+          }
+        }
+      ]
+    }
+  ]
+}

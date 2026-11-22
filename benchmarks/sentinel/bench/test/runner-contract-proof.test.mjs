@@ -45,3 +45,57 @@ test('two-line proof refuses non-template shell and incomplete or unrelated evid
   assert.notEqual(collectRunnerContractProof(f).status,'MATCH',kind);
  }
 });
+
+test('literal compound canonical read plus exact trailing digest matches for both hash commands',t=>{
+ for(const hashCommand of ['shasum -a 256','sha256sum'])for(const wrapped of [true,false]){
+  const f=fixture(t),text=fs.readFileSync(f.file,'utf8'),cmd='cat '+f.file+' && '+hashCommand+' '+f.file;
+  f.events=[row(wrapped?"/bin/zsh -lc '"+cmd+"'":cmd,text+sha256(text)+'  '+f.file+'\n')];
+  const r=collectRunnerContractProof(f);
+  assert.equal(r.status,'MATCH');
+  assert.equal(r.children[0].evidence[0].byteProof,'full-output-exact-with-trailing-source-digest');
+ }
+});
+test('compound proof refuses altered output, wrong source, unrelated child and extra shell',t=>{
+ const changes=['other-source','different-digest-path','wrong-hash','short','suffix','extra','nonzero','outside-thread','symlink'];
+ for(const variant of changes)for(const hashCommand of ['shasum -a 256','sha256sum']){
+  const f=fixture(t),text=fs.readFileSync(f.file,'utf8'),other=path.join(f.base,'stnl_validation_runner.toml');
+  fs.writeFileSync(other,text);
+  const source=variant==='other-source'?other:f.file, digestPath=variant==='different-digest-path'?other:source;
+  const command='cat '+source+' && '+hashCommand+' '+digestPath+(variant==='extra'?' && echo extra':'');
+  const hash=variant==='wrong-hash'?'0'.repeat(64):sha256(text);
+  const output=(variant==='short'?text.slice(0,-1):text)+hash+'  '+digestPath+'\n'+(variant==='suffix'?'extra\n':'');
+  if(variant==='symlink'){fs.unlinkSync(f.file);fs.symlinkSync(other,f.file);}
+  f.events=[row("/bin/zsh -lc '"+command+"'",output,{threadId:variant==='outside-thread'?'other':'child',exitCode:variant==='nonzero'?1:0})];
+  assert.notEqual(collectRunnerContractProof(f).status,'MATCH',hashCommand+': '+variant);
+ }
+});
+
+test('observed literal leading digest and semicolon trailing digest prove complete canonical bytes',t=>{
+ for(const variant of ['bare','wrapped','quoted','trailing']){
+  const f=fixture(t),text=fs.readFileSync(f.file,'utf8'),digest=sha256(text)+'  '+f.file+'\n',body='shasum -a 256 '+f.file+' && cat '+f.file;
+  const command={bare:body,wrapped:"/bin/zsh -lc '"+body+"'",quoted:`/bin/zsh -lc "shasum -a 256 '${f.file}' && cat '${f.file}'"`,trailing:"/bin/zsh -lc 'cat "+f.file+"; shasum -a 256 "+f.file+"'"}[variant];
+  f.events=[row(command,variant==='trailing'?text+digest:digest+text)];
+  const proof=collectRunnerContractProof(f);
+  assert.equal(proof.status,'MATCH',variant);
+  assert.equal(proof.children[0].evidence[0].byteProof,'full-output-exact-with-'+(variant==='trailing'?'trailing':'leading')+'-source-digest');
+ }
+});
+test('new literal frames reject altered or unproven evidence',t=>{
+ for(const variant of ['wrong-sha','wrong-digest-path','wrong-read-path','wrong-checksum-source','truncated','missing-linebreak','extra-output','extra-command','extra-delimiter','failed','other-child','started','symlink','hash-only'])for(const trailing of [false,true]){
+  const f=fixture(t),text=fs.readFileSync(f.file,'utf8'),other=f.file+'.other';fs.writeFileSync(other,text);
+  const digest=(variant==='wrong-sha'?'0'.repeat(64):sha256(text))+'  '+(variant==='wrong-digest-path'?other:f.file)+(variant==='missing-linebreak'?'':'\n');
+  const read='cat '+(variant==='wrong-read-path'?other:f.file),sha='shasum -a 256 '+(variant==='wrong-checksum-source'?other:f.file);
+  let body=trailing?read+'; '+sha:sha+' && '+read;
+  if(variant==='extra-command')body+='; echo extra';
+  if(variant==='extra-delimiter')body=body.replace(trailing?'; ':' && ',trailing?';; ':' && && ');
+  if(variant==='hash-only')body=sha;
+  let output=trailing?text+digest:digest+text;
+  if(variant==='truncated')output=output.slice(1);
+  if(variant==='extra-output')output+='extra';
+  if(variant==='hash-only')output=digest;
+  if(variant==='symlink'){fs.unlinkSync(f.file);fs.symlinkSync(other,f.file);}
+  f.events=[row("/bin/zsh -lc '"+body+"'",output,{threadId:variant==='other-child'?'other':'child',exitCode:variant==='failed'?1:0})];
+  if(variant==='started')f.events[0].payload.method='item/started';
+  assert.notEqual(collectRunnerContractProof(f).status,'MATCH',variant);
+ }
+});

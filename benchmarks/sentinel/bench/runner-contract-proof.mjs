@@ -5,11 +5,18 @@ const NAME='stnl_validation_runner.toml';
 const ROLES=new Set(['execute_check','formal_validate']);
 function canonicalFile(file){if(!path.isAbsolute(file))throw Error('absolute path required');const normalized=path.normalize(file);let current=path.parse(normalized).root;for(const part of normalized.slice(current.length).split(path.sep)){current=path.join(current,part);if(fs.lstatSync(current).isSymbolicLink())throw Error('symlink path');}return normalized;}
 function reads(command,source){
- // Observed two-line frame only: canonical literal source, no shell expansion,
- // quoting variants, extra commands or arguments. All other multiline is refused.
+ // Observed literal frames only: canonical source repeated exactly, no shell
+ // expansion, unobserved quoting, extra commands or arguments.
  if(typeof source==='string'&&/^\/[A-Za-z0-9_./-]+$/.test(source)){
-  const body='cat '+source+'\nshasum -a 256 '+source;
-  if(command===body||command==="/bin/zsh -lc '"+body+"'")return[{file:source,kind:'full-digest'}];
+  const leading='shasum -a 256 '+source+' && cat '+source;
+  const quotedLeading=`/bin/zsh -lc "shasum -a 256 '${source}' && cat '${source}'"`;
+  if(command===leading||command==="/bin/zsh -lc '"+leading+"'"||command===quotedLeading)return[{file:source,kind:'digest-full'}];
+  if(command==="/bin/zsh -lc 'cat "+source+"; shasum -a 256 "+source+"'")return[{file:source,kind:'full-digest'}];
+  const frames=['\nshasum -a 256 ',' && shasum -a 256 ',' && sha256sum '];
+  for(const separator of frames){
+   const body='cat '+source+separator+source;
+   if(command===body||command==="/bin/zsh -lc '"+body+"'")return[{file:source,kind:'full-digest'}];
+  }
  }
  // Only literal cat /path and sed -n 'N,Mp' /path. No inferred reads from comments,
  // hashes alone, variable expansion, redirects or dynamically constructed commands.
@@ -76,8 +83,11 @@ export function collectRunnerContractProof({manifest,usage,events}={}){
     let actualFile,actual;try{actualFile=canonicalFile(read.file);actual=fs.readFileSync(actualFile);}catch{result.gaps.push({code:'READ_PATH_UNVERIFIABLE',...evidence});continue;}
     const output=item.aggregatedOutput,hash=sha256(actual),samePath=actualFile===source;
     evidence.observedFileSha256=hash;
-    if((read.kind==='full'&&output===actual.toString('utf8'))||(read.kind==='full-digest'&&read.file===actualFile&&samePath&&Buffer.from(output).equals(Buffer.concat([actual,Buffer.from(hash+'  '+actualFile+'\n')])))){
-     evidence.byteProof=read.kind==='full-digest'?'full-output-exact-with-trailing-source-digest':'full-output-exact';
+    const digest=Buffer.from(hash+'  '+actualFile+'\n');
+    const frame=read.kind==='full-digest'?[actual,digest]:read.kind==='digest-full'?[digest,actual]:null;
+    const exactFrame=frame&&read.file===actualFile&&samePath&&Buffer.from(output).equals(Buffer.concat(frame));
+    if((read.kind==='full'&&output===actual.toString('utf8'))||exactFrame){
+     evidence.byteProof=read.kind==='digest-full'?'full-output-exact-with-leading-source-digest':read.kind==='full-digest'?'full-output-exact-with-trailing-source-digest':'full-output-exact';
      evidence.matchesSourceBytes=hash===report.source.sha256;
      evidence.matchesSourcePath=samePath;
      result.evidence.push(evidence);
